@@ -346,7 +346,7 @@ prometheus` are also offered.
 | metric | mechanism                                                                  |
 |--------|----------------------------------------------------------------------------|
 | netp   | `tracepoint:net:net_dev_xmit` + `tracepoint:net:netif_receive_skb` lengths |
-| nets   | `kprobe/__dev_queue_xmit` + `kprobe/napi_poll` (TX exact, RX approx, see DESIGN.md 10.1) |
+| nets   | TX: `tracepoint:net:net_dev_start_xmit` + `kretprobe/__dev_queue_xmit`. RX: `fentry/fexit` on `napi_poll` (preferred), or per-CPU `kprobe/kretprobe`, or `softirq_entry` + `napi:napi_poll` tracepoint pair -- see DESIGN.md 10.1. |
 | blk    | `tracepoint:block:block_rq_complete` field reads via `BPF_CORE_READ`       |
 | cpu    | `tracepoint:sched:sched_switch` + per-task time                            |
 | llcmr  | `BPF_PROG_TYPE_PERF_EVENT` + `PERF_TYPE_HW_CACHE`                          |
@@ -362,11 +362,16 @@ section 7).
 
 - `netp`, `blk`, `cpu`, `llcmr`: full fidelity matching V1.
 - `nets` TX: exact (the `skbaddr` from `net:net_dev_start_xmit` allows
-  end-to-end correlation). RX: systematically *under-counts* because
-  `PT_REGS_PARM1` is not available to kretprobes, so the
-  `napi_struct *` used as the entry-side key cannot be recovered on
-  exit. DESIGN.md section 10.1 documents this honestly; V6 is more
-  faithful than V5 on TX and equivalent on RX.
+  end-to-end correlation).
+- `nets` RX: full fidelity on the **`fentry/fexit`** path (BPF
+  trampoline gives the `napi_struct *` argument on both entry and
+  exit, so RX latency closes byte-equivalent to V1). At load time
+  V6 falls back, in order, to (a) a per-CPU slot keyed by softirq
+  non-reentrancy with `kprobe + kretprobe`, then (b) coarser
+  `softirq_entry` + `napi:napi_poll` tracepoint pair (status=
+  `degraded`). The chosen backend is declared in the output header
+  and surfaced via `--list-capabilities`. DESIGN.md section 10.1
+  details the three paths and why fentry/fexit is the default.
 - `mbw`, `llcocc`: matches V3/V5 (same resctrl source).
 
 **Deployment requirements.** Kernel 5.8+ with `CONFIG_DEBUG_INFO_BTF=y`,
@@ -388,7 +393,12 @@ the userspace binary is a normal native build.
 
 **Known limitations.**
 
-1. *NAPI RX kretprobe gap* (DESIGN.md 10.1) -- TX exact, RX approximate.
+1. *NAPI RX attach prerequisites* (DESIGN.md 10.1) -- the highest-
+   fidelity path needs BPF trampoline support (`CONFIG_FUNCTION_TRACER`
+   + `CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`). On distro kernels
+   this is enabled by default; on hardened or custom kernels V6
+   degrades through the per-CPU kprobe path or the tracepoint pair
+   rather than failing.
 2. *No RDT MSR access from eBPF* -- the verifier blocks raw MSR reads,
    which is why V6 still needs resctrl as a userspace co-process for
    `mbw`/`llcocc`. This is a kernel/eBPF-policy boundary, not a V6

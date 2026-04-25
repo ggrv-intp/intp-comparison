@@ -320,14 +320,14 @@ int krp_napi_poll_exit(struct pt_regs *ctx)
 {
     (void)ctx;
     /*
-     * kretprobe fires with PARM1 already gone, and we have no way to
-     * recover the napi pointer without extra instrumentation. Userspace
-     * treats RX latency as approximate. The entry map is bounded and
-     * self-evicting through LRU-ish behavior (10s reasonable lifetime).
-     *
-     * Implementation detail: if a kernel's BTF exposes an equivalent
-     * signature (e.g. fentry/napi_complete_done) we can revisit and
-     * capture an exit record there instead.
+     * kretprobe fires with PARM1 already gone, so the napi pointer used
+     * as the entry-side key cannot be recovered here. This stub keeps
+     * the entry-side map bounded; the actual RX latency sample is closed
+     * by one of the three paths described in DESIGN.md section 10.1:
+     *   1. fentry/fexit on napi_poll (preferred, requires BPF trampoline);
+     *   2. kprobe + kretprobe with a per-CPU slot (softirq non-reentrancy);
+     *   3. softirq_entry + napi:napi_poll tracepoint pair (degraded).
+     * Userspace selects the first path that attaches at load time.
      */
     return 0;
 }

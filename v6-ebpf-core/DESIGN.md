@@ -206,18 +206,195 @@ build aborts; there is no kernel-header fallback path. If resctrl is
 unavailable, `--no-resctrl` disables mbw and llcocc. If perf_event is
 restricted (paranoid level > 1), `--no-perf-events` disables llcmr.
 
-### 10.1 NAPI RX latency on the kretprobe path
+### 10.1 NAPI RX latency: paired entry/exit on `napi_poll`
 
-V6 records NAPI RX start timestamps on `kprobe/napi_poll` entry but
-does NOT emit a matching latency sample on `kretprobe/napi_poll`
-exit. The reason: `PT_REGS_PARM1` is not available to kretprobes,
-so the `napi_struct` pointer used as the entry-side map key cannot
-be recovered on exit to close the sample. Consequence: the
-`INTP_EVENT_NAPI_RX_LAT` event stream is produced only intermittently
-(whenever a tracepoint-based correlation path exists), and the RX
-fraction of the `nets` metric will be systematically lower than
-V1/V3. The TX path is unaffected because `net:net_dev_start_xmit`
-carries `skbaddr`, enabling end-to-end correlation.
+V1 measures network-stack RX service time by stamping a timestamp on
+entry to `__napi_schedule_irqoff` and reading it again on
+`napi_complete_done`, keyed on the `napi_struct *`. V6 must reproduce
+that pairing under the eBPF verifier without losing the
+`napi_struct *` key on the exit side.
+
+#### 10.1.1 Why a kprobe + kretprobe pair does not work
+
+The naive port -- `kprobe/napi_poll` to stamp t0 keyed by
+`PT_REGS_PARM1`, `kretprobe/napi_poll` to read t0 -- fails because
+**kretprobes do not expose function arguments**. The kretprobe BPF
+context carries only the saved return value and stack frame, not the
+`pt_regs` from entry. The `napi_struct *` used as the entry-side map
+key cannot be recovered on exit, so latency samples cannot be closed.
+This is the gap V6 originally documented and the reason its `nets`
+metric was reported as `degraded` on the RX leg. TX is unaffected
+because `tracepoint:net:net_dev_start_xmit` carries `skbaddr`
+directly in its TP_struct, so `__dev_queue_xmit` and `net_dev_xmit`
+are correlated end-to-end without recovering arguments.
+
+#### 10.1.2 Chosen approach: `fentry/fexit` (BPF trampoline)
+
+V6 uses **`fentry/fexit` programs** (BPF trampoline, type
+`BPF_PROG_TYPE_TRACING` attached as `BPF_TRACE_FENTRY` /
+`BPF_TRACE_FEXIT`). Unlike kretprobes, an `fexit` program receives
+**all of the function's original arguments AND the return value** in
+one context, so the entry-side key is available on exit:
+
+```c
+SEC("fentry/napi_poll")
+int BPF_PROG(napi_poll_entry, struct napi_struct *n, int budget)
+{
+    u64 t = bpf_ktime_get_ns();
+    bpf_map_update_elem(&napi_start, &n, &t, BPF_ANY);
+    return 0;
+}
+
+SEC("fexit/napi_poll")
+int BPF_PROG(napi_poll_exit, struct napi_struct *n, int budget,
+             int retval)
+{
+    u64 *t0 = bpf_map_lookup_elem(&napi_start, &n);
+    if (!t0)
+        return 0;
+    u64 dt = bpf_ktime_get_ns() - *t0;
+    /* emit INTP_EVENT_NAPI_RX_LAT { napi=n, ns=dt } via ringbuf */
+    bpf_map_delete_elem(&napi_start, &n);
+    return 0;
+}
+```
+
+**Why this is the right default for V6:**
+
+- *Correctness.* Closes the V1 fidelity gap completely; the RX leg of
+  `nets` becomes byte-equivalent to V1/V3 again.
+- *Lower overhead than kprobe.* BPF trampoline does not take the
+  int3/breakpoint path; published numbers put fentry/fexit at roughly
+  half the per-call cost of an equivalent kprobe pair.
+- *No DSL coupling.* Implementation lives in one C source file; no
+  bpftrace runtime, no Python aggregator.
+- *Already within V6's portability envelope.* fentry/fexit have been
+  available on x86_64 since kernel 5.5 and on ARM64 since 6.0; V6
+  already requires 5.8+ for `BPF_MAP_TYPE_RINGBUF` and `CAP_BPF`, so
+  no new minimum kernel is introduced.
+
+**Caveats / limits.**
+
+- *Trampoline support per-arch.* fentry/fexit needs
+  `CONFIG_FUNCTION_TRACER`/`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`.
+  Mainline distros enable it; minimal kernels (custom embedded
+  builds, some hardened distros) may disable ftrace and break this
+  path.
+- *Inlined `napi_poll`.* If a future kernel inlines or renames
+  `napi_poll`, the attach fails at load time. CO-RE relocates struct
+  field accesses, not the attach symbol; that risk is the same one
+  Zhong et al. (2025) flag for the ~83% of eBPF tools they study. V6
+  detects load failure at startup and falls back per 10.1.3 below.
+- *Tracee-side scope.* `napi_poll` is the entry surface that V1
+  approximates with `__napi_schedule_irqoff` + `napi_complete_done`.
+  The two are not identical: `napi_poll` covers one poll iteration,
+  while V1's pair brackets the whole softirq dispatch including
+  scheduling delay. The metric semantics document calls this out
+  explicitly so cross-variant comparisons are honest.
+
+#### 10.1.3 Fallback A -- per-CPU map, kprobe/kretprobe pair
+
+If `fentry/fexit` cannot attach (no trampoline support, or symbol
+inlined out), V6 retries with a per-CPU storage scheme that does not
+depend on recovering arguments at exit time:
+
+```c
+struct napi_slot { struct napi_struct *n; u64 t0; };
+BPF_MAP_DEF(BPF_MAP_TYPE_PERCPU_ARRAY, struct napi_slot,
+            max_entries = 1);
+
+SEC("kprobe/napi_poll")
+int kprobe_napi_poll(struct pt_regs *ctx)
+{
+    struct napi_slot s = {
+        .n  = (void *)PT_REGS_PARM1(ctx),
+        .t0 = bpf_ktime_get_ns(),
+    };
+    u32 zero = 0;
+    bpf_map_update_elem(&napi_per_cpu, &zero, &s, BPF_ANY);
+    return 0;
+}
+
+SEC("kretprobe/napi_poll")
+int kretprobe_napi_poll(struct pt_regs *ctx)
+{
+    u32 zero = 0;
+    struct napi_slot *s = bpf_map_lookup_elem(&napi_per_cpu, &zero);
+    if (!s || !s->n)
+        return 0;
+    u64 dt = bpf_ktime_get_ns() - s->t0;
+    /* emit INTP_EVENT_NAPI_RX_LAT { napi=s->n, ns=dt } */
+    s->n = NULL;        /* mark slot consumed */
+    return 0;
+}
+```
+
+**Why it works.** `napi_poll` runs in softirq context, which is
+non-reentrant on a given CPU: a softirq handler does not preempt
+itself, and `napi_poll` is not recursively called from within itself
+on the same CPU during one poll cycle. So the slot keyed implicitly
+by "the running CPU" is sufficient -- we do not need to recover the
+`napi_struct *` from the kretprobe context because the per-CPU slot
+already holds it.
+
+**Caveats.**
+
+- Higher per-call cost than fentry/fexit (kprobe + kretprobe).
+- A single `napi_struct *` per CPU at a time. In the rare case of
+  budget-driven re-entry (one driver handing off to another inside a
+  single softirq dispatch), the second call overwrites the first
+  slot before the first exit sees it; the first sample is dropped.
+  Frequency of this case in practice is negligible per published
+  NAPI traces.
+
+#### 10.1.4 Fallback B -- coarse-grained tracepoint pair
+
+If neither fentry/fexit nor kprobe/kretprobe can attach (e.g. a
+hardened kernel that strips both ftrace and kprobes), V6 uses two
+stable tracepoints to bound RX latency at a coarser granularity:
+
+- `tracepoint:irq:softirq_entry` filtered to `vec == NET_RX_SOFTIRQ`
+  -> stamp t0 in a per-CPU slot.
+- `tracepoint:napi:napi_poll` -> read t0, emit a sample.
+
+**Why it works.** Both tracepoints are stable kernel ABI (present
+since 4.x) and do not need argument recovery. The latency they bound
+is "from softirq raise to first napi_poll completion" rather than
+"per napi_poll iteration", which is coarser than V1's pair but still
+strictly better than zero. V5 uses this scheme already; V6 reuses the
+same userspace correlator on this fallback path.
+
+**Caveats.**
+
+- Lower temporal resolution than 10.1.2 / 10.1.3.
+- Soft-IRQ-context probes have less reliable PID context (the current
+  task is whoever was interrupted, not the socket owner). On this
+  fallback path V6 reports the `nets` RX leg with `status=degraded`
+  and a `note=napi_softirq_pair` to make the gap explicit at consumer
+  time.
+
+#### 10.1.5 Selection at load time
+
+`intp.c` runs through this preference order at startup, retrying on
+each failure:
+
+1. Attach `fentry/napi_poll` + `fexit/napi_poll` (10.1.2). On
+   success, mark `nets.backend = napi_fentry_fexit`.
+2. Else, attach `kprobe/napi_poll` + `kretprobe/napi_poll` with the
+   per-CPU slot (10.1.3). On success, mark `nets.backend =
+   napi_kprobe_percpu`.
+3. Else, attach `irq:softirq_entry` + `napi:napi_poll` (10.1.4). On
+   success, mark `nets.backend = napi_softirq_pair` and set
+   `status=degraded`.
+4. Else, RX leg disabled. `nets` reports TX-only with
+   `status=degraded` and `note=napi_attach_failed`.
+
+The chosen backend is declared in the `# v6 ebpf-core --` header line
+and surfaced by `--list-capabilities`, so cross-variant validation
+runs (`shared/validate-cross-variant.sh`) compare V6 against V1 only
+when V6 is operating on the highest-fidelity backend, and downstream
+consumers of the JSON / Prometheus output can filter on the backend
+field.
 
 ## 11. Execution environments
 
