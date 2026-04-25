@@ -9,7 +9,7 @@ the kernel instrumentation framework for IntP; V6 is the concrete
 implementation of that claim. In the Phase 3 head-to-head comparison it
 plays the "eBPF" role against:
 
-- V1 -- original SystemTap IntP (Pantanal et al., PUCRS, 2022).
+- V1 -- original SystemTap IntP (Xavier and De Rose -- PUCRS, SBAC-PAD 2022).
 - V3 -- refactored SystemTap IntP (this dissertation, chapter 4).
 
 The comparison is evaluated on five dimensions: measurement accuracy,
@@ -17,10 +17,14 @@ runtime overhead (following Volpert et al. ICPE 2025), cross-kernel
 portability, deployment complexity, and execution environment behavior
 (bare-metal, container, VM).
 
-V6 is **not** a reimplementation of `iprof` (Gogge 2023) or PRISM
-(Landau et al. 2025). V6 implements IntP's exact 7-metric set with
-matching semantics, which neither tool does: iprof covers 5 metrics and
-omits RDT; PRISM covers 16 software metrics but no hardware PMU.
+V6 is **not** a reimplementation of `iprof` (Gögge 2023, TU Berlin
+master's thesis; Becker, Goegge, Kao 2024, UCC Companion) or PRISM
+(Landau, Barbosa, Saurabh 2025, Utrecht University,
+arXiv:2505.13160). V6 implements IntP's exact 7-metric set with
+matching semantics, which neither tool does: `iprof` covers 5 metrics
+and omits RDT; PRISM covers 16 software metrics but no hardware PMU.
+Neither is a PUCRS work -- they are external eBPF-based interference
+profilers in the related-work landscape, not predecessors of IntP.
 
 ## 2. CO-RE mechanics in detail
 
@@ -103,10 +107,14 @@ ring-buffer-only dependency is free. 16 MiB comfortably buffers bursts
 at millions of events/second without drops; the size is configurable
 via `--ringbuf-size`.
 
-## 5. Comparison with iprof (Gogge 2023, Becker et al. 2024)
+## 5. Comparison with iprof (Gögge 2023; Becker, Goegge, Kao 2024)
 
-`iprof` is the PUCRS predecessor eBPF-based interference profiler from
-which V6 inherits its architectural bones. Differences:
+`iprof` is the eBPF-based interference profiler from Gögge's TU
+Berlin master's thesis (advised by Sören Becker and Prof. Odej Kao,
+2023), and the companion paper by Becker, Goegge, and Kao published
+at UCC Companion 2024. V6 looks at it for architectural ideas only --
+it is **not** a PUCRS predecessor of IntP, and V6 does not inherit
+code from it. Differences:
 
 | Aspect                  | iprof                             | V6 IntP                    |
 |-------------------------|-----------------------------------|----------------------------|

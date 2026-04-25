@@ -10,10 +10,16 @@
 
 ## 🚀 Quick Start
 
-### Consumer CPUs (Intel Core i5/i7/i9, AMD)
+> **Note:** the snippets below reference the kernel-6.8 patched script
+> (`intp-6.8.stp`, V2) and the resctrl variant (`intp-resctrl.stp`, V3),
+> which now live in their own directories under the repository root.
+> Run them from there, or use the per-variant Quick Start in the
+> [top-level README](../README.md#quick-start).
+
+### Consumer CPUs (Intel Core i5/i7/i9, AMD) -- V2
 
 ```bash
-cd ~/Documents/intp
+cd v2-updated
 
 # Run IntP (6 out of 7 metrics functional)
 sudo stap -g -B CONFIG_MODVERSIONS=y intp-6.8.stp firefox
@@ -22,11 +28,13 @@ sudo stap -g -B CONFIG_MODVERSIONS=y intp-6.8.stp firefox
 watch -n2 -d cat /proc/systemtap/stap_*/intestbench
 ```
 
-### Intel Xeon CPUs (with RDT support)
+### Intel Xeon CPUs with RDT (or AMD EPYC Rome+) -- V3
 
 ```bash
-# Start LLC monitoring helper
-./intp-resctrl-helper.sh start
+cd v3-updated-resctrl
+
+# Start LLC monitoring helper (lives under shared/)
+sudo ../shared/intp-resctrl-helper.sh start <PID>
 
 # Run IntP (all 7 metrics functional)
 sudo stap -g -B CONFIG_MODVERSIONS=y intp-resctrl.stp firefox
@@ -35,7 +43,7 @@ sudo stap -g -B CONFIG_MODVERSIONS=y intp-resctrl.stp firefox
 watch -n2 -d cat /proc/systemtap/stap_*/intestbench
 
 # Stop helper when done
-./intp-resctrl-helper.sh stop
+sudo ../shared/intp-resctrl-helper.sh stop
 ```
 
 ---
@@ -78,13 +86,19 @@ netp    nets    blk     mbw     llcmr   llcocc  cpu
 
 ## 📖 Documentation
 
-| Document | Description |
-|----------|-------------|
-| **[Installation Guide](install/install_ubuntu24_desktop.md)** | Complete Ubuntu 24.04 setup |
-| **[Quick Fix: Module Loading](docs/SYSTEMTAP-MODULE-ISSUE.md)** | Solve "Invalid module format" |
-| **[Kernel Changes](docs/KERNEL-6.8-NOTES.md)** | API compatibility details |
-| **[LLC Monitoring](docs/LLC-OCCUPANCY-RESCTRL.md)** | resctrl implementation |
-| **[Complete Summary](docs/FINAL-SUMMARY.md)** | Full project overview |
+> **Note:** This README is preserved verbatim from the upstream
+> 2022 layout. After the multi-variant refactor, the documentation
+> moved out of `v1-original/`. The pointers below are to the new
+> locations in this repository.
+
+| Document | New location |
+|----------|--------------|
+| **Installation guide (Ubuntu 24.04)**          | [`v3-updated-resctrl/install/install_ubuntu24_desktop.md`](../v3-updated-resctrl/install/install_ubuntu24_desktop.md) |
+| **Quick fix: SystemTap "Invalid module format"** | [`v2-updated/docs/SYSTEMTAP-MODULE-ISSUE.md`](../v2-updated/docs/SYSTEMTAP-MODULE-ISSUE.md) |
+| **Kernel 6.8 changes (V2 working notes)**      | [`v2-updated/docs/KERNEL-6.8-NOTES.md`](../v2-updated/docs/KERNEL-6.8-NOTES.md) |
+| **LLC monitoring via resctrl**                  | [`v3-updated-resctrl/docs/LLC-OCCUPANCY-RESCTRL.md`](../v3-updated-resctrl/docs/LLC-OCCUPANCY-RESCTRL.md) |
+| **Cross-variant kernel-6.8 root document**      | [`docs/KERNEL-6.8-CHANGES.md`](../docs/KERNEL-6.8-CHANGES.md) |
+| **Project overview**                            | [`README.md`](../README.md) at the repository root |
 
 ---
 
@@ -114,7 +128,7 @@ sudo apt update && sudo apt install -y linux-image-$(uname -r)-dbgsym
 sudo stap -g -B CONFIG_MODVERSIONS=y -e 'probe begin { printf("OK\n") exit() }'
 ```
 
-**Full guide:** [install/install_ubuntu24_desktop.md](install/install_ubuntu24_desktop.md)
+**Full guide:** [`v3-updated-resctrl/install/install_ubuntu24_desktop.md`](../v3-updated-resctrl/install/install_ubuntu24_desktop.md)
 
 ---
 

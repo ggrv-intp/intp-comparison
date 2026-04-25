@@ -17,11 +17,11 @@ to evaluate portability, safety, and measurement fidelity tradeoffs.
 
 ### Background
 
-IntP (Interference Profiler) was originally developed by De Rose et al. (2022) as a
-SystemTap-based tool for measuring resource interference between co-located workloads
-in cloud environments. It collects seven low-level metrics (network, block I/O, memory
-bandwidth, LLC miss ratio, LLC occupancy, CPU) to characterize how one tenant's resource
-usage affects another's performance.
+IntP (Interference Profiler) was originally developed by Xavier and De Rose (2022, PUCRS)
+as a SystemTap-based tool for measuring resource interference between co-located workloads
+in cloud environments. It collects seven low-level metrics (network physical, network
+stack, block I/O, memory bandwidth, LLC miss ratio, LLC occupancy, CPU) to characterise
+how one tenant's resource usage affects another's performance.
 
 This work extends and refactors IntP to support modern Linux kernels (6.8+) and
 modern instrumentation frameworks (bpftrace, eBPF/CO-RE), addressing the fragility of
@@ -41,9 +41,9 @@ the original SystemTap approach across kernel versions and hardware architecture
 | V1 -- Original (SystemTap, <=6.6) | Complete (baseline) |
 | V2 -- Updated (SystemTap, 6.8+, LLC disabled) | Complete |
 | V3 -- Resctrl (SystemTap, 6.8+, full metrics) | Complete |
-| V4 -- Hybrid procfs | Scaffold / in progress |
-| V5 -- bpftrace | Scaffold / in progress |
-| V6 -- eBPF/CO-RE | Scaffold / in progress |
+| V4 -- Hybrid procfs | Validated locally; awaiting target hardware for Phase 3 experiments |
+| V5 -- bpftrace | Validated locally; awaiting target hardware for Phase 3 experiments |
+| V6 -- eBPF/CO-RE | Validated locally; awaiting target hardware for Phase 3 experiments |
 
 ### Citation
 
@@ -175,10 +175,17 @@ Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
 
 ## References
 
-- Original IntP: [projectintp/intp](https://github.com/projectintp/intp)
-- Gogge, L. M. (2023). iprof -- eBPF-based interference profiler
-- Becker et al. (2024). Cloud interference profiling with eBPF
-- De Rose et al. (2022). IntP -- Interference Profiler for Linux
+- **Original IntP source repository:** [projectintp/intp](https://github.com/projectintp/intp).
+- **Original IntP paper:** Xavier, M. G. and De Rose, C. A. F. (2022). *IntP: Quantifying Cross-Application Interference via System-Level Instrumentation*. SBAC-PAD 2022, Bordeaux, France, pp. 221-230. IEEE. PUCRS. PDF: <https://repositorio.pucrs.br/dspace/bitstream/10923/24018/2/IntP_Quantifying_crossapplication_interference_via_systemlevel_instrumentation.pdf>. IEEE: <https://ieeexplore.ieee.org/document/9980934/>.
+- **IADA (interference-aware scheduler that consumes IntP):** Meyer, V., da Silva, M. L., Kirchoff, D. F., De Rose, C. A. F. (2022). *IADA: A dynamic interference-aware cloud scheduling architecture for latency-sensitive workloads*. Journal of Systems and Software, vol. 194, pp. 111491. PUCRS.
+- **iprof -- eBPF interference profiler (related work, TU Berlin):**
+  - Gögge, R. (2023). *Finding noisy neighbours: Measuring application interference with system-level instrumentation using eBPF*. Master's thesis, Technical University of Berlin. Supervised by Sören Becker and Prof. Dr. Odej Kao.
+  - Becker, S., Goegge, R., Kao, O. (2024). *Measuring application interference with system-level instrumentation*. IEEE/ACM International Conference on Utility and Cloud Computing Companion (UCC Companion). Technical University of Berlin.
+- **PRISM (related work, Utrecht):** Landau, D., Barbosa, J., Saurabh, N. (2025). *eBPF-based instrumentation for generalisable diagnosis of performance degradation*. arXiv:2505.13160. <https://arxiv.org/abs/2505.13160>. Code: <https://github.com/EC-labs/prism>.
+- **eBPF vs SystemTap overhead methodology:** Volpert, S., Eichhammer, P., Held, F., Huffert, T., Wesner, H. P., Domaschka, S. (2025). *Towards eBPF overhead quantification: An exemplary comparison of eBPF and SystemTap*. ICPE '25 Companion. ACM.
+- **CO-RE portability study:** Zhong, S., Liu, J., Arpaci-Dusseau, A. C., Arpaci-Dusseau, R. H. (2025). *Revealing the unstable foundations of eBPF-based kernel extensions*. EuroSys '25. ACM. (University of Wisconsin-Madison.)
+- **Intel RDT measurement caveats:** Sohal, P., Tabish, R., Drepper, U., Mancuso, R. (2022). *A closer look at Intel resource director technology (RDT)*. RTNS '22. ACM.
+- **CO-RE reference guide:** Nakryiko, A. *BPF CO-RE reference guide*. <https://nakryiko.com/posts/bpf-core-reference-guide/>.
 
 ## License
 

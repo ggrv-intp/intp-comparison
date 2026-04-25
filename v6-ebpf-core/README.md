@@ -122,9 +122,11 @@ Alternative formats:
 
 - libbpf: <https://github.com/libbpf/libbpf>
 - libbpf-bootstrap: <https://github.com/libbpf/libbpf-bootstrap>
-- Nakryiko, A. BPF CO-RE reference guide. <https://nakryiko.com/posts/bpf-core-reference-guide/>
-- Gogge, L. M. (2023). `iprof` -- eBPF-based interference profiler. PUCRS.
-- Becker et al. (2024). Cloud interference profiling with eBPF. PUCRS.
-- Landau et al. (2025). PRISM. arXiv:2505.13160.
-- Volpert et al. (ICPE 2025). eBPF vs. SystemTap overhead comparison.
-- Zhong et al. (2025). A study of eBPF CO-RE portability in practice.
+- Nakryiko, A. *BPF CO-RE reference guide*. <https://nakryiko.com/posts/bpf-core-reference-guide/>
+- **Original IntP:** Xavier, M. G. and De Rose, C. A. F. (2022). *IntP: Quantifying cross-application interference via system-level instrumentation*. SBAC-PAD 2022, IEEE. PUCRS.
+- **iprof (related work, TU Berlin):**
+  - Gögge, R. (2023). *Finding noisy neighbours: Measuring application interference with system-level instrumentation using eBPF*. Master's thesis, Technical University of Berlin. Supervised by Sören Becker and Prof. Dr. Odej Kao.
+  - Becker, S., Goegge, R., Kao, O. (2024). *Measuring application interference with system-level instrumentation*. UCC Companion 2024, IEEE/ACM. Technical University of Berlin.
+- **PRISM:** Landau, D., Barbosa, J., Saurabh, N. (2025). *eBPF-based instrumentation for generalisable diagnosis of performance degradation*. arXiv:2505.13160. <https://arxiv.org/abs/2505.13160>. Code: <https://github.com/EC-labs/prism>.
+- **eBPF/SystemTap overhead:** Volpert, S. et al. (2025). *Towards eBPF overhead quantification: An exemplary comparison of eBPF and SystemTap*. ICPE '25 Companion. ACM.
+- **CO-RE portability study:** Zhong, S. et al. (2025). *Revealing the unstable foundations of eBPF-based kernel extensions*. EuroSys '25. ACM.
