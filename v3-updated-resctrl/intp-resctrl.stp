@@ -38,7 +38,7 @@
 #    ls /sys/fs/resctrl/info/L3_MON/
 #
 # 3. Start the helper daemon (creates monitoring groups):
-#    ./intp-resctrl-helper.sh start
+#    sudo ../shared/intp-resctrl-helper.sh start
 #
 # 4. Run this script:
 #    sudo stap -g -B CONFIG_MODVERSIONS=y intp-resctrl.stp firefox
@@ -60,11 +60,11 @@
 # 3. Memory Bandwidth (if supported): mon_data/mon_L3_XX/mbm_total_bytes
 #    - Total memory bandwidth consumed
 #
-# Since SystemTap can't easily read sysfs files at runtime, this script
+# Since SystemTap can't directly read resctrl sysfs files at runtime, this script
 # works with a userspace helper daemon that:
 #   - Creates/destroys monitoring groups for tracked PIDs
 #   - Periodically reads LLC occupancy and writes to a shared file
-#   - SystemTap reads from the shared file via procfs
+#   - SystemTap reads from the shared file via embedded C file I/O
 #
 # ============================================================================
 
@@ -75,6 +75,7 @@ probe begin
 	printf("IntP with resctrl LLC Occupancy Monitoring\n")
 	printf("Tracing processes named \"%s\"\n", @1)
 	printf("NOTE: Requires Intel RDT hardware and resctrl filesystem mounted\n")
+	printf("      Start helper: sudo ../shared/intp-resctrl-helper.sh start\n")
 	printf("      See LLC-OCCUPANCY-RESCTRL.md for setup instructions\n\n")
 
 	# Check if resctrl helper is running

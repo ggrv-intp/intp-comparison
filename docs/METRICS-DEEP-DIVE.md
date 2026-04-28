@@ -1,7 +1,7 @@
 # Metrics Deep Dive
 
 Technical documentation of IntP's 7 interference metrics. Covers kernel
-probe points, embedded C functions, normalisation formulas, and
+probe points, embedded C functions, Normalization formulas, and
 hardcoded constants for each metric. The reference implementation is
 `v1-original/intp.stp` (660 lines) -- this document is a line-by-line
 walk-through of that script, so future variants can be checked against
@@ -15,25 +15,25 @@ procfs node at `/proc/systemtap/stap_*/intestbench`:
 
 | # | name   | meaning                                                       | output unit |
 |---|--------|---------------------------------------------------------------|-------------|
-| 1 | netp   | Network physical utilisation (NIC bandwidth)                  | %           |
-| 2 | nets   | Network stack utilisation (kernel networking service time)    | %           |
-| 3 | blk    | Block I/O utilisation (`%util`-equivalent)                    | %           |
-| 4 | mbw    | Memory bandwidth utilisation (LLC-to-DRAM traffic)            | %           |
+| 1 | netp   | Network physical utilization (NIC bandwidth)                  | %           |
+| 2 | nets   | Network stack utilization (kernel networking service time)    | %           |
+| 3 | blk    | Block I/O utilization (`%util`-equivalent)                    | %           |
+| 4 | mbw    | Memory bandwidth utilization (LLC-to-DRAM traffic)            | %           |
 | 5 | llcmr  | LLC miss ratio (cache misses / cache references)              | %           |
 | 6 | llcocc | LLC occupancy (bytes of last-level cache occupied)            | %           |
-| 7 | cpu    | CPU utilisation (user + system time)                          | %           |
+| 7 | cpu    | CPU utilization (user + system time)                          | %           |
 
 All seven values are clamped to `99` to keep the field two characters
 wide; reported as `%02d` integers (no fractional part). Each section
 below documents the kernel interface, the SystemTap probe points, the
-embedded C functions, the normalisation formula, and any hardcoded
+embedded C functions, the Normalization formula, and any hardcoded
 constants.
 
 The line numbers cited refer to `v1-original/intp.stp`.
 
 ---
 
-## 1. netp -- network physical utilisation
+## 1. netp -- network physical utilization
 
 ### Probe points
 
@@ -46,7 +46,7 @@ A flow is keyed by `(saddr, daddr, dport)` (line 156). Each TX packet
 records its length into the `net_tput` aggregate; each RX packet on a
 known reverse flow does the same.
 
-### Normalisation
+### Normalization
 
 `print_netphy_report()` (line 239):
 
@@ -74,7 +74,7 @@ util       = util_x100 / 100                      # integer percent
 
 ---
 
-## 2. nets -- network stack utilisation
+## 2. nets -- network stack utilization
 
 ### Probe points
 
@@ -90,7 +90,7 @@ SKB on entry (`__dev_queue_xmit`) and reading the stamp at NIC dispatch
 (`net_dev_xmit`); RX uses the napi structure as the key. Two stats
 aggregates accumulate `(t_end - t_start)` per packet on each side.
 
-### Normalisation
+### Normalization
 
 `print_netstack_report()` (line 211):
 
@@ -125,7 +125,7 @@ sampling window, summed over RX and TX.
 
 ---
 
-## 3. blk -- block I/O utilisation
+## 3. blk -- block I/O utilization
 
 ### Probe points
 
@@ -142,7 +142,7 @@ For every completed request the script reads three fields off `$rq`:
 From these it derives queue time (`io_start - start`) and service time
 (`now - io_start`).
 
-### Normalisation
+### Normalization
 
 `print_block_report()` (line 121):
 
@@ -167,7 +167,7 @@ saturates at 99 (line 138).
 
 ---
 
-## 4. mbw -- memory bandwidth utilisation
+## 4. mbw -- memory bandwidth utilization
 
 ### Probe points
 
@@ -206,7 +206,7 @@ These are V1's main coupling to internal kernel ABI; everything in
 `v6-ebpf-core` is built around replacing them with libbpf-attached
 perf events that the verifier validates.
 
-### Normalisation
+### Normalization
 
 `print_mem_report()` (line 507):
 
@@ -256,7 +256,7 @@ bw_norm         = (bw_bytes_per_s * 10000) / 34_000_000_000   # *100/34 GB/s
 These are stable Linux perf encodings (see `<linux/perf_event.h>`),
 which is why all six variants can use them.
 
-### Normalisation
+### Normalization
 
 `print_cache_report()` (line 546):
 
@@ -319,7 +319,7 @@ the canonical definitions into `<asm/msr-index.h>` and **removed
 `cqm_rmid` from `struct hw_perf_event`** -- breaking V1 and forcing
 the `intp-6.8.stp` (V2) workaround that disables the metric.
 
-### Normalisation
+### Normalization
 
 `print_llc_report()` (line 573):
 
@@ -351,7 +351,7 @@ util_pct     = (total_bytes * 10000 / 34_000_000) / 100
 
 ---
 
-## 7. cpu -- CPU utilisation
+## 7. cpu -- CPU utilization
 
 ### Probe points
 
@@ -367,7 +367,7 @@ opened (e.g. virt environments without PMU). Per tick:
   `user_mode()`,
 - the global `ticks` aggregate is always incremented.
 
-### Normalisation
+### Normalization
 
 `print_cpu_report()` (line 272):
 

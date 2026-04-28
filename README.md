@@ -12,7 +12,7 @@ to evaluate portability, safety, and measurement fidelity tradeoffs.
 
 **Author:** André Sacilotto Santos (PPGCC/PUCRS)
 **Advisor:** Prof. Cesar De Rose
-**Program:** Graduate Program in Computer Science -- PPGCC, PUCRS
+**Program:** Post-Graduate Program in Computer Science -- PPGCC, PUCRS
 **Research Area:** Cloud computing performance, kernel instrumentation, interference profiling
 
 ### Background
@@ -49,7 +49,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 
 If you use this software in your research, please cite it using the metadata in
 [CITATION.cff](CITATION.cff). A full thesis citation will be added upon defense
-(expected March 2027).
+(expected until March 2027).
 
 ## Variant Comparison
 
@@ -100,9 +100,9 @@ x = supported, ~ = polling approximation, empty = not supported
 |-- v1-original/               Unmodified 2022 IntP (SystemTap)
 |-- v2-updated/                Kernel 6.8 patch (LLC disabled)
 |-- v3-updated-resctrl/        Kernel 6.8+ with resctrl LLC
-|-- v4-hybrid-procfs/          procfs/perf_event/resctrl [scaffold]
-|-- v5-bpftrace/               bpftrace scripts + resctrl [scaffold]
-|-- v6-ebpf-core/              Full eBPF/CO-RE with libbpf [scaffold]
+|-- v4-hybrid-procfs/          procfs/perf_event/resctrl
+|-- v5-bpftrace/               bpftrace scripts + resctrl
+|-- v6-ebpf-core/              Full eBPF/CO-RE with libbpf
 ```
 
 ## Quick Start
@@ -136,7 +136,7 @@ sudo stap -g intp-resctrl.stp <PID> <interval_ms>
 
 Requires: SystemTap, kernel debuginfo, kernel 6.8+, Intel RDT or AMD PQoS.
 
-### V4 -- Hybrid procfs (scaffold)
+### V4 -- Hybrid procfs
 
 ```bash
 cd v4-hybrid-procfs
@@ -146,7 +146,7 @@ sudo ./intp-hybrid -p <PID> -i <interval_ms>
 
 No framework dependencies. Requires: resctrl for mbw/llcocc.
 
-### V5 -- bpftrace (scaffold)
+### V5 -- bpftrace
 
 ```bash
 cd v5-bpftrace
@@ -155,7 +155,7 @@ sudo ./run-intp-bpftrace.sh <PID> <interval_ms>
 
 Requires: bpftrace, kernel BTF, resctrl for mbw/llcocc.
 
-### V6 -- eBPF/CO-RE (scaffold)
+### V6 -- eBPF/CO-RE
 
 ```bash
 cd v6-ebpf-core
@@ -167,10 +167,10 @@ Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
 
 ## Documentation
 
-- [Metrics Deep Dive](docs/METRICS-DEEP-DIVE.md) -- Kernel probe points, formulas, constants
-- [Kernel 6.8 Changes](docs/KERNEL-6.8-CHANGES.md) -- What broke and the fix paths
-- [Portability Roadmap](docs/PORTABILITY-ROADMAP.md) -- Cross-kernel, cross-arch analysis
 - [Hardware Compatibility](docs/HARDWARE-COMPATIBILITY.md) -- RDT, PQoS, MPAM tables
+- [Kernel 6.8 Changes](docs/KERNEL-6.8-CHANGES.md) -- What broke and the fix paths
+- [Metrics Deep Dive](docs/METRICS-DEEP-DIVE.md) -- Kernel probe points, formulas, constants
+- [Portability Roadmap](docs/PORTABILITY-ROADMAP.md) -- Cross-kernel, cross-arch analysis
 - [Variant Comparison](docs/VARIANT-COMPARISON.md) -- Detailed rationale for each variant
 
 ## References

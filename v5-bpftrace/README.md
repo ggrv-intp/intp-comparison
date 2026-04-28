@@ -25,8 +25,8 @@ V5 is the pragmatic middle ground between V3 (SystemTap + resctrl) and V6
 
 ```
         bpftrace scripts                orchestrator
-  +-------------------------+      +-------------------+
-  | netp.bt, nets.bt,       |----> aggregator.py       |
+  +-------------------------+      +------------------+
+  | netp.bt, nets.bt,       |----->  aggregator.py    |
   | blk.bt, cpu.bt,         |      | (JSON parsing,   |
   | llcmr.bt                |      |  delta compute,  |
   +-------------------------+      |  normalization,  |

@@ -155,7 +155,7 @@ sudo stap -g -B CONFIG_MODVERSIONS=y intp-6.8.stp firefox
 ## 🤝 Credits
 
 **Original IntP:** [@mclsylva](https://github.com/mclsylva), [@superflit](https://github.com/superflit)  
-**Kernel 6.8.0 Adaptation:** Project contributors
+**Kernel 6.8.0 Adaptation:** @Saccilotto
 
 ---
 
