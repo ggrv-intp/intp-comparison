@@ -172,6 +172,7 @@ Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
 - [Metrics Deep Dive](docs/METRICS-DEEP-DIVE.md) -- Kernel probe points, formulas, constants
 - [Portability Roadmap](docs/PORTABILITY-ROADMAP.md) -- Cross-kernel, cross-arch analysis
 - [Variant Comparison](docs/VARIANT-COMPARISON.md) -- Detailed rationale for each variant
+- [Bench Findings Index](bench/findings/README.md) -- Centralized empirical findings (V1 baseline diagnosis, V3 reliability notes)
 
 ## References
 

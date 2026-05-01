@@ -13,6 +13,17 @@ each metric across environments.
 - `run-intp-bench.sh` -- single bash orchestrator. Read this first.
 - `plot/plot-intp-bench.py` -- reproduces the figures.
 - `hibench/README.md` -- Track B (HiBench Spark subset) for fidelity checks.
+- `findings/README.md` -- canonical index of benchmark findings and diagnoses.
+
+## Findings
+
+All benchmark diagnoses and reliability notes are centralized in
+`bench/findings/`.
+
+- V1 baseline compilation diagnosis:
+    `bench/findings/v1-baseline-failure-diagnosis.md`
+- V3 modernization reliability findings:
+    `bench/findings/v3-modernization-reliability-findings.md`
 
 ## Quick start
 

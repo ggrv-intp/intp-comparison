@@ -12,6 +12,16 @@ experiments.
 | `installimage-noble.conf`     | Hetzner installimage config: Ubuntu 24.04 onto `nvme1n1`    |
 | `setup-host.sh`               | Auto-detecting bootstrap script for either OS               |
 
+## Read flow (docs -> findings)
+
+Use this chain when moving from setup instructions to evidence and analysis:
+
+1. Repository overview: `README.md`
+2. Bench orchestration and outputs: `bench/README.md`
+3. Findings index: `bench/findings/README.md`
+4. V1 baseline diagnosis: `bench/findings/v1-baseline-failure-diagnosis.md`
+5. V3 reliability diagnosis: `bench/findings/v3-modernization-reliability-findings.md`
+
 ## Why two disks, two OSes
 
 V1 (the original SystemTap probe) relies on the `cqm_rmid` field in

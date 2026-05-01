@@ -9,6 +9,15 @@ same 7 interference metrics. Each variant represents a different point in the
 tradeoff space between measurement fidelity, portability, safety, and
 deployment complexity.
 
+## Evidence trail
+
+Narrative claims in this document should be read alongside the benchmark
+findings in:
+
+- `bench/findings/README.md`
+- `bench/findings/v1-baseline-failure-diagnosis.md`
+- `bench/findings/v3-modernization-reliability-findings.md`
+
 ## Variants
 
 ### V1 -- Original IntP (SystemTap, kernel <= 6.6)

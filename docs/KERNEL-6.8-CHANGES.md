@@ -4,6 +4,12 @@
 
 IntP has been successfully patched to work with kernel 6.8.0-90, with **6 out of 7 metrics functional**. LLC occupancy monitoring is temporarily disabled pending resctrl interface implementation.
 
+For benchmark-level evidence and current reliability notes, see:
+
+- `bench/findings/README.md`
+- `bench/findings/v1-baseline-failure-diagnosis.md`
+- `bench/findings/v3-modernization-reliability-findings.md`
+
 ## Changes Made
 
 ### 1. Created `intp-6.8.stp`
