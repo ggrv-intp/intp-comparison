@@ -44,13 +44,28 @@ int metric_select_backend(metric_t *m)
 
 int metric_init(metric_t *m)
 {
-    if (!m || !m->active || !m->active->init) return -1;
-    if (m->active->init() != 0) {
-        if (m->active->cleanup) m->active->cleanup();
-        m->active = NULL;
-        return -1;
+    if (!m) return -1;
+
+    /* Tenta a partir do backend ativo. Se init falhar, avanca para o proximo. */
+    int start = 0;
+    for (int i = 0; i < m->n_backends; i++) {
+        if (m->backends[i] == m->active) { start = i; break; }
     }
-    return 0;
+
+    for (int i = start; i < m->n_backends; i++) {
+        backend_t *b = m->backends[i];
+        if (!b || !b->init) continue;
+        /* Se nao e o backend ativo original, re-verifica a probe */
+        if (i > start && b->probe && b->probe() != 0) continue;
+        if (b->init() == 0) {
+            m->active = b;
+            return 0;
+        }
+        if (b->cleanup) b->cleanup();
+    }
+
+    m->active = NULL;
+    return -1;
 }
 
 void metric_read(metric_t *m, metric_sample_t *out, double interval_sec)

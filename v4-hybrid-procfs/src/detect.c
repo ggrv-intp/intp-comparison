@@ -432,32 +432,36 @@ long detect_llc_size_bytes(void)
 
 long detect_memory_bandwidth_max_bps(void)
 {
-    /* Prefer dmidecode when available + root, else use a documented default
-     * (DDR4-3200 dual-channel = 51200 MB/s for modern Xeon SP / Ryzen). */
+    /* 1. Count IMC channels via sysfs -- does not require root */
+    int n_imc = 0;
+    DIR *d = opendir("/sys/devices");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL)
+            if (strncmp(e->d_name, "uncore_imc_", 11) == 0) n_imc++;
+        closedir(d);
+    }
+    if (n_imc <= 0) n_imc = 2; /* conservative fallback */
+
+    /* 2. Configured speed via dmidecode (requires root) */
+    long speed_mt = 0;
     if (geteuid() == 0) {
-        FILE *p = popen("dmidecode --type 17 2>/dev/null", "r");
-        if (p) {
-            long max_mt = 0;
-            int  channels = 0;
+        FILE *f = popen("dmidecode -t memory 2>/dev/null", "r");
+        if (f) {
             char line[256];
-            while (fgets(line, sizeof(line), p)) {
-                long mt = 0;
-                if (sscanf(line, " Configured Memory Speed: %ld MT/s", &mt) == 1 ||
-                    sscanf(line, " Speed: %ld MT/s", &mt) == 1) {
-                    if (mt > max_mt) max_mt = mt;
-                }
-                if (strstr(line, "Locator:") && !strstr(line, "Bank Locator"))
-                    channels++;
+            while (fgets(line, sizeof(line), f)) {
+                long v = 0;
+                if (sscanf(line, " Configured Memory Speed: %ld MT/s", &v) == 1
+                    && v > speed_mt)
+                    speed_mt = v;
             }
-            pclose(p);
-            if (max_mt > 0 && channels > 0) {
-                /* MT/s * 8 bytes/transfer * channels = bytes/sec */
-                return (long)(max_mt) * 8L * channels;
-            }
+            pclose(f);
         }
     }
-    /* Fallback: DDR4-3200 dual channel = 51,200,000,000 bytes/sec */
-    return 51200000000L;
+    if (speed_mt <= 0) speed_mt = 2400; /* conservative DDR4 default */
+
+    /* 3. bandwidth = n_imc * speed_MT/s * 10^6 * 8 bytes */
+    return (long)n_imc * speed_mt * 1000000L * 8L;
 }
 
 const char *detect_default_iface(void)
