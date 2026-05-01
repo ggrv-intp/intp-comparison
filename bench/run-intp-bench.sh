@@ -100,8 +100,12 @@ VM_CPUS="${INTP_BENCH_VM_CPUS:-16}"
 # v4/v6 PID filtering against launcher PID tends to miss child workers and
 # softirq-context activity; default to system-wide for representative samples.
 V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
+# Run bare-metal workloads inside a dedicated cgroup and point v4/v6 to it.
+# This improves attribution for child workers and resctrl-backed metrics.
+USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
 
 ACTIVE_RESCTRL_HELPER=0
+CURRENT_WORKLOAD_CGROUP=""
 
 # -----------------------------------------------------------------------------
 # 2. Workload matrix -- 15 workloads aligned with SBAC-PAD Table II.
@@ -338,7 +342,7 @@ prepare_output_dir() {
     mkdir -p "$OUTPUT_DIR"
     INDEX="$OUTPUT_DIR/index.tsv"
     if [ ! -f "$INDEX" ]; then
-        printf 'env\tvariant\tstage\tworkload\trep\tstart_iso\tduration_s\trc\tsamples\tprofiler_path\tgroundtruth_path\tnotes\n' > "$INDEX"
+        printf 'env\tvariant\tstage\tworkload\trep\tstart_iso\tduration_s\trc\tsamples\tprofiler_path\tgroundtruth_path\tnotes\ttarget_scope\n' > "$INDEX"
     fi
 }
 
@@ -571,12 +575,31 @@ stop_groundtruth() {
 # -----------------------------------------------------------------------------
 
 launch_workload_bare() {
-    local logfile="$1" duration="$2" args="$3"
+    local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "DRY: stress-ng $args --timeout ${duration}s > $logfile"
+        if [ "$USE_CGROUP_TARGETING" = "1" ]; then
+            CURRENT_WORKLOAD_CGROUP="/sys/fs/cgroup/intp-bench-$name"
+        fi
+        if [ "$USE_CGROUP_TARGETING" = "1" ]; then
+            log "DRY: stress-ng in dedicated cgroup for $name: $args --timeout ${duration}s > $logfile"
+        else
+            log "DRY: stress-ng $args --timeout ${duration}s > $logfile"
+        fi
         echo $$
         return 0
     fi
+
+    if [ "$USE_CGROUP_TARGETING" = "1" ] && [ -d /sys/fs/cgroup ] && [ -w /sys/fs/cgroup ]; then
+        local cg="/sys/fs/cgroup/intp-bench-$name"
+        mkdir -p "$cg"
+        CURRENT_WORKLOAD_CGROUP="$cg"
+        # shellcheck disable=SC2086
+        bash -c "echo \$\$ > '$cg/cgroup.procs'; exec stress-ng $args --timeout '${duration}s' --metrics-brief" > "$logfile" 2>&1 &
+        echo $!
+        return 0
+    fi
+
     # shellcheck disable=SC2086
     stress-ng $args --timeout "${duration}s" --metrics-brief > "$logfile" 2>&1 &
     echo $!
@@ -584,6 +607,7 @@ launch_workload_bare() {
 
 launch_workload_container() {
     local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
     if [ "$DRY_RUN" -eq 1 ]; then
         log "DRY: docker run ... stress-ng $args"
         echo $$
@@ -610,6 +634,7 @@ launch_workload_container() {
 
 launch_workload_vm() {
     local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
     if [ "$DRY_RUN" -eq 1 ]; then
         log "DRY: qemu-system-x86_64 -enable-kvm ... stress-ng $args"
         echo $$
@@ -655,7 +680,7 @@ EOF
 launch_workload() {
     # $1 env, $2 logfile, $3 duration, $4 stress_args, $5 unique_name
     case "$1" in
-        bare)      launch_workload_bare      "$2" "$3" "$4" ;;
+        bare)      launch_workload_bare      "$2" "$3" "$4" "$5" ;;
         container) launch_workload_container "$2" "$3" "$4" "$5" ;;
         vm)        launch_workload_vm        "$2" "$3" "$4" "$5" ;;
         *) die "Unknown env: $1" ;;
@@ -663,12 +688,15 @@ launch_workload() {
 }
 
 stop_workload() {
-    local env="$1" pid="$2" name="$3"
+    local env="$1" pid="$2" name="$3" cgroup_path="${4:-}"
     [ "$DRY_RUN" -eq 1 ] && return 0
     case "$env" in
         bare)
             kill -TERM "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
+            if [ -n "$cgroup_path" ] && [ -d "$cgroup_path" ]; then
+                rmdir "$cgroup_path" 2>/dev/null || true
+            fi
             ;;
         container)
             docker rm -f "$name" >/dev/null 2>&1 || true
@@ -772,9 +800,11 @@ run_profiler_systemtap() {
 }
 
 run_profiler_v4() {
-    local outfile="$1" duration="$2" pid="$3"
+    local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
-        if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        if [ -n "$cgroup_path" ]; then
+            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
+        elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
             log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
             log "DRY: $V4_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
@@ -785,7 +815,10 @@ run_profiler_v4() {
     fi
     local args=( --interval "$INTERVAL" --duration "$duration" --output tsv )
     local scope="system-wide"
-    if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    if [ -n "$cgroup_path" ]; then
+        args+=( --cgroup "$cgroup_path" )
+        scope="cgroup=$cgroup_path"
+    elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
@@ -818,9 +851,11 @@ run_profiler_v5() {
 }
 
 run_profiler_v6() {
-    local outfile="$1" duration="$2" pid="$3"
+    local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
-        if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        if [ -n "$cgroup_path" ]; then
+            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
+        elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
             log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
             log "DRY: $V6_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
@@ -831,7 +866,10 @@ run_profiler_v6() {
     fi
     local args=( --interval "$INTERVAL" --duration "$duration" --output tsv )
     local scope="system-wide"
-    if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    if [ -n "$cgroup_path" ]; then
+        args+=( --cgroup "$cgroup_path" )
+        scope="cgroup=$cgroup_path"
+    elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
@@ -844,14 +882,14 @@ run_profiler_v6() {
 }
 
 run_profiler() {
-    local variant="$1" outfile="$2" duration="$3" pid="$4"
+    local variant="$1" outfile="$2" duration="$3" pid="$4" cgroup_path="${5:-}"
     case "$variant" in
         v1) run_profiler_systemtap v1 "$V1_STP" "$outfile" "$duration" "$pid" ;;
         v2) run_profiler_systemtap v2 "$V2_STP" "$outfile" "$duration" "$pid" ;;
         v3) run_profiler_systemtap v3 "$V3_STP" "$outfile" "$duration" "$pid" ;;
-        v4) run_profiler_v4 "$outfile" "$duration" "$pid" ;;
+        v4) run_profiler_v4 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         v5) run_profiler_v5 "$outfile" "$duration" "$pid" ;;
-        v6) run_profiler_v6 "$outfile" "$duration" "$pid" ;;
+        v6) run_profiler_v6 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         *) die "Unknown variant: $variant" ;;
     esac
 }
@@ -867,13 +905,13 @@ run_one() {
     if ! variant_kernel_ok "$variant"; then
         notes="kernel_too_new_for_$variant"
         log "  skip [$env/$variant/$stage/$wl_id rep=$rep]: $notes"
-        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" 0 0 0 "" "" "$notes"
+        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" 0 0 0 "" "" "$notes" "skip"
         return 0
     fi
     if ! variant_env_ok "$variant" "$env"; then
         notes="${variant}_unsupported_in_${env}"
         log "  skip [$env/$variant/$stage/$wl_id rep=$rep]: $notes"
-        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" 0 0 0 "" "" "$notes"
+        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" 0 0 0 "" "" "$notes" "skip"
         return 0
     fi
 
@@ -888,22 +926,36 @@ run_one() {
 
     log "  run [$env/$variant/$stage/$wl_id rep=$rep duration=${duration}s]"
 
+    local wl_cgroup=""
+    local target_scope
+    if [ "$env" = "bare" ] && [ "$USE_CGROUP_TARGETING" = "1" ]; then
+        wl_cgroup="/sys/fs/cgroup/intp-bench-$cname"
+    fi
+
     local wl_pid
-    wl_pid=$(launch_workload "$env" "$wl_log" "$total" "$wl_args" "$cname" || echo 0)
+    wl_pid=$(launch_workload "$env" "$wl_log" "$total" "$wl_args" "$cname" 2>&1 | tail -1 || echo 0)
     if [ "$wl_pid" = "0" ] || [ -z "$wl_pid" ]; then
         notes="workload_launch_failed"
-        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" 0 1 "" "" "$notes"
+        record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" 0 1 "" "" "$notes" "skip"
         return 0
+    fi
+
+    if [ -n "$wl_cgroup" ]; then
+        target_scope="cgroup:$wl_cgroup"
+    elif [ "${V46_USE_PID_FILTER:-0}" = "1" ]; then
+        target_scope="pid:$wl_pid"
+    else
+        target_scope="system-wide"
     fi
 
     [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
 
     start_groundtruth "$outdir" "$duration" "$wl_pid"
-    run_profiler "$variant" "$prof" "$duration" "$wl_pid" || true
+    run_profiler "$variant" "$prof" "$duration" "$wl_pid" "$wl_cgroup" || true
     stop_groundtruth "$outdir"
 
     [ "$DRY_RUN" -eq 0 ] && sleep "$COOLDOWN"
-    stop_workload "$env" "$wl_pid" "$cname"
+    stop_workload "$env" "$wl_pid" "$cname" "$wl_cgroup"
 
     local samples=0
     [ -f "$prof.samples" ] && samples=$(cat "$prof.samples")
@@ -934,12 +986,12 @@ run_one() {
 }
 EOF
 
-    record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" "$elapsed" 0 "$samples" "$prof" "$outdir/groundtruth.tsv" "$notes"
+    record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" "$elapsed" 0 "$samples" "$prof" "$outdir/groundtruth.tsv" "$notes" "$target_scope"
 }
 
 record_index() {
-    # env variant stage workload rep start dur rc samples prof gt notes
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$INDEX"
+    # env variant stage workload rep start dur rc samples prof gt notes target_scope
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$INDEX"
 }
 
 # -----------------------------------------------------------------------------
@@ -1029,7 +1081,7 @@ stage_overhead() {
                 stop_workload "$env" "$pid" "$cname_b"
                 local elapsed_b; elapsed_b=$(awk -v t0="$t0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
                 echo "$elapsed_b" > "$b_dir/elapsed_s"
-                record_index "$env" "_baseline" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_b" 0 "" "" "" "no_profiler"
+                record_index "$env" "_baseline" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_b" 0 "" "" "" "no_profiler" "system-wide"
 
                 # With each profiler attached
                 for variant in "${VARIANTS[@]}"; do
@@ -1049,7 +1101,7 @@ stage_overhead() {
                     stop_workload "$env" "$wpid" "$cname_w"
                     local elapsed_w; elapsed_w=$(awk -v t0="$tw0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
                     echo "$elapsed_w" > "$w_dir/elapsed_s"
-                    record_index "$env" "$variant" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_w" 0 "" "$prof" "" "with_profiler"
+                    record_index "$env" "$variant" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_w" 0 "" "$prof" "" "with_profiler" "system-wide"
                 done
             done
         done
