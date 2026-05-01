@@ -12,6 +12,7 @@ each metric across environments.
 
 - `run-intp-bench.sh` -- single bash orchestrator. Read this first.
 - `plot/plot-intp-bench.py` -- reproduces the figures.
+- `hibench/README.md` -- Track B (HiBench Spark subset) for fidelity checks.
 
 ## Quick start
 
