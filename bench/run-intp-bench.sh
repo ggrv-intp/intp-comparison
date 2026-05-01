@@ -97,6 +97,9 @@ CONTAINER_IMAGE="${INTP_BENCH_CONTAINER:-ubuntu:24.04}"
 VM_IMAGE="${INTP_BENCH_VM_IMAGE:-}"           # qcow2 path, optional
 VM_MEM="${INTP_BENCH_VM_MEM:-32G}"
 VM_CPUS="${INTP_BENCH_VM_CPUS:-16}"
+# v4/v6 PID filtering against launcher PID tends to miss child workers and
+# softirq-context activity; default to system-wide for representative samples.
+V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
 
 ACTIVE_RESCTRL_HELPER=0
 
@@ -771,17 +774,25 @@ run_profiler_systemtap() {
 run_profiler_v4() {
     local outfile="$1" duration="$2" pid="$3"
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+        if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+        else
+            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
+        fi
         printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
         echo 0 > "$outfile.samples"
         return 0
     fi
     local args=( --interval "$INTERVAL" --duration "$duration" --output tsv )
-    if [ -n "$pid" ] && [ "$pid" != "0" ]; then args+=( --pids "$pid" ); fi
+    local scope="system-wide"
+    if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        args+=( --pids "$pid" )
+        scope="pid=$pid"
+    fi
     # Prefix every line with a wallclock timestamp via awk so all profilers
     # share the same (ts, metrics...) layout in their TSVs.
     {
-        printf '# variant=v4 pid=%s\n' "$pid"
+        printf '# variant=v4 scope=%s\n' "$scope"
         "$V4_BIN" "${args[@]}" 2>"${outfile%.tsv}.v4.log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" || true
@@ -809,15 +820,23 @@ run_profiler_v5() {
 run_profiler_v6() {
     local outfile="$1" duration="$2" pid="$3"
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+        if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+        else
+            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
+        fi
         printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
         echo 0 > "$outfile.samples"
         return 0
     fi
     local args=( --interval "$INTERVAL" --duration "$duration" --output tsv )
-    if [ -n "$pid" ] && [ "$pid" != "0" ]; then args+=( --pids "$pid" ); fi
+    local scope="system-wide"
+    if [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        args+=( --pids "$pid" )
+        scope="pid=$pid"
+    fi
     {
-        printf '# variant=v6 pid=%s\n' "$pid"
+        printf '# variant=v6 scope=%s\n' "$scope"
         "$V6_BIN" "${args[@]}" 2>"${outfile%.tsv}.v6.log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" || true
