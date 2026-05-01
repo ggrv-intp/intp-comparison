@@ -82,6 +82,7 @@ probe begin
 	# The helper creates /tmp/intp-resctrl-ready when active
 
 	perf_global_start()
+	llc_global_start()
 }
 
 ####
@@ -134,7 +135,8 @@ probe process(@1).end, process(@1).thread.end {
 		nprocs--
 
 		if(nprocs == 0) {
-			exited = 0
+			exited = 1
+			exitcounter = 0
 		}
 	}
 	if([tid()] in mpids) {
@@ -144,7 +146,8 @@ probe process(@1).end, process(@1).thread.end {
 		nprocs--
 
 		if(nprocs == 0) {
-			exited = 0
+			exited = 1
+			exitcounter = 0
 		}
 	}
 }
@@ -170,23 +173,25 @@ function notify_resctrl_remove(p:long)
 global block_op_dep
 global block_tput, block_cput
 
-global block_queued_time, block_srv_time
+global block_srv_time
 
-probe kernel.trace("block_rq_complete") {
+probe kernel.trace("block_rq_complete")?, kernel.trace("block:block_rq_complete")? {
 	data_len = $rq->__data_len
 	block_tput <<< data_len
 	block_cput <<< data_len
 	
 	if (data_len > 0) {
-		time = local_clock_ns();
-		start_time_ns = $rq->start_time_ns
+		time = local_clock_ns()
 		io_start_time_ns = $rq->io_start_time_ns
 
-		if(($rq->start_time_ns - io_start_time_ns) < 0) {
-			block_queued_time <<< io_start_time_ns - start_time_ns
-		}
-		if($rq->io_start_time_ns > 0 && (io_start_time_ns - time) < 0) {
-			block_srv_time <<< (time - io_start_time_ns)
+		# On newer kernels/CPUs, rq timestamps can occasionally be in a
+		# different domain than local_clock_ns(), producing huge/negative deltas.
+		# Keep only sane service-time samples (0 < delta < 10s).
+		if (io_start_time_ns > 0) {
+			delta = time - io_start_time_ns
+			if (delta > 0 && delta < 10000000000) {
+				block_srv_time <<< delta
+			}
 		}
 		block_op_dep += 1
 	}
@@ -194,25 +199,27 @@ probe kernel.trace("block_rq_complete") {
 
 function print_block_report()
 {
-    if(@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
-    
-    block_op_dep = block_op_dep/runtime_procfs
-    svctm = svctm/runtime_procfs
-    svctm_ms = (svctm/1000/1000)/100
-    svctm_ms_abs = (svctm/1000/1000)%100
-    util = ((svctm/1000/1000) * block_op_dep)/100   
-    util_abs = ((svctm/1000/1000) * block_op_dep)%100
-    if(util > 100) {util = 100;	util_abs = 0}
-	if(util_abs >= 100) {util_abs=util_abs/10}
-	
-	printf("# ioblock %d %d %d.%.2d: %d.%02d%%\n", svctm, block_op_dep, svctm_ms, svctm_ms_abs, util, util_abs)
-	
-	if(util>=100){
-		util=99
+    if (runtime_procfs <= 0) {
+		delete block_op_dep
+		delete block_srv_time
+		return 0
 	}
 
+    if (@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
+
+    block_op_dep = block_op_dep / runtime_procfs
+    svctm = svctm / runtime_procfs
+
+    if (block_op_dep < 0) { block_op_dep = 0 }
+    if (svctm < 0) { svctm = 0 }
+
+	# Equivalent to ((svctm_ms) * iops) / 100, but divide first to avoid
+	# occasional overflow on noisy kernels.
+	util = (svctm / 100000000) * block_op_dep
+    if (util < 0) { util = 0 }
+    if (util >= 100) { util = 99 }
+
 	delete block_op_dep
-	delete block_queued_time
 	delete block_srv_time
 	return util
 }
@@ -244,14 +251,14 @@ global skb_queue_start_t
 
 probe kernel.function("__dev_queue_xmit")
 {
-	if ($skb->truesize>0) {
+	if (nprocs > 0 && $skb->truesize>0) {
 		skb_queue_start_t[$skb] = gettimeofday_ns();
 	}
 }
 
-probe kernel.trace("net_dev_xmit")
+probe kernel.trace("net_dev_xmit")?, kernel.trace("net:net_dev_xmit")?
 {
-	if ($skb->len>0) {
+	if (nprocs > 0 && $skb->len>0) {
 		t = gettimeofday_ns();
 		st = skb_queue_start_t[$skb]
 		if (st) {
@@ -268,17 +275,20 @@ global skb_rcv_queue_start_t
 
 probe kernel.function("__napi_schedule_irqoff")
 {
-	skb_rcv_queue_start_t[n] = gettimeofday_ns();  //$n
+	if (nprocs > 0)
+		skb_rcv_queue_start_t[$n] = gettimeofday_ns();
 }
 
 probe kernel.function("napi_complete_done")
 {
-	t = gettimeofday_ns();
-	st = skb_rcv_queue_start_t[$n]
-	if (st) {
-		net_rcv_lat <<< t - st
-		net_rcv_req += 1
-		delete skb_rcv_queue_start_t[$n]
+	if (nprocs > 0) {
+		t = gettimeofday_ns();
+		st = skb_rcv_queue_start_t[$n]
+		if (st) {
+			net_rcv_lat <<< t - st
+			net_rcv_req += 1
+			delete skb_rcv_queue_start_t[$n]
+		}
 	}
 }
 
@@ -312,7 +322,6 @@ function print_netphy_report()
 {
 	tput_eq = @sum(net_tput)/runtime_procfs
 	util = (tput_eq*10000/125000000)/100
-	util_abs = (tput_eq*10000/125000000)%100
 	
 	if(util>=100){
 		util=99
@@ -326,28 +335,44 @@ function print_netphy_report()
 #	CPU statistics
 ####
 
-global uticks, kticks, ticks
+global uticks_map, kticks_map, ticks_map
 
-probe perf.sw.cpu_clock!, timer.profile {
-	if([tid()] in mpids) {
+probe timer.profile {
+	if(nprocs > 0 && [tid()] in mpids) {
 		if (!user_mode())
-			kticks <<< 1
+			kticks_map[tid()] += 1
 		else
-			uticks <<< 1
-	}
+			uticks_map[tid()] += 1
 
-	ticks <<< 1
+		ticks_map[tid()] += 1
+	}
 }
 
 function print_cpu_report()
 {
-	allticks = @count(ticks)
-	uscaled = @count(uticks)*10000/allticks
-	kscaled = @count(kticks)*10000/allticks
+	allticks = 0
+	usum = 0
+	ksum = 0
+
+	foreach ([t] in ticks_map)
+		allticks += ticks_map[t]
+	foreach ([t] in uticks_map)
+		usum += uticks_map[t]
+	foreach ([t] in kticks_map)
+		ksum += kticks_map[t]
+
+	if (allticks <= 0) {
+		delete uticks_map
+		delete kticks_map
+		delete ticks_map
+		return 0
+	}
+	uscaled = usum*10000/allticks
+	kscaled = ksum*10000/allticks
 	
-	delete uticks
-	delete kticks
-	delete ticks
+	delete uticks_map
+	delete kticks_map
+	delete ticks_map
 	if (((uscaled/100) + (kscaled/100)) >= 100) {
 		return 99
 	}else{
@@ -394,9 +419,8 @@ function perf_kernel_start:long (cpu, task, type, config) %{
 	if(STAP_ARG_task != -1) {
 		p = (struct task_struct *)pid_task(find_vpid((int)STAP_ARG_task), PIDTYPE_PID);
 		if(!p) {
-			STAP_PRINTF("Task not found\n");
+			STAP_RETURN(0);
 		}
-		STAP_PRINTF("Perf event task sucessfuly created (%d)\n",p->pid);
 		ev = (struct perf_event *) perf_event_create_kernel_counter(&pe, STAP_ARG_cpu, p, NULL, NULL);
 	} else {
 		ev = (struct perf_event *) perf_event_create_kernel_counter(&pe, STAP_ARG_cpu, NULL, NULL, NULL);
@@ -405,17 +429,13 @@ function perf_kernel_start:long (cpu, task, type, config) %{
 
 	if (IS_ERR(ev)) {
 		STAP_RETURN(0);
-		STAP_PRINTF("Perf event registration error %lu\n", (long) PTR_ERR(ev));
-	} 
-		
-	STAP_PRINTF("Perf event sucessfuly registered cpu(%d)\n", STAP_ARG_cpu);
+	}
+
 	STAP_RETVALUE = (long) ev;
 %}
 
 function perf_kernel_stop:long (event) %{
-	int val;
-	val = perf_event_release_kernel((struct perf_event *)((long)STAP_ARG_event));	
-	STAP_PRINTF("Perf event sucessfuly unregistered %d\n", val);
+	perf_event_release_kernel((struct perf_event *)((long)STAP_ARG_event));
 %}
 
 function perf_kernel_read:long (event) %{
@@ -435,22 +455,40 @@ function perf_kernel_reset:long (event) %{
 
 function perf_global_start()
 {
-	# uncore imc events
-	ue = perf_kernel_start(0, -1, 14, 0x0304);
-	if(ue != 0) {uncore_events[0] = ue}
-	ue = perf_kernel_start(0, -1, 14, 0x0c04);
-	if(ue != 0) {uncore_events[1] = ue}
-	ue = perf_kernel_start(1, -1, 14, 0x0304);
-	if(ue != 0) {uncore_events[2] = ue}
-	ue = perf_kernel_start(1, -1, 14, 0x0c04);
-	if(ue != 0) {uncore_events[3] = ue}
+	# Sapphire Rapids uncore IMC events (types 78-89, 12 channels)
+	# UNC_M_CAS_COUNT.RD (config=0x0304) + UNC_M_CAS_COUNT.WR (config=0x0c04)
+	# All measured from cpu 0 (uncore events are socket-wide)
+	ue = perf_kernel_start(0, -1, 78, 0x0304); if(ue != 0) {uncore_events[0]  = ue}
+	ue = perf_kernel_start(0, -1, 78, 0x0c04); if(ue != 0) {uncore_events[1]  = ue}
+	ue = perf_kernel_start(0, -1, 79, 0x0304); if(ue != 0) {uncore_events[2]  = ue}
+	ue = perf_kernel_start(0, -1, 79, 0x0c04); if(ue != 0) {uncore_events[3]  = ue}
+	ue = perf_kernel_start(0, -1, 80, 0x0304); if(ue != 0) {uncore_events[4]  = ue}
+	ue = perf_kernel_start(0, -1, 80, 0x0c04); if(ue != 0) {uncore_events[5]  = ue}
+	ue = perf_kernel_start(0, -1, 81, 0x0304); if(ue != 0) {uncore_events[6]  = ue}
+	ue = perf_kernel_start(0, -1, 81, 0x0c04); if(ue != 0) {uncore_events[7]  = ue}
+	ue = perf_kernel_start(0, -1, 82, 0x0304); if(ue != 0) {uncore_events[8]  = ue}
+	ue = perf_kernel_start(0, -1, 82, 0x0c04); if(ue != 0) {uncore_events[9]  = ue}
+	ue = perf_kernel_start(0, -1, 83, 0x0304); if(ue != 0) {uncore_events[10] = ue}
+	ue = perf_kernel_start(0, -1, 83, 0x0c04); if(ue != 0) {uncore_events[11] = ue}
+	ue = perf_kernel_start(0, -1, 84, 0x0304); if(ue != 0) {uncore_events[12] = ue}
+	ue = perf_kernel_start(0, -1, 84, 0x0c04); if(ue != 0) {uncore_events[13] = ue}
+	ue = perf_kernel_start(0, -1, 85, 0x0304); if(ue != 0) {uncore_events[14] = ue}
+	ue = perf_kernel_start(0, -1, 85, 0x0c04); if(ue != 0) {uncore_events[15] = ue}
+	ue = perf_kernel_start(0, -1, 86, 0x0304); if(ue != 0) {uncore_events[16] = ue}
+	ue = perf_kernel_start(0, -1, 86, 0x0c04); if(ue != 0) {uncore_events[17] = ue}
+	ue = perf_kernel_start(0, -1, 87, 0x0304); if(ue != 0) {uncore_events[18] = ue}
+	ue = perf_kernel_start(0, -1, 87, 0x0c04); if(ue != 0) {uncore_events[19] = ue}
+	ue = perf_kernel_start(0, -1, 88, 0x0304); if(ue != 0) {uncore_events[20] = ue}
+	ue = perf_kernel_start(0, -1, 88, 0x0c04); if(ue != 0) {uncore_events[21] = ue}
+	ue = perf_kernel_start(0, -1, 89, 0x0304); if(ue != 0) {uncore_events[22] = ue}
+	ue = perf_kernel_start(0, -1, 89, 0x0c04); if(ue != 0) {uncore_events[23] = ue}
 }
 
 function perf_global_stop()
-{		
+{
 	foreach ([p] in uncore_events)
 		perf_kernel_stop(uncore_events[p])
-		delete uncore_events[p]
+	delete uncore_events
 }
 
 function print_mem_report()
@@ -460,8 +498,8 @@ function print_mem_report()
 	
 	bw = @sum(uncore_imc_ctr)*64/runtime_procfs
 	
-	bw_norm = ((bw*10000)/34000000000)/100;
-	bw_norm_ma =  (bw*10000/34000000000)%100
+	# Xeon Gold 5412U: 8x DDR5-4800 = 281600 MB/s = 281600000000 bytes/s
+		bw_norm = ((bw*10000)/281600000000)/100
 	
 	foreach ([p] in uncore_events)
 		perf_kernel_reset(uncore_events[p])
@@ -475,35 +513,52 @@ function print_mem_report()
 }
 
 ####
-#	LLC statistics (Miss Ratio - works on all Intel CPUs)
+#	LLC statistics (Miss Ratio - counting mode, all CPUs)
+#	Sapphire Rapids LLC-miss PMI sampling is unreliable; use perf_kernel_start
+#	counters (same mechanism as IMC) opened on every logical CPU (0-47).
 ####
 
-global llc_load, llc_load_misses
-global llc_load_t, llc_load_misses_t
+global llc_events  # [idx] -> event handle: even=loads, odd=misses
 
-probe perf.type(3).config(0x000002).process(@1){llc_load <<< 1; llc_load_t+=1}
-probe perf.type(3).config(0x010002).process(@1){llc_load_misses <<< 1; llc_load_misses_t+=1}
+function llc_global_start()
+{
+	# PERF_TYPE_HW_CACHE=3
+	# loads  config = LL(2)|READ(0)<<8|ACCESS(0)<<16 = 0x000002
+	# misses config = LL(2)|READ(0)<<8|MISS(1)<<16   = 0x010002
+	for (i = 0; i < 48; i++) {
+		ue = perf_kernel_start(i, -1, 3, 0x000002); if(ue != 0) {llc_events[i*2]   = ue}
+		ue = perf_kernel_start(i, -1, 3, 0x010002); if(ue != 0) {llc_events[i*2+1] = ue}
+	}
+}
+
+function llc_global_stop()
+{
+	foreach ([p] in llc_events)
+		perf_kernel_stop(llc_events[p])
+	delete llc_events
+}
 
 function print_cache_report()
 {
-	if(@count(llc_load)){_llc_load=@sum(llc_load)}else{_llc_load = 0}
-	if(@count(llc_load_misses)){_llc_load_misses=@sum(llc_load_misses)}else{_llc_load_misses = 0}
-	
-	llc_miss_ratio=0
-	llc_miss_ratio_ma=0
+	_llc_load = 0
+	_llc_miss = 0
 
-	if(_llc_load > 0) {
-		llc_miss_ratio = ((_llc_load_misses*10000)/_llc_load)/100;
-		llc_miss_ratio_ma =  (_llc_load_misses*10000/_llc_load)%100
+	for (i = 0; i < 48; i++) {
+		if (llc_events[i*2])   { _llc_load += perf_kernel_read(llc_events[i*2]) }
+		if (llc_events[i*2+1]) { _llc_miss += perf_kernel_read(llc_events[i*2+1]) }
 	}
 
-	if (llc_miss_ratio >= 100) {
-		llc_miss_ratio = 99
+	llc_miss_ratio = 0
+	if (_llc_load > 0) {
+		llc_miss_ratio = ((_llc_miss*10000)/_llc_load)/100
+	}
+	if (llc_miss_ratio >= 100) { llc_miss_ratio = 99 }
+
+	for (i = 0; i < 48; i++) {
+		if (llc_events[i*2])   { perf_kernel_reset(llc_events[i*2]) }
+		if (llc_events[i*2+1]) { perf_kernel_reset(llc_events[i*2+1]) }
 	}
 
-	delete llc_load
-	delete llc_load_misses
-	
 	return llc_miss_ratio
 }
 
@@ -523,6 +578,7 @@ static long read_resctrl_data_file(void) {
     char buf[32];
     loff_t pos = 0;
     ssize_t ret;
+	int parse_ret;
     long value = 0;
 
     // Open the data file written by helper daemon
@@ -535,7 +591,10 @@ static long read_resctrl_data_file(void) {
     ret = kernel_read(file, buf, sizeof(buf) - 1, &pos);
     if (ret > 0) {
         buf[ret] = '\0';
-        kstrtol(buf, 10, &value);
+		parse_ret = kstrtol(buf, 10, &value);
+		if (parse_ret < 0) {
+			value = 0;
+		}
     }
 
     filp_close(file, NULL);
@@ -544,7 +603,6 @@ static long read_resctrl_data_file(void) {
 %}
 
 # Read LLC occupancy from the helper daemon's output file
-# The helper writes: <total_bytes>\n to /tmp/intp-resctrl-data
 function read_llc_occupancy_from_helper:long() %{
     STAP_RETVALUE = read_resctrl_data_file();
 %}
@@ -557,9 +615,9 @@ function print_llc_report()
 	# Convert to KB for reporting
 	occ_kb = occ_bytes / 1024
 	
-	# Normalize to percentage of typical LLC size (e.g., 30MB)
-	# Adjust LLC_SIZE_KB for your CPU
-	LLC_SIZE_KB = 30720  # 30MB typical for Xeon
+	# Normalize to percentage of LLC size
+	# Xeon Gold 5412U (Sapphire Rapids): 45 MB L3 = 46080 KB
+	LLC_SIZE_KB = 46080  # 45MB for Xeon Gold 5412U
 	
 	if (LLC_SIZE_KB > 0) {
 		occ_pct = (occ_kb * 100) / LLC_SIZE_KB
@@ -626,6 +684,7 @@ probe timer.s(1) {
 probe end
 {
 	perf_global_stop()
+	llc_global_stop()
 	
 	printf("\n\nruntime: %d ns\n", runtime)
 	printf("\nExiting IntP on %s\n", ctime(gettimeofday_s()))
