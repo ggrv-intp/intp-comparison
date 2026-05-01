@@ -16,7 +16,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-pre_count=$(bpftool prog show 2>/dev/null | wc -l || echo 0)
+pre_count="$(bpftool prog show 2>/dev/null | wc -l | tr -d '[:space:]')"
+pre_count="${pre_count:-0}"
 echo "pre-run BPF program count: $pre_count"
 
 out=$(mktemp)
@@ -26,7 +27,8 @@ echo "running $BIN --duration $DURATION --interval 1 --no-resctrl --no-perf-even
 timeout $((DURATION + 5)) "$BIN" --duration "$DURATION" --interval 1 \
     --no-resctrl --no-perf-events > "$out" 2>&1 || true
 
-post_count=$(bpftool prog show 2>/dev/null | wc -l || echo 0)
+post_count="$(bpftool prog show 2>/dev/null | wc -l | tr -d '[:space:]')"
+post_count="${post_count:-0}"
 echo "post-run BPF program count: $post_count"
 
 if [ "$post_count" -gt "$pre_count" ]; then
@@ -35,7 +37,7 @@ if [ "$post_count" -gt "$pre_count" ]; then
     exit 1
 fi
 
-lines=$(grep -cE '^[0-9]+\t' "$out" || echo 0)
+lines="$(awk -F '\t' '/^[0-9]+\t/{c++} END{print c+0}' "$out")"
 if [ "$lines" -lt 1 ]; then
     echo "FAIL: no TSV lines produced (output follows)"
     cat "$out"
