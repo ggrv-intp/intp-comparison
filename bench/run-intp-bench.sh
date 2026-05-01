@@ -890,6 +890,14 @@ run_one() {
     [ -f "$prof.samples" ] && samples=$(cat "$prof.samples")
     local elapsed=$(( $(date +%s) - t0 ))
 
+    if [ "$samples" -eq 0 ]; then
+        if [ -n "$notes" ]; then
+            notes="$notes;profiler_no_samples"
+        else
+            notes="profiler_no_samples"
+        fi
+    fi
+
     # Per-run JSON envelope (helps debugging; also consumed by the plotter)
     cat > "$outdir/run.json" <<EOF
 {

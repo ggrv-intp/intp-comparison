@@ -45,6 +45,27 @@
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int sig) { (void)sig; g_running = 0; }
 
+static int kernel_has_symbol(const char *sym)
+{
+    FILE *f = fopen("/proc/kallsyms", "r");
+    if (!f) return 0;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        /* format: <addr> <type> <name> */
+        char name[256] = {0};
+        if (sscanf(line, "%*s %*c %255s", name) == 1) {
+            if (strcmp(name, sym) == 0) {
+                fclose(f);
+                return 1;
+            }
+        }
+    }
+
+    fclose(f);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ state */
 
 typedef struct {
@@ -294,11 +315,13 @@ static void compute_sample(const intp_state_t *st,
 
 static void emit_tsv_header(FILE *out,
                             const system_capabilities_t *caps,
-                            int no_perf, int no_resctrl)
+                            int no_perf, int no_resctrl,
+                            const char *nets_mode)
 {
     fprintf(out,
-        "# v6 ebpf-core -- netp:tracepoint nets:kprobe blk:tracepoint"
+        "# v6 ebpf-core -- netp:tracepoint nets:%s blk:tracepoint"
         " cpu:sched_switch llcmr:%s mbw:%s llcocc:%s\n",
+        nets_mode,
         no_perf     ? "off" : "perf_event",
         no_resctrl  ? "off" : "resctrl",
         no_resctrl  ? "off" : "resctrl");
@@ -408,6 +431,30 @@ int main(int argc, char **argv)
         bpf_program__set_autoload(skel->progs.perf_llc_misses, false);
     }
 
+    /* Select exactly one NAPI RX kprobe target symbol when available.
+     * Some kernels expose napi_poll, others __napi_poll, and forcing a
+     * missing one causes intp_bpf__attach() to fail the whole profiler. */
+    bpf_program__set_autoload(skel->progs.kp_napi_poll_enter,      false);
+    bpf_program__set_autoload(skel->progs.krp_napi_poll_exit,      false);
+    bpf_program__set_autoload(skel->progs.kp_napi_poll_alt_enter,  false);
+    bpf_program__set_autoload(skel->progs.krp_napi_poll_alt_exit,  false);
+
+    const char *nets_mode = "degraded(tx-only-no-napi-symbol)";
+    int has_napi_poll = kernel_has_symbol("napi_poll");
+    int has___napi_poll = kernel_has_symbol("__napi_poll");
+    if (has_napi_poll) {
+        bpf_program__set_autoload(skel->progs.kp_napi_poll_enter, true);
+        bpf_program__set_autoload(skel->progs.krp_napi_poll_exit, true);
+        nets_mode = "kprobe:napi_poll";
+    } else if (has___napi_poll) {
+        bpf_program__set_autoload(skel->progs.kp_napi_poll_alt_enter, true);
+        bpf_program__set_autoload(skel->progs.krp_napi_poll_alt_exit, true);
+        nets_mode = "kprobe:__napi_poll";
+    } else if (args.verbose) {
+        fprintf(stderr,
+                "warn: neither napi_poll nor __napi_poll found; nets RX latency path disabled\n");
+    }
+
     if (intp_bpf__load(skel)) {
         fprintf(stderr, "failed to load BPF: %s\n", strerror(errno));
         intp_bpf__destroy(skel);
@@ -490,7 +537,8 @@ int main(int argc, char **argv)
     int is_json = strcmp(args.output_fmt, "json") == 0;
     int is_prom = strcmp(args.output_fmt, "prometheus") == 0;
     if (is_tsv && args.want_header)
-        emit_tsv_header(stdout, &caps, args.no_perf_events, args.no_resctrl);
+        emit_tsv_header(stdout, &caps, args.no_perf_events, args.no_resctrl,
+                        nets_mode);
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);

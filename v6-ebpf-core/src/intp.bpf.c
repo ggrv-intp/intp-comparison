@@ -315,6 +315,19 @@ int kp_napi_poll_enter(struct pt_regs *ctx)
     return 0;
 }
 
+/* Some kernels expose __napi_poll instead of napi_poll. Keep an
+ * equivalent probe pair so userspace can select the symbol that exists
+ * on the running kernel. */
+SEC("kprobe/__napi_poll")
+int kp_napi_poll_alt_enter(struct pt_regs *ctx)
+{
+    __u64 napi = (__u64)PT_REGS_PARM1(ctx);
+    if (!napi) return 0;
+    __u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&napi_start, &napi, &ts, BPF_ANY);
+    return 0;
+}
+
 SEC("kretprobe/napi_poll")
 int krp_napi_poll_exit(struct pt_regs *ctx)
 {
@@ -329,6 +342,13 @@ int krp_napi_poll_exit(struct pt_regs *ctx)
      *   3. softirq_entry + napi:napi_poll tracepoint pair (degraded).
      * Userspace selects the first path that attaches at load time.
      */
+    return 0;
+}
+
+SEC("kretprobe/__napi_poll")
+int krp_napi_poll_alt_exit(struct pt_regs *ctx)
+{
+    (void)ctx;
     return 0;
 }
 
