@@ -659,7 +659,12 @@ run_systemtap_variant() {
             stap_args=(--suppress-handler-errors -g "$script_path" stress-ng)
             ;;
         v2|v3)
-            stap_args=(--suppress-handler-errors -g -B CONFIG_MODVERSIONS=y "$script_path" stress-ng)
+            stap_args=(--suppress-handler-errors -g
+                -B CONFIG_MODVERSIONS=y
+                -DMAXSKIPPED=1000000
+                -DSTP_OVERLOAD_THRESHOLD=2000000000LL
+                -DSTP_OVERLOAD_INTERVAL=1000000000LL
+                "$script_path" stress-ng)
             ;;
     esac
 

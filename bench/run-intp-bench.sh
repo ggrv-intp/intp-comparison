@@ -759,7 +759,12 @@ run_profiler_systemtap() {
         target=$(awk '{print $2}' /proc/$pid/stat 2>/dev/null | tr -d '()' || echo stress-ng)
     fi
 
-    stap --suppress-handler-errors -g "$stp" "$target" > "$stap_log" 2>&1 &
+    stap --suppress-handler-errors -g \
+        -B CONFIG_MODVERSIONS=y \
+        -DMAXSKIPPED=1000000 \
+        -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
+        -DSTP_OVERLOAD_INTERVAL=1000000000LL \
+        "$stp" "$target" > "$stap_log" 2>&1 &
     local stap_pid=$!
 
     # Wait for /proc/.../intestbench
@@ -779,6 +784,11 @@ run_profiler_systemtap() {
         warn "[$variant] /proc/systemtap/intestbench did not appear after 30s"
         kill "$stap_pid" 2>/dev/null || true
         wait "$stap_pid" 2>/dev/null || true
+        pkill -9 -f stapio 2>/dev/null || true
+        pkill -9 -f staprun 2>/dev/null || true
+        for m in $(lsmod | awk '/^stap_/ {print $1}'); do
+            rmmod "$m" 2>/dev/null || true
+        done
         echo 0 > "$outfile.samples"
         return 1
     fi
@@ -796,6 +806,17 @@ run_profiler_systemtap() {
 
     kill "$stap_pid" 2>/dev/null || true
     wait "$stap_pid" 2>/dev/null || true
+
+    # Hard-cleanup: force-kill any lingering stapio/staprun and unload
+    # the stap-generated kernel module. If we leave the module in the
+    # kernel it can pin systemd resources and stall pam_systemd on the
+    # next ssh login.
+    pkill -9 -f stapio 2>/dev/null || true
+    pkill -9 -f staprun 2>/dev/null || true
+    for m in $(lsmod | awk '/^stap_/ {print $1}'); do
+        rmmod "$m" 2>/dev/null || true
+    done
+
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
