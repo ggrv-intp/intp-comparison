@@ -154,12 +154,14 @@ function notify_resctrl_add(p:long)
 {
 	# Write PID to the communication file
 	# Helper daemon watches this and creates mon_group
+	write_resctrl_pid_command(1, p)
 	printf("  -> Requesting LLC monitoring for PID %d\n", p)
 }
 
 # Notify helper to remove PID from resctrl monitoring  
 function notify_resctrl_remove(p:long)
 {
+	write_resctrl_pid_command(-1, p)
 	printf("  -> Stopping LLC monitoring for PID %d\n", p)
 }
 
@@ -590,6 +592,29 @@ global llc_occ_bytes = 0
 #include <linux/fs.h>
 #include <linux/slab.h>
 
+static long write_resctrl_pid_file(long op, long pid) {
+	struct file *file;
+	char buf[32];
+	loff_t pos;
+	int len;
+	ssize_t ret;
+
+	file = filp_open("/tmp/intp-resctrl-pids", O_WRONLY | O_CREAT, 0644);
+	if (IS_ERR(file)) {
+		return -1;
+	}
+
+	pos = i_size_read(file_inode(file));
+	len = snprintf(buf, sizeof(buf), "%c%ld\n", (op > 0) ? '+' : '-', pid);
+	ret = kernel_write(file, buf, len, &pos);
+	filp_close(file, NULL);
+
+	if (ret < 0) {
+		return ret;
+	}
+	return 0;
+}
+
 static long read_resctrl_data_file(void) {
     struct file *file;
     char buf[32];
@@ -622,6 +647,10 @@ static long read_resctrl_data_file(void) {
 # Read LLC occupancy from the helper daemon's output file
 function read_llc_occupancy_from_helper:long() %{
     STAP_RETVALUE = read_resctrl_data_file();
+%}
+
+function write_resctrl_pid_command:long(op:long, pid:long) %{
+	STAP_RETVALUE = write_resctrl_pid_file(STAP_ARG_op, STAP_ARG_pid);
 %}
 
 function print_llc_report()
