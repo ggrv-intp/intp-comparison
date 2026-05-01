@@ -28,6 +28,7 @@ V3_HELPER="$REPO_ROOT/shared/intp-resctrl-helper.sh"
 V4_BIN="$REPO_ROOT/v4-hybrid-procfs/intp-hybrid"
 V5_RUNNER="$REPO_ROOT/v5-bpftrace/run-intp-bpftrace.sh"
 V6_BIN="$REPO_ROOT/v6-ebpf-core/intp-ebpf"
+DETECT_SH="$REPO_ROOT/shared/intp-detect.sh"
 
 WORKLOADS=(
     "cpu_compute|CPU|--cpu 24 --cpu-method matrixprod"
@@ -385,20 +386,146 @@ prepare_output_dir() {
     mkdir -p "$OUTPUT_DIR"
 }
 
+command_first_line() {
+    local tool="$1"
+
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'missing\n'
+        return 0
+    fi
+
+    case "$tool" in
+        python3)
+            python3 --version 2>&1 | head -1
+            ;;
+        gcc|clang|make)
+            "$tool" --version 2>&1 | head -1
+            ;;
+        stap)
+            stap --version 2>&1 | head -1
+            ;;
+        bpftrace)
+            bpftrace --version 2>&1 | head -1
+            ;;
+        stress-ng)
+            stress-ng --version 2>&1 | head -1
+            ;;
+        sha256sum|stat|find|grep|awk|sed|uname|lscpu|nproc)
+            command -v "$tool"
+            ;;
+        *)
+            "$tool" --version 2>&1 | head -1
+            ;;
+    esac
+}
+
+write_collection_commands() {
+    cat > "$OUTPUT_DIR/metadata-collection-commands.txt" <<EOF
+# SBAC-PAD methodology metadata collection commands
+# Run from repository root when reproducing the experimental environment snapshot.
+
+# Time and host identity
+date -Iseconds
+hostname
+
+# Software platform
+uname -r
+. /etc/os-release 2>/dev/null && echo "\${PRETTY_NAME:-unknown}"
+
+# CPU and topology
+lscpu
+nproc
+grep -m1 '^vendor_id' /proc/cpuinfo
+grep -m1 '^model name' /proc/cpuinfo
+
+# Memory snapshot
+awk '/MemTotal/{printf "%.0f\\n",\$2/1024/1024}' /proc/meminfo
+
+# IntP hardware capability detection
+$DETECT_SH
+
+# Toolchain and runtime versions
+stress-ng --version
+stap --version
+bpftrace --version
+python3 --version
+gcc --version
+clang --version
+make --version
+
+# Variant artifact provenance
+sha256sum "$V1_STP"
+sha256sum "$V2_STP"
+sha256sum "$V3_STP"
+sha256sum "$V4_BIN"
+sha256sum "$V5_RUNNER"
+sha256sum "$V6_BIN"
+stat -c '%y %n' "$V1_STP" "$V2_STP" "$V3_STP" "$V4_BIN" "$V5_RUNNER" "$V6_BIN"
+EOF
+}
+
+write_variant_manifest() {
+    {
+        printf '# variant manifest\n'
+        printf 'variant\tpath\tsha256\tmtime\n'
+        for variant in v1 v2 v3 v4 v5 v6; do
+            local path
+            case "$variant" in
+                v1) path="$V1_STP" ;;
+                v2) path="$V2_STP" ;;
+                v3) path="$V3_STP" ;;
+                v4) path="$V4_BIN" ;;
+                v5) path="$V5_RUNNER" ;;
+                v6) path="$V6_BIN" ;;
+            esac
+
+            if [ -f "$path" ] || [ -x "$path" ]; then
+                printf '%s\t%s\t%s\t%s\n' "$variant" "$path" \
+                    "$(sha256sum "$path" 2>/dev/null | awk '{print $1}')" \
+                    "$(stat -c %y "$path" 2>/dev/null)"
+            else
+                printf '%s\t%s\t-\t-\n' "$variant" "$path"
+            fi
+        done
+    } > "$OUTPUT_DIR/variants.manifest"
+}
+
 write_run_metadata() {
     cat > "$OUTPUT_DIR/metadata.txt" <<EOF
 # sbacpad suite metadata
 date=$(date -Iseconds)
 host=$(hostname)
 kernel=$(uname -r)
+os=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")
+cpu=$(lscpu 2>/dev/null | awk -F: '/Model name/{print $2}' | xargs | head -1)
+cpu_vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo 2>/dev/null | awk '{print $3}')
+sockets=$(lscpu 2>/dev/null | awk -F: '/^Socket\(s\)/{print $2}' | xargs)
+cores_online=$(nproc 2>/dev/null || echo unknown)
+mem_total_gb=$(awk '/MemTotal/{printf "%.0f\n",$2/1024/1024}' /proc/meminfo 2>/dev/null)
+stress_ng_version=$(command_first_line stress-ng)
+stap_version=$(command_first_line stap)
+bpftrace_version=$(command_first_line bpftrace)
+python3_version=$(command_first_line python3)
+gcc_version=$(command_first_line gcc)
+clang_version=$(command_first_line clang)
+make_version=$(command_first_line make)
 duration=${DURATION}
 interval=${INTERVAL}
 warmup_fast=${WARMUP_FAST}
 warmup_stap=${WARMUP_STAP}
+cooldown_fast=${COOLDOWN_FAST}
+cooldown_stap=${COOLDOWN_STAP}
 env_profile=${ENV_PROFILE}
 variants=$(join_by , "${VARIANTS[@]}")
 workloads=$(if [ ${#SELECTED_WORKLOADS[@]} -eq 0 ]; then echo all; else join_by , "${SELECTED_WORKLOADS[@]}"; fi)
 EOF
+
+    if [ -x "$DETECT_SH" ]; then
+        "$DETECT_SH" > "$OUTPUT_DIR/capabilities.env" || true
+    fi
+
+    write_variant_manifest
+    write_collection_commands
 }
 
 variant_outdir() {
@@ -744,6 +871,37 @@ generate_consolidated_report() {
     done
 }
 
+write_validation_report() {
+    local report="$OUTPUT_DIR/validation-report.txt"
+    local warning_count error_count zero_samples empty_summaries
+
+    warning_count=$(find "$OUTPUT_DIR" -type f \( -name '*.log' -o -name '*_stap.log' -o -name '*_stress.log' \) -exec grep -Eih 'warning|warn:' {} + 2>/dev/null | wc -l | awk '{print $1}')
+    error_count=$(find "$OUTPUT_DIR" -type f \( -name '*.log' -o -name '*_stap.log' -o -name '*_stress.log' \) -exec grep -Eih 'fatal|error|failed|pass 4: compilation failed|kbuild exited with status' {} + 2>/dev/null | wc -l | awk '{print $1}')
+    zero_samples=$(find "$OUTPUT_DIR" -type f -name '*.tsv' ! -name 'consolidated-summary.tsv' -exec awk 'BEGIN{n=0} /^[0-9]/{n++} END{ if (n == 0) print FILENAME }' {} \; 2>/dev/null | sed '/^$/d')
+    empty_summaries=$(find "$OUTPUT_DIR" -type f -name 'summary.txt' -exec awk 'BEGIN{n=0} !/^#/ && NF>0 {n++} END{ if (n == 0) print FILENAME }' {} \; 2>/dev/null | sed '/^$/d')
+
+    {
+        printf '# SBAC-PAD validation report\n'
+        printf 'date=%s\n' "$(date -Iseconds)"
+        printf 'warnings_detected=%s\n' "$warning_count"
+        printf 'errors_detected=%s\n' "$error_count"
+        printf '\n[log_hits]\n'
+        find "$OUTPUT_DIR" -type f \( -name '*.log' -o -name '*_stap.log' -o -name '*_stress.log' \) -exec grep -EinH 'warning|warn:|fatal|error|failed|pass 4: compilation failed|kbuild exited with status' {} + 2>/dev/null || true
+        printf '\n[zero_sample_tsv]\n'
+        if [ -n "$zero_samples" ]; then
+            printf '%s\n' "$zero_samples"
+        else
+            printf 'none\n'
+        fi
+        printf '\n[empty_summaries]\n'
+        if [ -n "$empty_summaries" ]; then
+            printf '%s\n' "$empty_summaries"
+        else
+            printf 'none\n'
+        fi
+    } > "$report"
+}
+
 main() {
     trap cleanup EXIT INT TERM
     parse_args "$@"
@@ -766,9 +924,11 @@ main() {
     done
 
     generate_consolidated_report
+    write_validation_report
 
     log "Suite concluida. Resultados em $OUTPUT_DIR"
     log "Consolidado: $OUTPUT_DIR/consolidated-summary.tsv"
+    log "Validacao: $OUTPUT_DIR/validation-report.txt"
 }
 
 main "$@"
