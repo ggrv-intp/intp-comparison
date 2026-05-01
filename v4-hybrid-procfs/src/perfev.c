@@ -54,6 +54,32 @@ int perfev_open(uint32_t type, uint64_t config, pid_t pid, int cpu)
     return fd;
 }
 
+/* Open a system-wide uncore PMU event.
+ * Uncore events must NOT have exclude_hv set -- kernel rejects with EINVAL. */
+static int perfev_open_uncore(uint32_t type, uint64_t config, int cpu)
+{
+    struct perf_event_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type        = type;
+    attr.size        = sizeof(attr);
+    attr.config      = config;
+    attr.disabled    = 1;
+    attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED |
+                       PERF_FORMAT_TOTAL_TIME_RUNNING;
+    /* exclude_hv omitted -- uncore PMUs return EINVAL if set */
+
+    int fd = (int)sys_perf_event_open(&attr, -1, cpu, -1, 0);
+    if (fd < 0) return -1;
+    if (ioctl(fd, PERF_EVENT_IOC_RESET,  0) < 0 ||
+        ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
 int perfev_read(int fd, uint64_t *value)
 {
     if (fd < 0 || !value) return -1;
@@ -152,7 +178,7 @@ static int open_pmus_by_prefix(const char *prefix,
         int t = pmu_type(e->d_name);
         if (t < 0) continue;
         for (int i = 0; i < n_configs; i++) {
-            int fd = perfev_open((uint32_t)t, configs[i], -1, 0);
+            int fd = perfev_open_uncore((uint32_t)t, configs[i], 0);
             if (fd < 0) continue;
             if (n == cap) {
                 cap *= 2;
