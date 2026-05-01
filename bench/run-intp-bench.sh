@@ -216,6 +216,18 @@ split_csv() {
     IFS="$IFS_BAK"
 }
 
+validate_positive_int() {
+    local name="$1" value="$2"
+    case "$value" in
+        ''|*[!0-9]*)
+            die "Invalid --$name value: '$value' (must be a positive integer, e.g. --$name 30)"
+            ;;
+        0)
+            die "Invalid --$name value: '$value' (must be >= 1)"
+            ;;
+    esac
+}
+
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -242,6 +254,15 @@ parse_args() {
             *) die "Unknown option: $1" ;;
         esac
     done
+
+    validate_positive_int duration "$DURATION"
+    validate_positive_int warmup "$WARMUP"
+    validate_positive_int cooldown "$COOLDOWN"
+    validate_positive_int interval "$INTERVAL"
+    validate_positive_int reps "$REPS"
+    validate_positive_int timeseries-duration "$TIMESERIES_DURATION"
+    validate_positive_int overhead-duration "$OVERHEAD_DURATION"
+    validate_positive_int vm-cpus "$VM_CPUS"
 
     split_csv "$STAGES_CSV" STAGES
     split_csv "$VARIANTS_CSV" VARIANTS
