@@ -23,16 +23,16 @@ BEGIN
 
 tracepoint:net:net_dev_start_xmit
 {
-    @tx_start[arg0] = nsecs;
+    @tx_start[args->skbaddr] = nsecs;
 }
 
 tracepoint:net:net_dev_xmit
 {
-    $start = @tx_start[arg0];
+    $start = @tx_start[args->skbaddr];
     if ($start != 0) {
         @tx_lat = @tx_lat + (nsecs - $start);
         @tx_count = @tx_count + 1;
-        delete(@tx_start[arg0]);
+        delete(@tx_start[args->skbaddr]);
     }
 }
 
