@@ -127,25 +127,22 @@ probe process(@1).begin, process(@1).thread.begin {
 }
 
 probe process(@1).end, process(@1).thread.end {
-
-	if([pid()] in mpids) {
-		printf(" End monitoring process: (%4d) %s\n", pid(), execname());
-		notify_resctrl_remove(pid())
-		delete mpids[pid()]
-		nprocs--
-
-		if(nprocs == 0) {
-			exited = 1
-			exitcounter = 0
-		}
+	_pid = pid()
+	if (tid() > 0 && tid() != pid()) {
+		_pid = tid()
 	}
-	if([tid()] in mpids) {
-		printf(" End monitoring process: (%4d) %s\n", tid(), execname());
-		notify_resctrl_remove(tid())
-		delete mpids[tid()]
-		nprocs--
 
-		if(nprocs == 0) {
+	if([_pid] in mpids) {
+		printf(" End monitoring process: (%4d) %s\n", _pid, execname())
+		notify_resctrl_remove(_pid)
+		delete mpids[_pid]
+
+		if (nprocs > 0) {
+			nprocs--
+		}
+
+		if (nprocs <= 0) {
+			nprocs = 0
 			exited = 1
 			exitcounter = 0
 		}
@@ -335,49 +332,69 @@ function print_netphy_report()
 #	CPU statistics
 ####
 
-global uticks_map, kticks_map, ticks_map
+global cpu_sched_in_ns, cpu_run_ns
+global cpu_sched_in_update
+global CPU_TOTAL_CORES = 48
 
-probe timer.profile {
-	if(nprocs > 0 && [tid()] in mpids) {
-		if (!user_mode())
-			kticks_map[tid()] += 1
-		else
-			uticks_map[tid()] += 1
+probe scheduler.ctxswitch
+{
+	if (nprocs > 0) {
+		now = gettimeofday_ns()
 
-		ticks_map[tid()] += 1
+		if ([prev_pid] in cpu_sched_in_ns) {
+			st = cpu_sched_in_ns[prev_pid]
+			if (st > 0 && now > st) {
+				cpu_run_ns[prev_pid] += now - st
+			}
+			delete cpu_sched_in_ns[prev_pid]
+		}
+
+		if ([next_pid] in mpids) {
+			cpu_sched_in_ns[next_pid] = now
+		}
 	}
 }
 
 function print_cpu_report()
 {
-	allticks = 0
-	usum = 0
-	ksum = 0
-
-	foreach ([t] in ticks_map)
-		allticks += ticks_map[t]
-	foreach ([t] in uticks_map)
-		usum += uticks_map[t]
-	foreach ([t] in kticks_map)
-		ksum += kticks_map[t]
-
-	if (allticks <= 0) {
-		delete uticks_map
-		delete kticks_map
-		delete ticks_map
+	if (runtime_procfs <= 0) {
+		delete cpu_run_ns
 		return 0
 	}
-	uscaled = usum*10000/allticks
-	kscaled = ksum*10000/allticks
-	
-	delete uticks_map
-	delete kticks_map
-	delete ticks_map
-	if (((uscaled/100) + (kscaled/100)) >= 100) {
-		return 99
-	}else{
-		return (uscaled/100) + (kscaled/100)
+
+	window_ns = runtime_procfs * 1000000000
+	run_ns = 0
+	now = gettimeofday_ns()
+
+	foreach ([p] in cpu_run_ns)
+		run_ns += cpu_run_ns[p]
+
+	# If a tracked thread is currently running, account partial time until now.
+	foreach ([p] in cpu_sched_in_ns) {
+		st = cpu_sched_in_ns[p]
+		if (st > 0 && now > st) {
+			run_ns += now - st
+			cpu_sched_in_update[p] = now
+		}
 	}
+
+	# Two-phase update: SystemTap forbids modifying the same map during foreach.
+	foreach ([p] in cpu_sched_in_update) {
+		cpu_sched_in_ns[p] = cpu_sched_in_update[p]
+	}
+	delete cpu_sched_in_update
+
+	delete cpu_run_ns
+
+	cap_ns = window_ns * CPU_TOTAL_CORES
+	if (cap_ns <= 0) {
+		return 0
+	}
+
+	util = (run_ns * 100) / cap_ns
+	if (util < 0) { util = 0 }
+	if (util >= 100) { util = 99 }
+	return util
 }
 
 ####
