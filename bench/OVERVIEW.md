@@ -536,6 +536,33 @@ mechanical changes needed are:
 3. Change the field separator from `\t` to `;`.
 4. Round each metric to integer.
 
+The repository now ships an automated converter for this step:
+
+```bash
+python3 bench/convert-profiler-to-meyer.py results/intp-bench-<ts> --stage solo
+```
+
+Default behavior:
+
+- recursively finds every `profiler.tsv` under the given directory,
+- filters stages with `--stage` when requested,
+- writes `profiler.meyer.csv` alongside each source file,
+- optionally emits a manifest with `--manifest`.
+
+Examples:
+
+```bash
+# convert just one run
+python3 bench/convert-profiler-to-meyer.py \
+  results/intp-bench-<ts>/bare/v4/solo/app10_search/rep1/profiler.tsv
+
+# convert all solo runs and write a manifest
+python3 bench/convert-profiler-to-meyer.py \
+  results/intp-bench-<ts> \
+  --stage solo \
+  --manifest results/intp-bench-<ts>/meyer-manifest.tsv
+```
+
 A robust converter is one awk pass that keeps the **last 7 numeric
 fields** of each data row:
 
@@ -664,12 +691,27 @@ install.packages(c("e1071","caret","stringr","dplyr","fossil","ipred","ocp","rJa
 | Step | Action | Output |
 | --- | --- | --- |
 | 1 | Finish current campaign (solo, pairwise, overhead, timeseries) for V3-V6 | `results/v456-big-<ts>/bench-full/` |
-| 2 | Pick one rep per (variant, app) and convert TSV→CSV with the awk one-liner from Section 10.2 | `*.meyer.csv` files alongside each `profiler.tsv` |
-| 3 | For each app, also generate the four canonical workload patterns (`inc`, `dec`, `osc`, `con`) by replaying the same workload with stress-ng arrival rate envelopes; profile each | 4 CSVs per app under `source/<app>/<pattern>.csv` |
+| 2 | Convert TSV→CSV with `bench/convert-profiler-to-meyer.py --manifest ...` | `*.meyer.csv` files + one conversion manifest TSV |
+| 3 | Generate `source/<app>/<pattern>.csv` and `cloudsim-input.txt` with `bench/generate-iada-tree.py` from the manifest | IADA-ready tree per `(env,variant)` |
 | 4 | Run `Classifier.R` per app; archive `result.pdf` | per-app classification figure (paper Meyer 2021 Fig. 4 / Fig. 7 reproduction) |
-| 5 | Build `R/input.txt` listing the converted CSVs as `app 1 <path>` and a target `pm <n> <size>` | datacenter spec |
+| 5 | Promote one generated `cloudsim-input.txt` to `../CloudSimInterference/R/input.txt` (or pass equivalent path in your launcher) | active simulator datacenter spec |
 | 6 | Run `xxIntExample` (or its IADA-driven variant) to compare EVEN vs CIAPA vs Segmented vs IADA | scheduling outcome CSVs in `~/Results/` |
 | 7 | Aggregate response-time and migration counts; compare against IADA paper Figs. 7, 9, 10, 12 | dissertation evidence |
+
+Practical command chain:
+
+```bash
+python3 bench/convert-profiler-to-meyer.py \
+  results/v456-big-<ts>/bench-full \
+  --stage solo \
+  --manifest results/v456-big-<ts>/bench-full/meyer-convert.tsv
+
+python3 bench/generate-iada-tree.py \
+  --manifest results/v456-big-<ts>/bench-full/meyer-convert.tsv \
+  --out-root results/v456-big-<ts>/bench-full/iada-tree \
+  --variant v4 --stage solo \
+  --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con
+```
 
 What this gets us, in dissertation terms:
 
@@ -694,5 +736,126 @@ What is **not** reproduced by this path:
 - Fine-grained scheduling decisions emitted in real time on a live
   Linux scheduler. The CloudSim path is **simulation**, consistent
   with §4.3 of the IADA paper.
+
+---
+
+### 10.6 What was and was not found in the public repositories
+
+Repository inspection across the public repositories points to a clear split:
+
+- `interference-classifier` and `pdp2020` are **offline R pipelines**
+  for classifying an application's interference vector from CSV traces.
+- `CloudSimInterference` is an **offline Java + R simulator** that
+  consumes those traces through `R/input.txt` and evaluates EVEN,
+  CIAPA, Segmented, and IADA inside CloudSim/ContainerCloudSim.
+- `closer2019` is an elasticity artefact unrelated to IntP/IADA's
+  interference loop.
+- `wscad2018` is a simulator-comparison artefact unrelated to the
+  IntP/IADA runtime path.
+
+No published repository in that set exposes the **real-cluster runtime
+coordinator** from IADA Section 4.2: no LXD/CRIU orchestration layer,
+no Artillery-based live workload driver, no Kubernetes/YARN scheduler
+plugin, and no always-on daemon that ingests IntP metrics and emits
+placement decisions in real time.
+
+The practical conclusion is important for scope control:
+
+- The reproducible artefact that already exists and is available to us
+  is the one described in this Section 10: **IntP traces -> classifier
+  -> CloudSimInterference -> scheduler comparison**.
+- Any live-cluster recreation beyond that must be treated as a **new
+  engineering artefact**, not as hidden existing code we simply failed
+  to wire up.
+
+### 10.7 Minimal sketch for a future live coordinator
+
+If the advisor later wants a real-time integration path, the cheapest
+credible design is to keep the Section 10 offline path as the primary
+evidence trail and build a thin online coordinator around the most
+stable IntP front-end.
+
+Recommended runtime stack:
+
+| Layer | Minimal choice | Reason |
+| --- | --- | --- |
+| Node-side profiler | V4 first, V6 second | V4 is the most operationally stable on current host; V6 is the eBPF endpoint once the signal is validated |
+| Scope key | cgroup/container ID | Matches scheduler objects better than raw PID |
+| Export protocol | HTTP/JSON or line CSV at 1 Hz | Easy to debug and replay offline |
+| Change-point detection | `ruptures` in Python or `ocp` via `rpy2` | Keeps parity with the IADA logic without forcing Java+R in the hot path |
+| Classifier | reuse Meyer SVM/K-means logic | Preserves the same absent/low/moderate/high semantics |
+| Placement policy | simplified IADA heuristic or port of simulated annealing | Enough to test whether IntP signals drive better co-location than FIFO/random |
+| Actuation | advisory mode first; live migration only later | Lets us validate decisions before touching running jobs |
+
+Minimal control loop:
+
+1. Each node samples the current cgroups/containers every second with
+   V4 or V6 and emits the 7-value interference vector.
+2. A central coordinator keeps a sliding window per workload and runs
+   change-point detection when the vector shifts materially.
+3. The current window is classified into interference levels using the
+   same Meyer feature semantics used in the offline path.
+4. A placement engine computes either:
+   - an **advisory decision** (`keep`, `avoid host X`, `prefer host Y`), or
+   - a **migration decision** once the advisory mode has been validated.
+5. Decisions and input vectors are archived so every live action can be
+   replayed later through the Section 10 offline simulator path.
+
+Delivery order:
+
+1. Keep the current Section 10 path as the dissertation baseline.
+2. Add an **offline replay coordinator** that reads already collected
+   TSVs and emits scheduling recommendations without moving anything.
+3. Add an **online advisory mode** against containers/cgroups on a
+   single host or small private cluster.
+4. Only then consider real migrations through Incus/LXD or another
+   orchestrator.
+
+This keeps the research claim defensible:
+
+- Section 10 provides a reproducible scheduler integration today.
+- Section 10.7 defines the shortest path to a live coordinator if the
+  project later gets access to Pantanal or another multi-node testbed.
+
+### 10.8 Application strategy for the scheduling phase
+
+Question: should scheduling use the exact same applications used during
+profiling?
+
+Short answer: **partly yes, partly no**.
+
+- Use the same profiling workloads to build the interference fingerprints
+  (the scheduler's feature vectors).
+- Use a scheduling-phase workload set that is closer to real deployment
+  behavior to test placement quality and latency impact.
+
+Recommended split:
+
+1. **Signal calibration set (same as profiling):**
+   - `app01`..`app15` from `bench/run-intp-bench.sh`.
+   - Purpose: preserve comparability across variants and verify that
+     IntP still sees each resource dimension as expected.
+
+2. **Scheduler evaluation set (application-like):**
+   - HiBench subset (`terasort`, `wordcount`, `pagerank`, `kmeans`,
+     `bayes`, `sql_nweight`) and/or Meyer-style traces.
+   - Purpose: measure whether IADA/CIAPA/Segmented/EVEN decisions improve
+     response-time/migration outcomes under realistic multi-phase load.
+
+3. **Bridge policy:**
+   - Start with a direct mapping from repeated solo reps to canonical
+     patterns (`rep1->inc`, `rep2->dec`, `rep3->osc`, `rep4->con`) using
+     `generate-iada-tree.py`.
+   - If stronger methodological fidelity is needed, run dedicated
+     envelope replays to produce explicit `inc/dec/osc/con` traces per app.
+
+Why this split is technically cleaner:
+
+- Reusing profiling workloads alone can overfit the scheduler to
+  synthetic stressors.
+- Reusing only application-like workloads can hide whether the IntP
+  front-end itself is still calibrated per resource.
+- The two-stage design keeps both claims auditable: instrumentation
+  validity and scheduling utility.
 
 ---

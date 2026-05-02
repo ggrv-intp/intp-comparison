@@ -11,6 +11,8 @@ each metric across environments.
 ## Files
 
 - `run-intp-bench.sh` -- single bash orchestrator. Read this first.
+- `convert-profiler-to-meyer.py` -- converts `profiler.tsv` into the semicolon CSV expected by `interference-classifier` and `CloudSimInterference`.
+- `generate-iada-tree.py` -- reorganizes converted CSV files into `source/<workload>/<pattern>.csv` and writes CloudSim `input.txt` files.
 - `plot/plot-intp-bench.py` -- reproduces the figures.
 - `hibench/README.md` -- Track B (HiBench Spark subset) for fidelity checks.
 - `findings/README.md` -- canonical index of benchmark findings and diagnoses.
@@ -46,6 +48,19 @@ sudo ./run-intp-bench.sh --env bare,vm --vm-image /var/lib/libvirt/images/ubuntu
 
 # render every figure
 python3 bench/plot/plot-intp-bench.py results/intp-bench-<ts>
+
+# convert profiler.tsv files to Meyer/IADA CSV format
+python3 bench/convert-profiler-to-meyer.py \
+    results/intp-bench-<ts> \
+    --stage solo \
+    --manifest results/intp-bench-<ts>/meyer-convert.tsv
+
+# build source/<workload>/<pattern>.csv and cloudsim-input.txt per env+variant
+python3 bench/generate-iada-tree.py \
+    --manifest results/intp-bench-<ts>/meyer-convert.tsv \
+    --out-root results/intp-bench-<ts>/iada-tree \
+    --variant v4 --stage solo \
+    --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con
 ```
 
 ## Stages
