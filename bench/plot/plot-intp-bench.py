@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
-# plot-intp-bench.py -- Reproduce the SBAC-PAD 2022 figures from intp-bench
+# plot-intp-bench.py -- Generate publication-ready figures from intp-bench
 # results plus the cross-variant / cross-env comparisons that the dissertation
 # Phase-3 plan calls for.
 #
@@ -169,7 +169,7 @@ def fig_per_app_bars(means: pd.DataFrame, outdir: Path) -> None:
     for j in range(idx + 1, rows * cols):
         axes[j // cols][j % cols].axis("off")
 
-    fig.suptitle("Per-workload interference (solo) -- SBAC-PAD Fig. 4 reproduction", y=1.02)
+    fig.suptitle("Per-workload interference (solo)", y=1.02)
     fig.tight_layout()
     fig.savefig(outdir / "fig01_per_app_bars.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -220,7 +220,7 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
         ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
         ax.grid(linestyle=":", alpha=0.4)
 
-    fig.suptitle("PCA + k-means clustering of workloads (k=4) -- SBAC-PAD Fig. 5 reproduction", y=1.02)
+    fig.suptitle("PCA + k-means clustering of workloads (k=4)", y=1.02)
     fig.tight_layout()
     fig.savefig(outdir / "fig02_pca_kmeans.png", dpi=150, bbox_inches="tight")
     plt.close(fig)

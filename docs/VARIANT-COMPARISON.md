@@ -25,7 +25,6 @@ findings in:
 **Architecture summary.** V1 is the unmodified 2022 baseline by
 Xavier and De Rose (PUCRS), published as "IntP: Quantifying
 cross-application interference via system-level instrumentation"
-at SBAC-PAD 2022. It is a single SystemTap script
 (`v1-original/intp.stp`, 660 lines) that runs in guru mode and
 embeds raw kernel C inside `%{ ... %}` blocks to read MSRs, walk
 `struct perf_event`, and operate on internal CQM data structures

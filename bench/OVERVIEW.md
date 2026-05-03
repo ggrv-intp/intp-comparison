@@ -116,13 +116,6 @@ victim workload against an antagonist that saturates a known resource.
 | `disk_v_disk` | `--hdd 4 --hdd-bytes 2G --hdd-write-size 4K` | `--hdd 12 --hdd-bytes 4G --hdd-write-size 1M` | blk |
 | `net_v_net` | `--sock 8 --sock-port 23440` | `--sock 16 --sock-port 23441` | netp |
 
-### 4.3 Synthetic workloads — SBAC-PAD 2022 reproduction
-
-Used by `shared/run-sbacpad-suite.sh` to reproduce the workload matrix
-of the original IntP paper on this host, with all variants (V1/V2 are
-gated by kernel support; V3-V6 always run). 15 workloads covering CPU,
-memory, LLC, mixed, disk, network, and `mixed_all`.
-
 ### 4.4 Application-realistic workloads (HiBench Spark)
 
 Used by `bench/hibench/run-hibench-subset.sh`. Single-node Spark on
@@ -162,7 +155,7 @@ plus an `index.tsv` for indexing.
 |---|---|---|
 | `detect` | Probes RDT/CQM/BTF/resctrl/MSR/IMC and writes `capabilities.env` | Reproducibility envelope |
 | `build` | Compiles V4/V6 if needed; checks V3 deps; checks V5 BTF | Pre-flight |
-| `solo` | One workload at a time, N reps each (SBAC-PAD 2022 reproduction) | Per-workload metric coverage |
+| `solo` | One workload at a time, N reps each (1-after-1 baseline) | Per-workload metric coverage |
 | `pairwise` | Victim + antagonist concurrent, N reps each | Cross-application interference |
 | `overhead` | Short bursts to estimate instrumentation overhead | Overhead bound per variant |
 | `timeseries` | Long single trace per (variant, workload) | Stability and drift over time |
@@ -185,7 +178,7 @@ Selected because:
   reusable.
 - Metrics-brief output (`stress-ng --metrics-brief`) provides a
   workload-side signal to compare against IntP's metric output
-  (groundtruth in the SBAC-PAD suite).
+  (groundtruth in the benchmark suite).
 
 How variants observe stress-ng:
 
@@ -257,9 +250,8 @@ process.
 
 | Script | Purpose |
 |---|---|
-| `run-big-batch.sh` | One-shot driver: bench-full + SBAC-PAD reproduction + HiBench + plots |
+| `run-big-batch.sh` | One-shot driver: bench-full + HiBench + plots |
 | `bench/run-intp-bench.sh` | Per-stage cross-variant runner |
-| `shared/run-sbacpad-suite.sh` | SBAC-PAD methodology reproduction |
 | `bench/hibench/run-hibench-subset.sh` | Spark/HiBench runner |
 | `shared/intp-detect.sh` | Capability probing (RDT, BTF, resctrl, IMC) |
 | `bench/plot/plot-intp-bench.py` | Final figure generation |
@@ -282,7 +274,6 @@ results/<campaign>/
             groundtruth.tsv      # stress-ng metrics-brief, mapped
             *.stap.log           # SystemTap log when applicable
         ...
-    sbacpad-2022/<variant>/<workload>.tsv
     hibench/<profile>-<ts>/<workload>.log
     big-batch.log
 ```
@@ -332,12 +323,11 @@ This split is the operational expression of the dissertation's main
 narrative point: V3 preserves historical comparability; V4-V6 are the
 production-grade reliability endpoints.
 
-### 8.3 SBAC-PAD 2022 reproduction subset
+### 8.3 Historical comparability note
 
-For variants where a SystemTap path is not stable (V1 absent, V2
-partial), the SBAC-PAD reproduction is run only with V3-V6 to keep
-cross-variant claims aligned. The runner gates V1/V2 by kernel
-capability automatically.
+The campaign keeps methodology continuity with the original IntP study,
+but the active execution path is `run-big-batch.sh` +
+`bench/run-intp-bench.sh` + HiBench.
 
 ---
 

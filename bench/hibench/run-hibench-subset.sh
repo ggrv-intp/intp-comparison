@@ -15,7 +15,7 @@
 #
 # Output layout (mirrors run-intp-bench.sh):
 #   out_root/<profile>-<size>-<ts>/
-#     <variant>/<workload>/rep1/
+#     bare/<variant>/<workload>/rep1/
 #       profiler.tsv        -- 7 IntP metrics + ts column
 #       workload.log        -- Spark job stdout/stderr
 #       run.json            -- timing, samples, status
@@ -541,7 +541,7 @@ run_subset_for_profile() {
         for variant in "${VARIANTS[@]}"; do
             run_workload_with_profiler \
                 "$variant" "$workload_name" "$script" "$spark_env" \
-                "$outdir/$variant/$workload_name/rep1"
+                "$outdir/bare/$variant/$workload_name/rep1"
         done
     done
 

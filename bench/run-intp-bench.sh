@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # run-intp-bench.sh -- Comprehensive IntP benchmark orchestrator.
 #
-# Reproduces the SBAC-PAD 2022 (Xavier & De Rose) experimental methodology
+# Runs the primary IntP benchmark methodology
 # across all six IntP variants in this repository and across the three
 # execution environments described in the dissertation Phase 3 plan
 # (bare-metal, containerised, virtualised).
@@ -12,7 +12,7 @@
 #
 #   detect      Hardware capability detection + version manifest. Always run.
 #   build       Build v4 / v5 / v6 binaries that are missing.
-#   solo        SBAC-PAD "1-after-1" methodology -- single workload, no
+#   solo        "1-after-1" methodology -- single workload, no
 #               co-runner. Reproduces Fig.3 (time series), Fig.4 (per-app bars),
 #               Fig.5 (PCA + k-means).
 #   pairwise    Antagonist + victim co-located -- ground truth for
@@ -117,7 +117,7 @@ _ORIG_GOVERNORS=""
 _ORIG_AUTOGROUP=""
 
 # -----------------------------------------------------------------------------
-# 2. Workload matrix -- 15 workloads aligned with SBAC-PAD Table II.
+# 2. Workload matrix -- 15 workloads aligned with the legacy IntP Table II.
 #
 # Format: id|category|stress-ng args
 #
@@ -1104,11 +1104,11 @@ record_index() {
 }
 
 # -----------------------------------------------------------------------------
-# 12. Stage: solo (= SBAC-PAD 1-after-1)
+# 12. Stage: solo (= 1-after-1)
 # -----------------------------------------------------------------------------
 
 stage_solo() {
-    log "== solo (1-after-1, SBAC-PAD reproduction) =="
+    log "== solo (1-after-1) =="
     local env variant entry name cat args r
     for env in "${ENVS[@]}"; do
         for variant in "${VARIANTS[@]}"; do

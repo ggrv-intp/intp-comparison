@@ -1,6 +1,6 @@
 # bench/ -- IntP comprehensive evaluation suite
 
-Reproduces the SBAC-PAD 2022 (Xavier & De Rose) experimental methodology
+Runs the primary IntP benchmark methodology
 across all six IntP variants in this repository, and extends it with the
 cross-environment dimensions (bare-metal / container / VM) called for by
 the dissertation Phase-3 plan. Captures additional ground-truth signals
@@ -69,10 +69,10 @@ python3 bench/generate-iada-tree.py \
 | ------------ | ------------------------------------------------------------- | ----------------------------- |
 | `detect`     | Hardware/kernel snapshot, capabilities.env, variants.manifest | preflight                     |
 | `build`      | `make` for v4 / v6                                            | preflight                     |
-| `solo`       | 15 workloads x reps, one variant at a time, no co-runner      | SBAC-PAD Fig.3 / Fig.4 / Fig.5 |
-| `pairwise`   | victim + antagonist co-located; profiler attached to victim   | SBAC-PAD Fig.8 (extended)     |
+| `solo`       | 15 workloads x reps, one variant at a time, no co-runner      | legacy IntP-style figures (per-app + PCA) |
+| `pairwise`   | victim + antagonist co-located; profiler attached to victim   | cross-interference analysis   |
 | `overhead`   | reference workload with vs without each profiler              | Volpert et al. 2025           |
-| `timeseries` | 5-min mixed workload trace per variant                        | SBAC-PAD Fig.3 / Fig.8        |
+| `timeseries` | 5-min mixed workload trace per variant                        | long-trace stability analysis |
 | `report`     | aggregate every profiler.tsv into one TSV; print summary      | --                            |
 
 ## Output layout
@@ -102,7 +102,7 @@ results/intp-bench-<ts>/
 
 ## Workload matrix
 
-15 workloads aligned with the categories in Table II of the SBAC-PAD paper
+15 workloads aligned with the categories in the original IntP paper
 (machine-learning/LLC, streaming/LLC+memory, ordering/memory,
 classification/CPU+memory, search/CPU, sort/network, query/disk).
 IDs are `app01_*` ... `app15_*` so they line up with the paper.
@@ -137,9 +137,9 @@ side -- the plotter will merge them if you point it at a parent dir.
 
 | File                              | Source stage   | Maps to                              |
 | --------------------------------- | -------------- | ------------------------------------ |
-| `fig01_per_app_bars.png`          | solo           | SBAC-PAD Fig. 4                      |
-| `fig02_pca_kmeans.png`            | solo           | SBAC-PAD Fig. 5                      |
-| `fig03_timeseries.png`            | timeseries     | SBAC-PAD Fig. 3 / Fig. 8             |
+| `fig01_per_app_bars.png`          | solo           | per-workload bars                    |
+| `fig02_pca_kmeans.png`            | solo           | PCA + k-means clustering             |
+| `fig03_timeseries.png`            | timeseries     | long-trace metric profile            |
 | `fig04_overhead_bars.png`         | overhead       | Volpert et al. 2025                  |
 | `fig05_fidelity_matrix.png`       | solo + GT      | new (Pearson r vs ground truth)      |
 | `fig06_env_heatmap.png`           | solo (envs)    | dissertation Phase 3                 |

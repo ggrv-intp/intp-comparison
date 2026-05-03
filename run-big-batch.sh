@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-big-batch.sh — Full IntP benchmark campaign: full bench + SBAC-PAD + HiBench + plots.
+# run-big-batch.sh — Full IntP benchmark campaign: full bench + HiBench + plots.
 #
 # Key environment variables (all optional — defaults shown below):
 #
@@ -27,8 +27,6 @@
 #     HIBENCH_PROFILE=both      standard | netp-extreme | both
 #     HADOOP_PROFILE=3          Spark binary variant (hadoop2 or hadoop3)
 #       (used by setup-spark-hibench.sh to select spark-X.Y.Z-bin-hadoop3.tgz)
-#     RUN_SBACPAD_2022=1        run SBAC-PAD 2022 reproduction suite
-#     SBACPAD_DURATION=60       duration per workload in SBAC-PAD run
 #     RUN_PLOTS=1               generate plots at end
 #
 #   V3 SystemTap module-accumulation guard
@@ -86,8 +84,6 @@ HIBENCH_SIZE="${HIBENCH_SIZE:-medium}"
 HIBENCH_PROFILE="${HIBENCH_PROFILE:-both}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
-RUN_SBACPAD_2022="${RUN_SBACPAD_2022:-1}"
-SBACPAD_DURATION="${SBACPAD_DURATION:-60}"
 
 # ── V3 guard ───────────────────────────────────────────────────────────────────
 export INTP_BENCH_V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
@@ -130,7 +126,6 @@ echo "  bench_variants=$BENCH_VARIANTS"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hadoop_profile=$HADOOP_PROFILE"
-echo "  run_sbacpad_2022=$RUN_SBACPAD_2022  sbacpad_duration=$SBACPAD_DURATION"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v3_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 
@@ -195,23 +190,7 @@ run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
     --overhead-duration "$OVERHEAD_DURATION" \
     --output-dir "$OUT/bench-full"
 
-# ── Segment 2: SBAC-PAD 2022 reproduction ─────────────────────────────────────
-# run-sbacpad-suite.sh --env takes a workload-profile name (ubuntu24-modern),
-# not a topology — it always runs bare on the host.
-if [ "$RUN_SBACPAD_2022" = "1" ]; then
-  run_step "sbacpad 2022 reproduction (v3,v4,v5,v6)" \
-    bash shared/run-sbacpad-suite.sh \
-      --env ubuntu24-modern \
-      --variants v3,v4,v5,v6 \
-      --duration "$SBACPAD_DURATION" \
-      --interval "$INTERVAL" \
-      --warmup-fast "$WARMUP" \
-      --output-dir "$OUT/sbacpad-2022-v3-v4-v5-v6"
-else
-  echo "Skipping SBAC-PAD 2022 reproduction (RUN_SBACPAD_2022=$RUN_SBACPAD_2022)"
-fi
-
-# ── Segment 3: HiBench Spark subset ───────────────────────────────────────────
+# ── Segment 2: HiBench Spark subset ──────────────────────────────────────────
 if [ "$RUN_HIBENCH" = "1" ]; then
   run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$BENCH_VARIANTS" \
     bash bench/hibench/run-hibench-subset.sh \
@@ -223,7 +202,7 @@ else
   echo "Skipping HiBench subset (RUN_HIBENCH=$RUN_HIBENCH)"
 fi
 
-# ── Segment 4: plots ───────────────────────────────────────────────────────────
+# ── Segment 3: plots ───────────────────────────────────────────────────────────
 if [ "$RUN_PLOTS" = "1" ]; then
   if command -v python3 >/dev/null 2>&1; then
     run_step "render plots from bench results" \
