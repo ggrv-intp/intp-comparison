@@ -106,6 +106,15 @@ USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
 
 ACTIVE_RESCTRL_HELPER=0
 CURRENT_WORKLOAD_CGROUP=""
+# V3-specific: count stap runs and do a deep kernel-module cleanup every N
+# runs to prevent stap_ module accumulation from draining the systemd DBus
+# session budget (pam_systemd creates a scope per SSH login; if stap_ modules
+# keep the previous session scope alive, DBus object counts grow unboundedly
+# over a long campaign and eventually stall all new logins).
+V3_RUN_COUNT=0
+V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
+_ORIG_GOVERNORS=""
+_ORIG_AUTOGROUP=""
 
 # -----------------------------------------------------------------------------
 # 2. Workload matrix -- 15 workloads aligned with SBAC-PAD Table II.
@@ -333,6 +342,44 @@ ensure_perf_paranoid() {
         log "Lowering perf_event_paranoid from $p to -1 (required for IMC uncore counters)"
         echo -1 > /proc/sys/kernel/perf_event_paranoid
     fi
+}
+
+setup_cpu_env() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local gov_path gov count=0
+    for gov_path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+        [ -f "$gov_path" ] || continue
+        gov=$(cat "$gov_path" 2>/dev/null || echo unknown)
+        _ORIG_GOVERNORS="${_ORIG_GOVERNORS}${gov_path}=${gov}
+"
+        echo performance > "$gov_path" 2>/dev/null || true
+        count=$((count+1))
+    done
+    if [ "$count" -gt 0 ]; then
+        local first_gov
+        first_gov=$(printf '%s\n' "$_ORIG_GOVERNORS" | head -1 | cut -d= -f2)
+        log "[cpu_env] governor → performance (was: $first_gov on $count cpus)"
+    else
+        log "[cpu_env] no cpufreq sysfs — governor unchanged"
+    fi
+    _ORIG_AUTOGROUP=$(cat /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || echo 1)
+    if [ "$_ORIG_AUTOGROUP" = "1" ]; then
+        echo 0 > /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || true
+        log "[cpu_env] sched_autogroup_enabled → 0"
+    fi
+}
+
+restore_cpu_env() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local entry gov_path gov
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        gov_path="${entry%%=*}"
+        gov="${entry#*=}"
+        [ -f "$gov_path" ] && echo "$gov" > "$gov_path" 2>/dev/null || true
+    done <<< "$_ORIG_GOVERNORS"
+    [ -n "$_ORIG_GOVERNORS" ] && log "[cpu_env] governor restored"
+    [ -n "$_ORIG_AUTOGROUP" ] && echo "$_ORIG_AUTOGROUP" > /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || true
 }
 
 prepare_output_dir() {
@@ -738,6 +785,33 @@ stop_resctrl_helper() {
     ACTIVE_RESCTRL_HELPER=0
 }
 
+# Force-unload all lingering stap_ kernel modules with retry + exponential
+# backoff.  Called before every V3 stap launch and periodically between runs.
+# Prevents the module-accumulation pattern that drains systemd DBus budget
+# and stalls pam_systemd scope creation on the next SSH login.
+stap_deep_cleanup() {
+    local context="${1:-cleanup}"
+    pkill -9 -f stapio  2>/dev/null || true
+    pkill -9 -f staprun 2>/dev/null || true
+    sleep 1
+    local attempt mods
+    for attempt in 1 2 3 4 5; do
+        mods=$(lsmod | awk '/^stap_/ {print $1}')
+        [ -z "$mods" ] && break
+        for m in $mods; do
+            rmmod "$m" 2>/dev/null || true
+        done
+        sleep "$attempt"
+    done
+    local remaining
+    remaining=$(lsmod | awk '/^stap_/ {print $1}' | wc -l)
+    if [ "$remaining" -gt 0 ]; then
+        warn "[stap_deep_cleanup/$context] $remaining stap_ module(s) still loaded after 5 attempts; systemd may degrade"
+    else
+        log "[stap_deep_cleanup/$context] OK (0 stap_ modules in kernel)"
+    fi
+}
+
 run_profiler_systemtap() {
     # $1 variant, $2 stp_path, $3 outfile, $4 duration, $5 target_pid
     local variant="$1" stp="$2" outfile="$3" duration="$4" pid="$5"
@@ -749,7 +823,18 @@ run_profiler_systemtap() {
         return 0
     fi
 
-    [ "$variant" = "v3" ] && start_resctrl_helper
+    # V3 pre-run: increment run counter, clean any modules left from the previous
+    # run, and do a full deep pause every V3_DEEP_CLEANUP_EVERY runs so the
+    # kernel fully reclaims resources before loading the next stap_ module.
+    if [ "$variant" = "v3" ]; then
+        V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
+        stap_deep_cleanup "pre-run-${V3_RUN_COUNT}"
+        if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+            log "[v3] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
+            sleep 8
+        fi
+        start_resctrl_helper
+    fi
 
     # SystemTap variants attach by command name (stress-ng) -- they monitor
     # all matching processes. We pass the workload PID's comm so the probe
@@ -784,11 +869,7 @@ run_profiler_systemtap() {
         warn "[$variant] /proc/systemtap/intestbench did not appear after 30s"
         kill "$stap_pid" 2>/dev/null || true
         wait "$stap_pid" 2>/dev/null || true
-        pkill -9 -f stapio 2>/dev/null || true
-        pkill -9 -f staprun 2>/dev/null || true
-        for m in $(lsmod | awk '/^stap_/ {print $1}'); do
-            rmmod "$m" 2>/dev/null || true
-        done
+        stap_deep_cleanup "startup-timeout"
         echo 0 > "$outfile.samples"
         return 1
     fi
@@ -806,16 +887,7 @@ run_profiler_systemtap() {
 
     kill "$stap_pid" 2>/dev/null || true
     wait "$stap_pid" 2>/dev/null || true
-
-    # Hard-cleanup: force-kill any lingering stapio/staprun and unload
-    # the stap-generated kernel module. If we leave the module in the
-    # kernel it can pin systemd resources and stall pam_systemd on the
-    # next ssh login.
-    pkill -9 -f stapio 2>/dev/null || true
-    pkill -9 -f staprun 2>/dev/null || true
-    for m in $(lsmod | awk '/^stap_/ {print $1}'); do
-        rmmod "$m" 2>/dev/null || true
-    done
+    stap_deep_cleanup "post-run"
 
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
@@ -1206,10 +1278,11 @@ main() {
     ensure_root
     ensure_basic_deps
     ensure_perf_paranoid
+    setup_cpu_env
     prepare_output_dir
     write_metadata
 
-    trap 'stop_resctrl_helper' EXIT INT TERM
+    trap 'restore_cpu_env; stop_resctrl_helper' EXIT INT TERM
 
     log "== intp-bench =="
     log "output: $OUTPUT_DIR"

@@ -51,6 +51,13 @@ WORKLOADS=(
 VARIANTS=()
 SELECTED_WORKLOADS=()
 ACTIVE_HELPER=0
+# V3-specific: same module-accumulation guard used in run-intp-bench.sh.
+# Each run of run_systemtap_variant for V3 increments this counter; a deep
+# cleanup with retry backoff fires every V3_DEEP_CLEANUP_EVERY runs.
+V3_RUN_COUNT=0
+V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
+_ORIG_GOVERNORS=""
+_ORIG_AUTOGROUP=""
 
 usage() {
     cat <<EOF
@@ -299,6 +306,44 @@ ensure_basic_dependencies() {
         return 0
     fi
     command -v stress-ng >/dev/null 2>&1 || die "stress-ng ausente"
+}
+
+setup_cpu_env() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local gov_path gov count=0
+    for gov_path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+        [ -f "$gov_path" ] || continue
+        gov=$(cat "$gov_path" 2>/dev/null || echo unknown)
+        _ORIG_GOVERNORS="${_ORIG_GOVERNORS}${gov_path}=${gov}
+"
+        echo performance > "$gov_path" 2>/dev/null || true
+        count=$((count+1))
+    done
+    if [ "$count" -gt 0 ]; then
+        local first_gov
+        first_gov=$(printf '%s\n' "$_ORIG_GOVERNORS" | head -1 | cut -d= -f2)
+        log "[cpu_env] governor → performance (was: $first_gov on $count cpus)"
+    else
+        log "[cpu_env] no cpufreq sysfs — governor unchanged"
+    fi
+    _ORIG_AUTOGROUP=$(cat /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || echo 1)
+    if [ "$_ORIG_AUTOGROUP" = "1" ]; then
+        echo 0 > /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || true
+        log "[cpu_env] sched_autogroup_enabled → 0"
+    fi
+}
+
+restore_cpu_env() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local entry gov_path gov
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        gov_path="${entry%%=*}"
+        gov="${entry#*=}"
+        [ -f "$gov_path" ] && echo "$gov" > "$gov_path" 2>/dev/null || true
+    done <<< "$_ORIG_GOVERNORS"
+    [ -n "$_ORIG_GOVERNORS" ] && log "[cpu_env] governor restaurado"
+    [ -n "$_ORIG_AUTOGROUP" ] && echo "$_ORIG_AUTOGROUP" > /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || true
 }
 
 ensure_built_binary() {
@@ -592,7 +637,34 @@ stop_resctrl_helper() {
 }
 
 cleanup() {
+    restore_cpu_env
     stop_resctrl_helper
+}
+
+# Force-unload all lingering stap_ kernel modules with retry + exponential
+# backoff. Prevents stap_ module accumulation from draining the systemd DBus
+# session budget and stalling pam_systemd scope creation on SSH login.
+stap_deep_cleanup() {
+    local context="${1:-cleanup}"
+    pkill -9 -f stapio  2>/dev/null || true
+    pkill -9 -f staprun 2>/dev/null || true
+    sleep 1
+    local attempt mods
+    for attempt in 1 2 3 4 5; do
+        mods=$(lsmod | awk '/^stap_/ {print $1}')
+        [ -z "$mods" ] && break
+        for m in $mods; do
+            rmmod "$m" 2>/dev/null || true
+        done
+        sleep "$attempt"
+    done
+    local remaining
+    remaining=$(lsmod | awk '/^stap_/ {print $1}' | wc -l)
+    if [ "$remaining" -gt 0 ]; then
+        log "WARN [stap_deep_cleanup/$context] $remaining stap_ module(s) still loaded after 5 attempts; systemd may degrade"
+    else
+        log "[stap_deep_cleanup/$context] OK (0 stap_ modules in kernel)"
+    fi
 }
 
 find_intestbench() {
@@ -642,6 +714,12 @@ run_systemtap_variant() {
     mkdir -p "$outdir"
 
     if [ "$variant" = "v3" ]; then
+        V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
+        stap_deep_cleanup "pre-run-${V3_RUN_COUNT}"
+        if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+            log "[v3] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
+            sleep 8
+        fi
         start_resctrl_helper
     fi
 
@@ -680,6 +758,7 @@ run_systemtap_variant() {
             kill "$stress_pid" 2>/dev/null || true
             wait "$stap_pid" 2>/dev/null || true
             wait "$stress_pid" 2>/dev/null || true
+            [ "$variant" = "v3" ] && stap_deep_cleanup "startup-timeout"
             return 1
         }
     fi
@@ -703,6 +782,7 @@ run_systemtap_variant() {
         kill "$stress_pid" 2>/dev/null || true
         wait "${stap_pid:-}" 2>/dev/null || true
         wait "$stress_pid" 2>/dev/null || true
+        [ "$variant" = "v3" ] && stap_deep_cleanup "post-run"
     fi
 
     if [ -f "$outfile" ]; then
@@ -912,6 +992,7 @@ main() {
     parse_args "$@"
     ensure_root
     ensure_basic_dependencies
+    setup_cpu_env
     prepare_output_dir
     write_run_metadata
 
