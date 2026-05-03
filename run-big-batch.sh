@@ -14,6 +14,7 @@
 #
 #   Execution environments (run-intp-bench.sh full-bench only)
 #     BENCH_ENVS=bare           comma-separated: bare | container | vm
+#     BENCH_VARIANTS=v3,v4,v5,v6 comma-separated profiler variants for full bench/hibench
 #     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container env
 #     VM_IMAGE=                 path to .qcow2 for vm env (required when vm in BENCH_ENVS)
 #     VM_MEM=32G                memory for QEMU guest
@@ -42,9 +43,20 @@
 set -u -o pipefail
 
 ROOT=/root/intp
-TS="$(date +%Y%m%d_%H%M%S)"
-OUT="$ROOT/results/big-batch-$TS"
-mkdir -p "$OUT"
+# Resume support: set RESUME_DIR to an existing big-batch output directory to
+# skip runs whose profiler.tsv already has samples (idempotent re-execution).
+# If unset, a fresh timestamped directory is created.
+if [ -n "${RESUME_DIR:-}" ]; then
+    OUT="$RESUME_DIR"
+    if [ ! -d "$OUT" ]; then
+        echo "ERROR: RESUME_DIR=$OUT does not exist" >&2; exit 1
+    fi
+    echo ">>> Resuming into $OUT"
+else
+    TS="$(date +%Y%m%d_%H%M%S)"
+    OUT="$ROOT/results/big-batch-$TS"
+    mkdir -p "$OUT"
+fi
 ln -sfn "$OUT" "$ROOT/results/LATEST-BIG"
 
 # ── Timing / quality ───────────────────────────────────────────────────────────
@@ -62,6 +74,7 @@ COOLDOWN="${COOLDOWN:-10}"
 # vm      → stress-ng in QEMU/KVM guest (profiler measures qemu PID on host);
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
+BENCH_VARIANTS="${BENCH_VARIANTS:-v3,v4,v5,v6}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"
 VM_MEM="${VM_MEM:-32G}"
@@ -113,6 +126,7 @@ echo "  duration=$DURATION  reps=$REPS  interval=$INTERVAL"
 echo "  warmup=$WARMUP  cooldown=$COOLDOWN"
 echo "  timeseries_duration=$TIMESERIES_DURATION  overhead_duration=$OVERHEAD_DURATION"
 echo "  bench_envs=$BENCH_ENVS"
+echo "  bench_variants=$BENCH_VARIANTS"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hadoop_profile=$HADOOP_PROFILE"
@@ -167,10 +181,10 @@ fi
 
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
 # V3 cleanup guard is exported above; bench script inherits it automatically.
-run_step "full bench all stages v3-v6 (envs=$BENCH_ENVS)" \
+run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
   bash bench/run-intp-bench.sh \
     --stage detect,build,solo,pairwise,overhead,timeseries,report \
-    --variants v3,v4,v5,v6 \
+    --variants "$BENCH_VARIANTS" \
     --env "$BENCH_ENVS" \
     --interval "$INTERVAL" \
     --duration "$DURATION" \
@@ -199,9 +213,9 @@ fi
 
 # ── Segment 3: HiBench Spark subset ───────────────────────────────────────────
 if [ "$RUN_HIBENCH" = "1" ]; then
-  run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) v3-v6" \
+  run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$BENCH_VARIANTS" \
     bash bench/hibench/run-hibench-subset.sh \
-      --variants v3,v4,v5,v6 \
+      --variants "$BENCH_VARIANTS" \
       --size "$HIBENCH_SIZE" \
       --profile "$HIBENCH_PROFILE" \
       --out-root "$OUT/hibench"

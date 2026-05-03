@@ -995,6 +995,21 @@ run_one() {
     local stage="$1" env="$2" variant="$3" wl_id="$4" wl_args="$5" rep="$6" duration="$7"
     local notes=""
 
+    # ── Resume guard: skip run if profiler.tsv already has samples ──────────
+    local _outdir_check="$OUTPUT_DIR/$env/$variant/$stage/$wl_id/rep$rep"
+    local _prof_check="$_outdir_check/profiler.tsv"
+    local _samples_check=0
+    if [ -f "$_prof_check.samples" ]; then
+        _samples_check=$(cat "$_prof_check.samples" 2>/dev/null || echo 0)
+    elif [ -f "$_prof_check" ]; then
+        _samples_check=$(awk '/^[0-9]/{n++}END{print n+0}' "$_prof_check" 2>/dev/null || echo 0)
+    fi
+    if [ "$_samples_check" -gt 0 ]; then
+        log "  skip [$env/$variant/$stage/$wl_id rep=$rep]: already_done (samples=$_samples_check)"
+        return 0
+    fi
+    # ─────────────────────────────────────────────────────────────────────────
+
     if ! variant_kernel_ok "$variant"; then
         notes="kernel_too_new_for_$variant"
         log "  skip [$env/$variant/$stage/$wl_id rep=$rep]: $notes"
@@ -1055,6 +1070,7 @@ run_one() {
     local elapsed=$(( $(date +%s) - t0 ))
 
     if [ "$samples" -eq 0 ]; then
+        run_rc=1
         if [ -n "$notes" ]; then
             notes="$notes;profiler_no_samples"
         else
@@ -1163,6 +1179,9 @@ stage_overhead() {
             for r in $(seq 1 "$REPS"); do
                 # Baseline (no profiler)
                 local b_dir="$outroot/$env/_baseline/$rid/rep$r"
+                if [ -f "$b_dir/elapsed_s" ]; then
+                    log "  skip [overhead $env baseline $rid rep=$r]: already_done"
+                else
                 mkdir -p "$b_dir"
                 local b_log="$b_dir/workload.log"
                 local cname_b="intp-bench-bovh-$rid-$r-$$"
@@ -1175,11 +1194,16 @@ stage_overhead() {
                 local elapsed_b; elapsed_b=$(awk -v t0="$t0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
                 echo "$elapsed_b" > "$b_dir/elapsed_s"
                 record_index "$env" "_baseline" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_b" 0 "" "" "" "no_profiler" "system-wide"
+                fi  # resume guard baseline
 
                 # With each profiler attached
                 for variant in "${VARIANTS[@]}"; do
                     if ! variant_kernel_ok "$variant"; then continue; fi
                     local w_dir="$outroot/$env/$variant/$rid/rep$r"
+                    if [ -f "$w_dir/elapsed_s" ]; then
+                        log "  skip [overhead $env $variant $rid rep=$r]: already_done"
+                        continue
+                    fi
                     mkdir -p "$w_dir"
                     local w_log="$w_dir/workload.log"
                     local prof="$w_dir/profiler.tsv"
