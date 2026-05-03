@@ -61,6 +61,15 @@ python3 bench/generate-iada-tree.py \
     --out-root results/intp-bench-<ts>/iada-tree \
     --variant v4 --stage solo \
     --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con
+
+# REPS > 4 without changing IADA/Classifier/CloudSim file names:
+# map extra reps to canonical patterns and merge into one inc/dec/osc/con file
+python3 bench/generate-iada-tree.py \
+    --manifest results/intp-bench-<ts>/meyer-convert.tsv \
+    --out-root results/intp-bench-<ts>/iada-tree \
+    --variant v4 --stage solo \
+    --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con,rep5=inc,rep6=dec,rep7=osc \
+    --pattern-merge median
 ```
 
 ## Stages
