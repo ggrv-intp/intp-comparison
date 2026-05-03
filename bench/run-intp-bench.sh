@@ -875,16 +875,19 @@ run_profiler_systemtap() {
         return 0
     fi
 
-    # V3 pre-run: increment run counter, clean any modules left from the previous
-    # run, and do a full deep pause every V3_DEEP_CLEANUP_EVERY runs so the
-    # kernel fully reclaims resources before loading the next stap_ module.
-    if [ "$variant" = "v3" ]; then
+    # SystemTap pre-run: increment run counter, clean any modules left from the
+    # previous run, and do a full deep pause every V3_DEEP_CLEANUP_EVERY runs so
+    # the kernel fully reclaims resources before loading the next stap_ module.
+    # Applies to v2 and v3 (both leak modules under load if a stapio orphan survives).
+    if [ "$variant" = "v2" ] || [ "$variant" = "v3" ]; then
         V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
-        stap_deep_cleanup "pre-run-${V3_RUN_COUNT}"
+        stap_deep_cleanup "pre-run-${variant}-${V3_RUN_COUNT}"
         if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-            log "[v3] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
+            log "[$variant] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
             sleep 8
         fi
+    fi
+    if [ "$variant" = "v3" ]; then
         start_resctrl_helper
     fi
 
