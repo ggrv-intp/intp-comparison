@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # run-intp-bench.sh -- Comprehensive IntP benchmark orchestrator.
 #
-# Runs the primary IntP benchmark methodology
+# Reproduces the SBAC-PAD 2022 (Xavier & De Rose) experimental methodology
 # across all six IntP variants in this repository and across the three
 # execution environments described in the dissertation Phase 3 plan
 # (bare-metal, containerised, virtualised).
@@ -12,7 +12,7 @@
 #
 #   detect      Hardware capability detection + version manifest. Always run.
 #   build       Build v4 / v5 / v6 binaries that are missing.
-#   solo        "1-after-1" methodology -- single workload, no
+#   solo        SBAC-PAD "1-after-1" methodology -- single workload, no
 #               co-runner. Reproduces Fig.3 (time series), Fig.4 (per-app bars),
 #               Fig.5 (PCA + k-means).
 #   pairwise    Antagonist + victim co-located -- ground truth for
@@ -81,11 +81,11 @@ STAGES_CSV="$DEFAULT_STAGES"
 VARIANTS_CSV="$DEFAULT_VARIANTS"
 ENVS_CSV="bare"   # bare only by default; user opts in to container/vm explicitly
 WORKLOAD_FILTER=""
-DURATION=60
+DURATION=180
 WARMUP=10
 COOLDOWN=5
 INTERVAL=1
-REPS=3
+REPS=4
 TIMESERIES_DURATION=300
 OVERHEAD_DURATION=60
 DRY_RUN=0
@@ -103,6 +103,11 @@ V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
 # Run bare-metal workloads inside a dedicated cgroup and point v4/v6 to it.
 # This improves attribution for child workers and resctrl-backed metrics.
 USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
+# Leave CPU governor management opt-in. Some Intel pstate hosts can block
+# indefinitely in sysfs governor writes under load or RCU pressure.
+SET_CPU_GOVERNOR="${INTP_BENCH_SET_CPU_GOVERNOR:-0}"
+WAIT_TIMEOUT_S="${INTP_BENCH_WAIT_TIMEOUT_S:-45}"
+SYSTEMTAP_READ_TIMEOUT_S="${INTP_BENCH_SYSTEMTAP_READ_TIMEOUT_S:-2}"
 
 ACTIVE_RESCTRL_HELPER=0
 CURRENT_WORKLOAD_CGROUP=""
@@ -117,7 +122,7 @@ _ORIG_GOVERNORS=""
 _ORIG_AUTOGROUP=""
 
 # -----------------------------------------------------------------------------
-# 2. Workload matrix -- 15 workloads aligned with the legacy IntP Table II.
+# 2. Workload matrix -- 15 workloads aligned with SBAC-PAD Table II.
 #
 # Format: id|category|stress-ng args
 #
@@ -180,6 +185,49 @@ run_or_dry() {
     fi
 }
 
+wait_pid_timeout() {
+    # $1 pid, $2 timeout_s, $3 label
+    local pid="$1" timeout_s="$2" label="${3:-process}"
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    case "$pid" in
+        ''|0|*[!0-9]*) return 0 ;;
+    esac
+
+    local end=$((SECONDS + timeout_s))
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$SECONDS" -ge "$end" ]; then
+            warn "[$label] timeout waiting for pid=$pid after ${timeout_s}s"
+            return 1
+        fi
+        sleep 1
+    done
+    wait "$pid" 2>/dev/null || true
+    return 0
+}
+
+terminate_pid_gracefully() {
+    # $1 pid, $2 label
+    local pid="$1" label="${2:-process}"
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    case "$pid" in
+        ''|0|*[!0-9]*) return 0 ;;
+    esac
+
+    kill -TERM "$pid" 2>/dev/null || true
+    if wait_pid_timeout "$pid" "$WAIT_TIMEOUT_S" "$label/term"; then
+        return 0
+    fi
+
+    warn "[$label] escalating to SIGKILL pid=$pid"
+    kill -KILL "$pid" 2>/dev/null || true
+    if wait_pid_timeout "$pid" 10 "$label/kill"; then
+        return 2
+    fi
+
+    warn "[$label] could not reap pid=$pid after SIGKILL"
+    return 3
+}
+
 # -----------------------------------------------------------------------------
 # 4. CLI parsing
 # -----------------------------------------------------------------------------
@@ -211,6 +259,8 @@ Other:
   --vm-image PATH          qcow2 image for VM env (required when env=vm)
   --vm-mem SIZE            VM memory (default: $VM_MEM)
   --vm-cpus N              VM CPU count (default: $VM_CPUS)
+    env INTP_BENCH_SET_CPU_GOVERNOR=1
+                                                    Force governor -> performance during the run
   --skip-build             Do not auto-build missing variants
   --allow-v1               Allow V1 on kernel >= 6.8 (will fail at runtime)
   --dry-run                Print actions without executing
@@ -346,6 +396,9 @@ ensure_perf_paranoid() {
 
 setup_cpu_env() {
     [ "$DRY_RUN" -eq 1 ] && return 0
+    if [ "$SET_CPU_GOVERNOR" != "1" ]; then
+        log "[cpu_env] governor management disabled (set INTP_BENCH_SET_CPU_GOVERNOR=1 to enable)"
+    else
     local gov_path gov count=0
     for gov_path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
         [ -f "$gov_path" ] || continue
@@ -361,6 +414,7 @@ setup_cpu_env() {
         log "[cpu_env] governor → performance (was: $first_gov on $count cpus)"
     else
         log "[cpu_env] no cpufreq sysfs — governor unchanged"
+    fi
     fi
     _ORIG_AUTOGROUP=$(cat /proc/sys/kernel/sched_autogroup_enabled 2>/dev/null || echo 1)
     if [ "$_ORIG_AUTOGROUP" = "1" ]; then
@@ -413,6 +467,7 @@ write_metadata() {
         echo "timeseries_duration=$TIMESERIES_DURATION overhead_duration=$OVERHEAD_DURATION"
         echo "container_image=$CONTAINER_IMAGE"
         echo "vm_image=${VM_IMAGE:-none} vm_mem=$VM_MEM vm_cpus=$VM_CPUS"
+        echo "set_cpu_governor=$SET_CPU_GOVERNOR"
     } > "$OUTPUT_DIR/metadata.txt"
 
     if [ -x "$DETECT_SH" ]; then
@@ -602,12 +657,11 @@ stop_groundtruth() {
     local outdir="$1"
     [ "$DRY_RUN" -eq 1 ] && return 0
     [ -f "$outdir/.gt.pid" ] && {
-        kill "$(cat "$outdir/.gt.pid")" 2>/dev/null || true
-        wait "$(cat "$outdir/.gt.pid")" 2>/dev/null || true
+        terminate_pid_gracefully "$(cat "$outdir/.gt.pid")" "groundtruth/collector" || true
         rm -f "$outdir/.gt.pid"
     }
     [ -f "$outdir/.perf.pid" ] && {
-        wait "$(cat "$outdir/.perf.pid")" 2>/dev/null || true
+        wait_pid_timeout "$(cat "$outdir/.perf.pid")" "$WAIT_TIMEOUT_S" "groundtruth/perf" || true
         rm -f "$outdir/.perf.pid"
     }
 }
@@ -739,8 +793,7 @@ stop_workload() {
     [ "$DRY_RUN" -eq 1 ] && return 0
     case "$env" in
         bare)
-            kill -TERM "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
+            terminate_pid_gracefully "$pid" "stop_workload/bare/$name"
             if [ -n "$cgroup_path" ] && [ -d "$cgroup_path" ]; then
                 rmdir "$cgroup_path" 2>/dev/null || true
             fi
@@ -749,8 +802,7 @@ stop_workload() {
             docker rm -f "$name" >/dev/null 2>&1 || true
             ;;
         vm)
-            kill -TERM "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
+            terminate_pid_gracefully "$pid" "stop_workload/vm/$name"
             ;;
     esac
 }
@@ -867,8 +919,7 @@ run_profiler_systemtap() {
 
     if [ -z "$intestbench" ]; then
         warn "[$variant] /proc/systemtap/intestbench did not appear after 30s"
-        kill "$stap_pid" 2>/dev/null || true
-        wait "$stap_pid" 2>/dev/null || true
+        terminate_pid_gracefully "$stap_pid" "stap/startup-timeout" || true
         stap_deep_cleanup "startup-timeout"
         echo 0 > "$outfile.samples"
         return 1
@@ -878,15 +929,16 @@ run_profiler_systemtap() {
     while [ "$(date +%s)" -lt "$end" ]; do
         local ts; ts=$(date +%s.%N)
         local line
-        line=$(grep -E '^[0-9]' "$intestbench" 2>/dev/null | tail -1 || true)
+        line=$(timeout "$SYSTEMTAP_READ_TIMEOUT_S" awk '/^[0-9]/{l=$0}END{print l}' "$intestbench" 2>/dev/null || true)
         if [ -n "$line" ]; then
             printf '%s\t%s\n' "$ts" "$line" >> "$outfile"
+        else
+            warn "[$variant] sample read timeout/empty at ts=$ts"
         fi
         sleep "$INTERVAL"
     done
 
-    kill "$stap_pid" 2>/dev/null || true
-    wait "$stap_pid" 2>/dev/null || true
+    terminate_pid_gracefully "$stap_pid" "stap/post-run" || true
     stap_deep_cleanup "post-run"
 
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
@@ -994,6 +1046,7 @@ run_profiler() {
 run_one() {
     local stage="$1" env="$2" variant="$3" wl_id="$4" wl_args="$5" rep="$6" duration="$7"
     local notes=""
+    local run_rc=0
 
     # ── Resume guard: skip run if profiler.tsv already has samples ──────────
     local _outdir_check="$OUTPUT_DIR/$env/$variant/$stage/$wl_id/rep$rep"
@@ -1063,7 +1116,16 @@ run_one() {
     stop_groundtruth "$outdir"
 
     [ "$DRY_RUN" -eq 0 ] && sleep "$COOLDOWN"
-    stop_workload "$env" "$wl_pid" "$cname" "$wl_cgroup"
+    local stop_rc=0
+    stop_workload "$env" "$wl_pid" "$cname" "$wl_cgroup" || stop_rc=$?
+    if [ "$stop_rc" -ne 0 ]; then
+        run_rc=1
+        if [ -n "$notes" ]; then
+            notes="$notes;teardown_failed_rc=$stop_rc"
+        else
+            notes="teardown_failed_rc=$stop_rc"
+        fi
+    fi
 
     local samples=0
     [ -f "$prof.samples" ] && samples=$(cat "$prof.samples")
@@ -1095,7 +1157,7 @@ run_one() {
 }
 EOF
 
-    record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" "$elapsed" 0 "$samples" "$prof" "$outdir/groundtruth.tsv" "$notes" "$target_scope"
+    record_index "$env" "$variant" "$stage" "$wl_id" "$rep" "$start_iso" "$elapsed" "$run_rc" "$samples" "$prof" "$outdir/groundtruth.tsv" "$notes" "$target_scope"
 }
 
 record_index() {
@@ -1104,11 +1166,11 @@ record_index() {
 }
 
 # -----------------------------------------------------------------------------
-# 12. Stage: solo (= 1-after-1)
+# 12. Stage: solo (= SBAC-PAD 1-after-1)
 # -----------------------------------------------------------------------------
 
 stage_solo() {
-    log "== solo (1-after-1) =="
+    log "== solo (1-after-1, SBAC-PAD reproduction) =="
     local env variant entry name cat args r
     for env in "${ENVS[@]}"; do
         for variant in "${VARIANTS[@]}"; do
@@ -1189,7 +1251,7 @@ stage_overhead() {
                 local t0; t0=$(date +%s.%N)
                 local pid
                 pid=$(launch_workload "$env" "$b_log" "$OVERHEAD_DURATION" "$rargs" "$cname_b" || echo 0)
-                [ "$DRY_RUN" -eq 0 ] && wait "$pid" 2>/dev/null || true
+                [ "$DRY_RUN" -eq 0 ] && wait_pid_timeout "$pid" "$WAIT_TIMEOUT_S" "overhead/baseline/$rid" || true
                 stop_workload "$env" "$pid" "$cname_b"
                 local elapsed_b; elapsed_b=$(awk -v t0="$t0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
                 echo "$elapsed_b" > "$b_dir/elapsed_s"
@@ -1214,7 +1276,7 @@ stage_overhead() {
                     wpid=$(launch_workload "$env" "$w_log" "$OVERHEAD_DURATION" "$rargs" "$cname_w" || echo 0)
                     [ "$DRY_RUN" -eq 0 ] && sleep 1
                     run_profiler "$variant" "$prof" "$OVERHEAD_DURATION" "$wpid" || true
-                    [ "$DRY_RUN" -eq 0 ] && wait "$wpid" 2>/dev/null || true
+                    [ "$DRY_RUN" -eq 0 ] && wait_pid_timeout "$wpid" "$WAIT_TIMEOUT_S" "overhead/$variant/$rid" || true
                     stop_workload "$env" "$wpid" "$cname_w"
                     local elapsed_w; elapsed_w=$(awk -v t0="$tw0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
                     echo "$elapsed_w" > "$w_dir/elapsed_s"
