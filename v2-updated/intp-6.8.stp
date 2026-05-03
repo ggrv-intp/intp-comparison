@@ -144,7 +144,7 @@ probe kernel.trace("block_rq_complete") {
 	data_len = $rq->__data_len
 	block_tput <<< data_len
 	block_cput <<< data_len
-	
+
 	if (data_len > 0) {
 		time = local_clock_ns();
 		start_time_ns = $rq->start_time_ns
@@ -153,8 +153,15 @@ probe kernel.trace("block_rq_complete") {
 		if(($rq->start_time_ns - io_start_time_ns) < 0) {
 			block_queued_time <<< io_start_time_ns - start_time_ns
 		}
-		if($rq->io_start_time_ns > 0 && (io_start_time_ns - time) < 0) {
-			block_srv_time <<< (time - io_start_time_ns)
+		# On kernel 6.8+ rq timestamps can fall in a different clock
+		# domain than local_clock_ns(), producing huge or negative deltas
+		# that overflow the blk metric downstream. Keep only sane samples
+		# (0 < delta < 10s).
+		if (io_start_time_ns > 0) {
+			delta = time - io_start_time_ns
+			if (delta > 0 && delta < 10000000000) {
+				block_srv_time <<< delta
+			}
 		}
 		block_op_dep += 1
 	}
@@ -163,20 +170,29 @@ probe kernel.trace("block_rq_complete") {
 function print_block_report()
 {
     if(@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
-    
+
     block_op_dep = block_op_dep/runtime_procfs
     svctm = svctm/runtime_procfs
+
+    # Clamp negative artifacts that can survive the probe filter when
+    # int64 multiplications wrap under noisy time deltas.
+    if (block_op_dep < 0) { block_op_dep = 0 }
+    if (svctm < 0) { svctm = 0 }
+
     svctm_ms = (svctm/1000/1000)/100
     svctm_ms_abs = (svctm/1000/1000)%100
-    util = ((svctm/1000/1000) * block_op_dep)/100   
+    util = ((svctm/1000/1000) * block_op_dep)/100
     util_abs = ((svctm/1000/1000) * block_op_dep)%100
     if(util > 100) {util = 100;	util_abs = 0}
 	if(util_abs >= 100) {util_abs=util_abs/10}
-	
+
 	printf("# ioblock %d %d %d.%.2d: %d.%02d%%\n", svctm, block_op_dep, svctm_ms, svctm_ms_abs, util, util_abs)
-	
+
 	if(util>=100){
 		util=99
+	}
+	if (util < 0) {
+		util = 0
 	}
 
 	delete block_op_dep

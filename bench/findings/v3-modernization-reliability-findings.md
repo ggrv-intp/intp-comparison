@@ -54,6 +54,33 @@ output contract.
    - Small changes in probe set or verbosity materially affect stability.
    - This sensitivity itself is evidence of lower production robustness.
 
+5. **Stap-mediated D-state deadlock with no userspace recovery path**
+   - **Date observed:** 2026-05-03 (Hetzner Sapphire Rapids, kernel 6.8.0-111-generic)
+   - **Symptoms:** Two `stapio` worker processes (intp-resctrl.stp and intp-6.8.stp,
+     PIDs 6681 and 2666) and one `stress-ng` workload (PID 4744, in cgroup
+     `intp-bench-bare-v3-app02_ml_llc`) entered uninterruptible sleep
+     (`STAT D`, `WCHAN wait_r`) and stayed there for 47-49 minutes after
+     the parent tmux session was killed.
+   - **Recovery attempts that failed:**
+     - `kill -KILL <pid>` — D-state ignores signals until the kernel
+       returns from the blocked call.
+     - `pkill -KILL -f stapio` / `pkill -KILL -f '^stap '` — same.
+     - `rmmod -f stap_<hash>` — refused with `EAGAIN`/"Resource temporarily
+       unavailable" because stapio still held module refcount = 1.
+   - **Resolution:** Hard reboot. No userspace path recovers from this state
+     once the probe handler is wedged behind a kernel completion.
+   - **Operational consequence:** A single deadlock event invalidates all
+     in-flight measurements, blocks new SystemTap variants from loading
+     (procfs collision on `/proc/systemtap/<module>`), and requires physical
+     or out-of-band reboot access. In a shared-tenant or production
+     environment, this is a hard blocker on running the SystemTap-based
+     variants for sustained campaigns.
+   - **Implication for the framework comparison:** v4 (procfs polling), v5
+     (bpftrace) and v6 (eBPF/CO-RE) cannot reach this failure class by
+     construction — none of them install kernel probes that can recursively
+     enter kernel locks held by the probed code path. eBPF in particular is
+     verified to terminate.
+
 ---
 
 ## Interpretation for cross-variant comparison
