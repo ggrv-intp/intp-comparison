@@ -263,45 +263,47 @@ sudo BENCH_VARIANTS=v2,v3,v4,v5,v6  BENCH_ENVS=bare \
 - HiBench: pendente
 - ETA total: ~20h, finalizando 5/5 no fim do dia
 
-### 5.1 Por que V3 trava: anatomia do deadlock
+### 5.1 Por que V3 trava: caracterização do failure mode
 
-A causa raiz é estrutural ao framework SystemTap quando aplicado sob alta
-pressão de probes em kernel 6.8+:
+O comportamento observado sob carga sustentada em V3:
 
-1. **Probes do IntP V3 atingem caminhos kernel-side concorrentes** sob
-   workload de pressão de cache LLC (`stress-ng --cache 24 --cache-level 3`).
-   Especificamente, probes em `block_rq_complete` e em `timer.profile`
-   (CPU sampling) executam em contextos com locks compartilhados.
-2. **Sob carga, um handler de probe bloqueia em uma função do kernel que
-   detém um lock** (ex: scheduler runqueue lock). Outros CPUs que também
-   precisam do mesmo lock entram em espera.
-3. **O kernel completion `wait_r`** que mantém os processos em D-state
-   é exatamente esse tipo de espera. SIGKILL não é entregue até o thread
-   voltar para userspace; o thread não volta porque está bloqueado em
-   completion no kernel; a completion não chega porque o handler de probe
-   está esperando o lock que outro probe handler segura.
-4. **Refcount do módulo stap fica >0** porque `stapio` ainda tem o módulo
-   aberto. `rmmod -f` falha com `EAGAIN`. Não há recovery em userspace.
+1. **Sob alta pressão de probes**, um handler entra em uma função do
+   kernel que detém um lock compartilhado (ex: scheduler runqueue lock).
+   Outros CPUs que precisam do mesmo lock entram em espera bloqueante.
+2. **Os processos afetados ficam em D-state** com `WCHAN=wait_r` (kernel
+   completion). SIGKILL não é entregue até o thread voltar para userspace;
+   o thread não volta porque está bloqueado em completion; a completion
+   não chega.
+3. **O módulo SystemTap fica refcount-locked** -- `stapio` ainda tem o
+   módulo aberto, `rmmod -f` falha com `EAGAIN`.
+4. **Não há recovery em userspace.** A única saída é reboot.
 
-### 5.2 O que foi feito para V3 funcionar (apesar do deadlock)
+A combinação destes quatro elementos -- handler kernel-side capaz de
+bloquear, ausência de mecanismo de timeout em probes, refcount imobilizando
+o módulo, e impossibilidade de SIGKILL atingir D-state -- é estrutural ao
+framework SystemTap. Variantes baseadas em eBPF (V5, V6) não podem chegar
+a este estado por construção: o verificador formal rejeita programas que
+não terminam, e não há módulo de kernel para travar refcount.
 
-Quatro intervenções foram aplicadas ao longo da fase experimental.
+### 5.2 Mitigações aplicadas ao caminho V2/V3
+
+Cinco intervenções foram aplicadas ao longo da fase experimental.
 **Mitigações reduzem probabilidade de cascata, mas não eliminam o failure
-mode estrutural** -- por isso V4-V6 são necessárias.
+mode estrutural** descrito em 5.1 -- por isso V4-V6 são necessárias.
 
 | Intervenção | Arquivo | Efeito |
 |---|---|---|
 | `stap_deep_cleanup` pre-run estendido para V2+V3 | `bench/run-intp-bench.sh:882` | Antes de cada run, descarrega módulos stap leftover do run anterior. Evita que o segundo run da mesma campanha falhe ao registrar `intestbench` no procfs. |
 | Pausa profunda periódica (`INTP_BENCH_V3_DEEP_CLEANUP_EVERY=5`) | `bench/run-intp-bench.sh:884` | A cada 5 runs, sleep adicional de 8s para o kernel reclamar recursos antes de carregar novo módulo. |
-| Flag `--suppress-handler-errors` + `-DMAXSKIPPED=1000000` | `bench/run-intp-bench.sh:899-902` | Stap não aborta quando handlers individuais falham; tolerância elevada para probes saltadas. |
+| Flag `--suppress-handler-errors` + `-DMAXSKIPPED=1000000` | `bench/run-intp-bench.sh:902-906` | Stap não aborta quando handlers individuais falham; tolerância elevada para probes saltadas. |
 | Filtro defensivo + clamp `[0,99]` na métrica `blk` | `v2-updated/intp-6.8.stp:182-193,199-224` | Resolve overflow numérico do `blk` (Achado E), retro-portado de V3 que já tinha o guard. |
+| Resolução de comm-name resiliente para alvos do stap | `bench/run-intp-bench.sh:898-915` | Aguarda exec do wrapper bash antes de resolver comm; jamais permite que o alvo seja `bash`/`sh`. Garante que o probe foque no workload, não no orquestrador. |
 
-**Quando a cascata acontece mesmo assim** (Achado C, hoje 04:21h):
-o bench script loga WARN, escala para SIGKILL (sem efeito em D-state),
-desiste do PID, e **continua para o próximo run**. Isso significa que
-**a campanha não trava** -- apenas acumula 1-2 módulos leftover por
-deadlock. O custo prático é ~60s extras por evento + desperdício de uma
-rep.
+**Quando a cascata acontece mesmo assim:** o bench script loga WARN,
+escala para SIGKILL (sem efeito em D-state), desiste do PID, e
+**continua para o próximo run**. A campanha não trava -- apenas acumula
+1-2 módulos leftover por evento. Custo prático: ~60s extras por
+ocorrência + desperdício de uma rep.
 
 ### 5.3 O que falta executar na campanha atual
 

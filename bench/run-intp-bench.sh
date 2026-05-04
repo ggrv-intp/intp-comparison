@@ -892,12 +892,26 @@ run_profiler_systemtap() {
     fi
 
     # SystemTap variants attach by command name (stress-ng) -- they monitor
-    # all matching processes. We pass the workload PID's comm so the probe
-    # restricts to it.
+    # all matching processes. The launch wrapper is `bash -c '...; exec stress-ng'`,
+    # so during a small race window /proc/$pid/comm reads as "bash" before exec.
+    # If we trace "bash" we end up self-monitoring the orchestration scripts, which
+    # creates recursive probe pressure and can deadlock the kernel under load.
+    # Wait briefly for exec to land, and refuse to ever target shell wrappers.
     local target="stress-ng"
     if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -d "/proc/$pid" ]; then
-        target=$(awk '{print $2}' /proc/$pid/stat 2>/dev/null | tr -d '()' || echo stress-ng)
+        local _try
+        for _try in 1 2 3 4 5 6 7 8 9 10; do
+            target=$(awk '{print $2}' /proc/$pid/stat 2>/dev/null | tr -d '()')
+            case "$target" in
+                bash|sh|dash|"") sleep 0.5 ;;
+                *) break ;;
+            esac
+        done
+        case "$target" in
+            bash|sh|dash|"") target="stress-ng" ;;  # never trace wrappers
+        esac
     fi
+    log "  [$variant] stap target=$target (pid=$pid)"
 
     stap --suppress-handler-errors -g \
         -B CONFIG_MODVERSIONS=y \
