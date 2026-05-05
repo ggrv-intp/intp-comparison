@@ -21,6 +21,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 SPARK_VERSION="${SPARK_VERSION:-3.5.3}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 HIBENCH_REF="${HIBENCH_REF:-master}"
