@@ -251,7 +251,11 @@ stop_profiler() {
         STAP_PID=""
     fi
 
-    [ "$variant" = "v3" ] && stap_deep_cleanup "post-hibench-${outfile##*/}"
+    if [ "$variant" = "v3" ]; then
+        stap_deep_cleanup "post-hibench-${outfile##*/}"
+    fi
+
+    return 0
 }
 
 _start_v3_profiler() {
