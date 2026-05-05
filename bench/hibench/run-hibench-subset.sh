@@ -594,8 +594,13 @@ _on_exit() {
     stop_resctrl_helper
     local v
     for v in "${VARIANTS[@]}"; do
-        [ "$v" = "v3" ] && stap_deep_cleanup "exit-trap" && break
+        if [ "$v" = "v3" ]; then
+            stap_deep_cleanup "exit-trap"
+            break
+        fi
     done
+
+    return 0
 }
 trap '_on_exit' EXIT INT TERM
 
