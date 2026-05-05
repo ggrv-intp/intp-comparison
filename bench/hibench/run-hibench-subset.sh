@@ -492,18 +492,16 @@ run_workload_with_profiler() {
             log "  DRY: (spark_env) && bash $spark_script >> $workload_log 2>&1"
             sleep 2
         else
-            {
+            (
                 printf '\n===== rep %s start %s =====\n' "$reps" "$(date -Iseconds)"
-                (
-                    eval "$spark_env"
-                    [ -n "$SPARK_HOME" ] && export SPARK_HOME
-                    export HIBENCH_HOME
-                    bash "$spark_script"
-                )
+                eval "$spark_env"
+                [ -n "$SPARK_HOME" ] && export SPARK_HOME
+                export HIBENCH_HOME
+                bash "$spark_script"
                 rc=$?
                 printf '===== rep %s end rc=%s %s =====\n' "$reps" "$rc" "$(date -Iseconds)"
                 exit "$rc"
-            } >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${reps} failed (see $workload_log)"
+            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${reps} failed (see $workload_log)"
         fi
 
         run_elapsed=$(( $(date +%s) - t0 ))
