@@ -82,6 +82,7 @@ VM_CPUS="${VM_CPUS:-16}"
 RUN_HIBENCH="${RUN_HIBENCH:-1}"
 HIBENCH_SIZE="${HIBENCH_SIZE:-medium}"
 HIBENCH_PROFILE="${HIBENCH_PROFILE:-both}"
+HIBENCH_WORKLOADS="${HIBENCH_WORKLOADS:-all}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
@@ -125,7 +126,7 @@ echo "  bench_envs=$BENCH_ENVS"
 echo "  bench_variants=$BENCH_VARIANTS"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
-echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hadoop_profile=$HADOOP_PROFILE"
+echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v3_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 
@@ -195,6 +196,7 @@ if [ "$RUN_HIBENCH" = "1" ]; then
   run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$BENCH_VARIANTS" \
     bash bench/hibench/run-hibench-subset.sh \
       --variants "$BENCH_VARIANTS" \
+      --workloads "$HIBENCH_WORKLOADS" \
       --size "$HIBENCH_SIZE" \
       --profile "$HIBENCH_PROFILE" \
       --out-root "$OUT/hibench"
