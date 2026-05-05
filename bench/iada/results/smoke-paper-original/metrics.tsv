@@ -1,0 +1,2 @@
+variant	env	workload_mix	cloudlets_total	cloudletcost_avg	cloudletcost_sum	intervals_count	interference_avg	interference_sum	interference_max	migrations_total	migrations_avg	idi_avg	idi_sum	idi_max	sim_wallclock_min	sim_finished	classifier_calls
+ORIG	paper	192_48	192	1.5023	288.44	24	3441.225	82589.4	4944.73	84	3.6522	3476.225	83429.4	4964.73	26	1	4608
