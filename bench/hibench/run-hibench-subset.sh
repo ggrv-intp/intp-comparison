@@ -47,6 +47,8 @@ INTERVAL=1
 WARMUP=15                   # seconds to let Spark ramp before recording
 MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
 MIN_WORKLOAD_ELAPSED=0      # minimum cumulative Spark runtime per workload (seconds)
+WORKLOAD_REPS=1             # minimum number of Spark invocations per workload
+ELAPSED_CV_WARN_PCT=20      # warn when duration coefficient of variation reaches this percent
 STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Process name that stap will filter for Spark JVM processes.
 # Spark driver/executors all run as "java" on the host.
@@ -97,6 +99,8 @@ Options:
   --warmup N                  Seconds to let Spark ramp before recording (default: $WARMUP)
   --max-duration N            Max profiler window per job in seconds (default: $MAX_WORKLOAD_DURATION)
     --min-elapsed N             Min cumulative Spark runtime per workload via reruns (default: $MIN_WORKLOAD_ELAPSED)
+    --reps N                    Min number of Spark invocations per workload (default: $WORKLOAD_REPS)
+    --elapsed-cv-warn-pct N     Warn threshold for duration CV percent across reps (default: $ELAPSED_CV_WARN_PCT)
   --stap-target NAME          Process name for V3 stap filter (default: $STAP_TARGET)
   --dry-run                   Print actions without executing
   -h, --help                  Show this help
@@ -122,6 +126,8 @@ parse_args() {
             --warmup)        WARMUP="$2"; shift 2 ;;
             --max-duration)  MAX_WORKLOAD_DURATION="$2"; shift 2 ;;
             --min-elapsed)   MIN_WORKLOAD_ELAPSED="$2"; shift 2 ;;
+            --reps)          WORKLOAD_REPS="$2"; shift 2 ;;
+            --elapsed-cv-warn-pct) ELAPSED_CV_WARN_PCT="$2"; shift 2 ;;
             --stap-target)   STAP_TARGET="$2"; shift 2 ;;
             --dry-run)       DRY_RUN=1; shift ;;
             -h|--help)       usage; exit 0 ;;
@@ -131,6 +137,9 @@ parse_args() {
 
     case "$SIZE" in small|medium|large) ;; *) die "invalid --size: $SIZE" ;; esac
     case "$PROFILE" in standard|netp-extreme|both) ;; *) die "invalid --profile: $PROFILE" ;; esac
+    case "$WORKLOAD_REPS" in ''|*[!0-9]*) die "invalid --reps: $WORKLOAD_REPS" ;; esac
+    [ "$WORKLOAD_REPS" -ge 1 ] || die "--reps must be >= 1"
+    case "$ELAPSED_CV_WARN_PCT" in ''|*[!0-9.]*|.*.*) die "invalid --elapsed-cv-warn-pct: $ELAPSED_CV_WARN_PCT" ;; esac
 
     local IFS=','
     read -r -a VARIANTS <<< "$VARIANTS_CSV"
@@ -470,6 +479,9 @@ run_workload_with_profiler() {
     local elapsed=0
     local reps=0
     local run_elapsed t0
+    local -a REP_ELAPSED=()
+    local rep_elapsed_csv elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s
+    local high_variation elapsed_series_json
     : > "$workload_log"
 
     while true; do
@@ -496,23 +508,56 @@ run_workload_with_profiler() {
 
         run_elapsed=$(( $(date +%s) - t0 ))
         elapsed=$((elapsed + run_elapsed))
+        REP_ELAPSED+=("$run_elapsed")
 
-        if [ "$MIN_WORKLOAD_ELAPSED" -le 0 ] || [ "$elapsed" -ge "$MIN_WORKLOAD_ELAPSED" ]; then
+        if [ "$reps" -ge "$WORKLOAD_REPS" ] && { [ "$MIN_WORKLOAD_ELAPSED" -le 0 ] || [ "$elapsed" -ge "$MIN_WORKLOAD_ELAPSED" ]; }; then
             break
         fi
-        log "  [$variant] $workload_name — cumulative ${elapsed}s < min ${MIN_WORKLOAD_ELAPSED}s, rerunning"
+        log "  [$variant] $workload_name — progress reps=${reps}/${WORKLOAD_REPS} elapsed=${elapsed}s min=${MIN_WORKLOAD_ELAPSED}s, rerunning"
     done
 
     log "  [$variant] $workload_name — stopping profiler (cumulative job ran ${elapsed}s across ${reps} rep(s))"
     stop_profiler "$variant" "$profiler_tsv"
 
+    rep_elapsed_csv=$(IFS=,; echo "${REP_ELAPSED[*]}")
+    read -r elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s <<EOF
+$(awk -F',' '
+    {
+        n=NF
+        min=$1+0; max=$1+0; sum=0
+        for(i=1;i<=NF;i++) {
+            x=$i+0
+            sum+=x
+            if(x<min) min=x
+            if(x>max) max=x
+            a[i]=x
+        }
+        mean=sum/n
+        var=0
+        for(i=1;i<=n;i++) {
+            d=a[i]-mean
+            var+=d*d
+        }
+        std=(n>1)?sqrt(var/(n-1)):0
+        cv=(mean>0)?(100*std/mean):0
+        printf "%.3f %.3f %.3f %.3f %.3f\n", mean, std, cv, min, max
+    }
+' <<< "$rep_elapsed_csv")
+EOF
+
+    high_variation=$(awk -v cv="$elapsed_cv_pct" -v th="$ELAPSED_CV_WARN_PCT" 'BEGIN{print (cv>=th)?"true":"false"}')
+    elapsed_series_json="[$rep_elapsed_csv]"
+
     local samples=0
     [ -f "$profiler_tsv" ] && samples=$(awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" 2>/dev/null)
 
     cat > "$outdir/run.json" <<EOF
-{"variant":"$variant","workload":"$workload_name","elapsed_s":$elapsed,"repetitions":$reps,"samples":$samples,"status":"ok"}
+{"variant":"$variant","workload":"$workload_name","elapsed_s":$elapsed,"repetitions":$reps,"elapsed_series_s":$elapsed_series_json,"elapsed_mean_s":$elapsed_mean_s,"elapsed_stddev_s":$elapsed_stddev_s,"elapsed_cv_pct":$elapsed_cv_pct,"elapsed_min_s":$elapsed_min_s,"elapsed_max_s":$elapsed_max_s,"high_variation":$high_variation,"samples":$samples,"status":"ok"}
 EOF
-    log "  [$variant] $workload_name — done (elapsed=${elapsed}s reps=${reps} samples=${samples})"
+    log "  [$variant] $workload_name — done (elapsed=${elapsed}s reps=${reps} mean=${elapsed_mean_s}s std=${elapsed_stddev_s}s cv=${elapsed_cv_pct}% samples=${samples})"
+    if [ "$high_variation" = "true" ]; then
+        warn "  [$variant] $workload_name — high duration variation across reps (cv=${elapsed_cv_pct}% >= ${ELAPSED_CV_WARN_PCT}%)"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -555,7 +600,7 @@ run_subset_for_profile() {
     outdir="$OUT_ROOT/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$outdir" || { outdir="/tmp/hibench-runs/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"; mkdir -p "$outdir"; }
 
-    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV min_elapsed=${MIN_WORKLOAD_ELAPSED}s"
+    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV reps=$WORKLOAD_REPS min_elapsed=${MIN_WORKLOAD_ELAPSED}s elapsed_cv_warn_pct=${ELAPSED_CV_WARN_PCT}"
     log "output: $outdir"
 
     set_hibench_size
@@ -605,9 +650,10 @@ run_subset_for_profile() {
     [ "${#RUNNERS[@]}" -gt 0 ] || die "no runnable workloads selected"
 
     {
-        printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nworkloads=%s\nhibench_home=%s\nspark_home=%s\n' \
-            "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$WORKLOADS_CSV" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
+        printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nworkloads=%s\nreps=%s\nhibench_home=%s\nspark_home=%s\n' \
+            "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$WORKLOADS_CSV" "$WORKLOAD_REPS" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
         printf 'min_workload_elapsed=%s\n' "$MIN_WORKLOAD_ELAPSED"
+        printf 'elapsed_cv_warn_pct=%s\n' "$ELAPSED_CV_WARN_PCT"
     } > "$outdir/metadata.env"
 
     # Main loop: for each workload, run all variants back-to-back so measurements

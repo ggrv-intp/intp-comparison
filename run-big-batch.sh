@@ -27,10 +27,12 @@
 #       (maps to HiBench scale: tiny | small | large)
 #     HIBENCH_PROFILE=both      standard | netp-extreme | both
 #     HIBENCH_WORKLOADS=all     comma-separated HiBench workloads
+#     HIBENCH_REPS=4            min Spark invocations per workload (default: REPS)
 #     HIBENCH_INTERVAL=1        HiBench profiler sampling interval (seconds)
 #     HIBENCH_WARMUP=15         HiBench pre-job warmup before Spark run (seconds)
 #     HIBENCH_MAX_DURATION=600  HiBench profiler max duration per Spark invocation (seconds)
 #     HIBENCH_MIN_ELAPSED=120   Min cumulative Spark runtime per workload (seconds)
+#     HIBENCH_ELAPSED_CV_WARN_PCT=20  Warn when duration CV across reps reaches threshold
 #     HADOOP_PROFILE=3          Spark binary variant (hadoop2 or hadoop3)
 #       (used by setup-spark-hibench.sh to select spark-X.Y.Z-bin-hadoop3.tgz)
 #     RUN_PLOTS=1               generate plots at end
@@ -90,10 +92,12 @@ RUN_HIBENCH="${RUN_HIBENCH:-1}"
 HIBENCH_SIZE="${HIBENCH_SIZE:-medium}"
 HIBENCH_PROFILE="${HIBENCH_PROFILE:-both}"
 HIBENCH_WORKLOADS="${HIBENCH_WORKLOADS:-all}"
+HIBENCH_REPS="${HIBENCH_REPS:-$REPS}"
 HIBENCH_INTERVAL="${HIBENCH_INTERVAL:-$INTERVAL}"
 HIBENCH_WARMUP="${HIBENCH_WARMUP:-$WARMUP}"
 HIBENCH_MAX_DURATION="${HIBENCH_MAX_DURATION:-$TIMESERIES_DURATION}"
 HIBENCH_MIN_ELAPSED="${HIBENCH_MIN_ELAPSED:-$DURATION}"
+HIBENCH_ELAPSED_CV_WARN_PCT="${HIBENCH_ELAPSED_CV_WARN_PCT:-20}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
@@ -139,7 +143,7 @@ echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
 echo "  run_stress_bench=$RUN_STRESS_BENCH"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
-echo "    hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED"
+echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v3_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 
@@ -216,10 +220,12 @@ if [ "$RUN_HIBENCH" = "1" ]; then
       --workloads "$HIBENCH_WORKLOADS" \
       --size "$HIBENCH_SIZE" \
       --profile "$HIBENCH_PROFILE" \
+      --reps "$HIBENCH_REPS" \
       --interval "$HIBENCH_INTERVAL" \
       --warmup "$HIBENCH_WARMUP" \
       --max-duration "$HIBENCH_MAX_DURATION" \
       --min-elapsed "$HIBENCH_MIN_ELAPSED" \
+      --elapsed-cv-warn-pct "$HIBENCH_ELAPSED_CV_WARN_PCT" \
       --out-root "$OUT/hibench"
 else
   echo "Skipping HiBench subset (RUN_HIBENCH=$RUN_HIBENCH)"
