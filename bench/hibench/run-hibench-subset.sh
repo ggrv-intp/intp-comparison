@@ -38,6 +38,7 @@ V6_BIN="$REPO_ROOT/v6-ebpf-core/intp-ebpf"
 SIZE="${SIZE:-medium}"
 PROFILE="${PROFILE:-both}"
 VARIANTS_CSV="${VARIANTS_CSV:-v4,v5,v6}"
+WORKLOADS_CSV="${WORKLOADS_CSV:-all}"
 OUT_ROOT="${OUT_ROOT:-/var/lib/hibench/runs}"
 HIBENCH_HOME="${HIBENCH_HOME:-/opt/HiBench}"
 SPARK_HOME="${SPARK_HOME:-}"
@@ -63,6 +64,7 @@ STAP_COLLECTOR_PID=""
 ACTIVE_RESCTRL_HELPER=0
 
 VARIANTS=()
+WORKLOADS=()
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -83,6 +85,8 @@ Usage: sudo $0 [options]
 Options:
   --variants CSV              IntP variants to run (default: v4,v5,v6)
                               Supported: v3,v4,v5,v6
+    --workloads CSV             Workloads to run (default: all)
+                                                            Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight
   --size small|medium|large   HiBench dataset profile (default: medium)
   --profile standard|netp-extreme|both
   --out-root DIR              Output root (default: $OUT_ROOT)
@@ -106,6 +110,7 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --variants)      VARIANTS_CSV="$2"; shift 2 ;;
+            --workloads)     WORKLOADS_CSV="$2"; shift 2 ;;
             --size)          SIZE="$2"; shift 2 ;;
             --profile)       PROFILE="$2"; shift 2 ;;
             --out-root)      OUT_ROOT="$2"; shift 2 ;;
@@ -126,7 +131,31 @@ parse_args() {
 
     local IFS=','
     read -r -a VARIANTS <<< "$VARIANTS_CSV"
+    read -r -a WORKLOADS <<< "$WORKLOADS_CSV"
     unset IFS
+
+    local w
+    for w in "${WORKLOADS[@]}"; do
+        case "$w" in
+            all|terasort|wordcount|pagerank|kmeans|bayes|sql_nweight) ;;
+            *) die "invalid --workloads entry: $w" ;;
+        esac
+    done
+
+    if [ "${#WORKLOADS[@]}" -gt 1 ]; then
+        for w in "${WORKLOADS[@]}"; do
+            [ "$w" = "all" ] && die "--workloads cannot mix 'all' with specific workloads"
+        done
+    fi
+}
+
+workload_selected() {
+    local name="$1" w
+    for w in "${WORKLOADS[@]}"; do
+        [ "$w" = "all" ] && return 0
+        [ "$w" = "$name" ] && return 0
+    done
+    return 1
 }
 
 # -----------------------------------------------------------------------------
@@ -498,7 +527,7 @@ run_subset_for_profile() {
     outdir="$OUT_ROOT/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$outdir" || { outdir="/tmp/hibench-runs/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"; mkdir -p "$outdir"; }
 
-    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV"
+    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV"
     log "output: $outdir"
 
     set_hibench_size
@@ -510,32 +539,46 @@ run_subset_for_profile() {
     local -a RUNNERS=()
     local runner
 
-    runner=$(resolve_runner \
-        "bin/workloads/micro/terasort/spark/run.sh" \
-        "bin/workloads/micro/sort/spark/run.sh") || die "terasort/sort runner not found"
-    RUNNERS+=("terasort:$runner")
-
-    runner=$(resolve_runner "bin/workloads/micro/wordcount/spark/run.sh") || die "wordcount runner not found"
-    RUNNERS+=("wordcount:$runner")
-
-    runner=$(resolve_runner "bin/workloads/websearch/pagerank/spark/run.sh") || die "pagerank runner not found"
-    RUNNERS+=("pagerank:$runner")
-
-    runner=$(resolve_runner "bin/workloads/ml/kmeans/spark/run.sh") || die "kmeans runner not found"
-    RUNNERS+=("kmeans:$runner")
-
-    runner=$(resolve_runner "bin/workloads/ml/bayes/spark/run.sh") || die "bayes runner not found"
-    RUNNERS+=("bayes:$runner")
-
-    if runner=$(resolve_runner "bin/workloads/sql/nweight/spark/run.sh"); then
-        RUNNERS+=("sql_nweight:$runner")
-    else
-        warn "sql_nweight runner not found — continuing without sql_nweight"
+    if workload_selected terasort; then
+        runner=$(resolve_runner \
+            "bin/workloads/micro/terasort/spark/run.sh" \
+            "bin/workloads/micro/sort/spark/run.sh") || die "terasort/sort runner not found"
+        RUNNERS+=("terasort:$runner")
     fi
 
+    if workload_selected wordcount; then
+        runner=$(resolve_runner "bin/workloads/micro/wordcount/spark/run.sh") || die "wordcount runner not found"
+        RUNNERS+=("wordcount:$runner")
+    fi
+
+    if workload_selected pagerank; then
+        runner=$(resolve_runner "bin/workloads/websearch/pagerank/spark/run.sh") || die "pagerank runner not found"
+        RUNNERS+=("pagerank:$runner")
+    fi
+
+    if workload_selected kmeans; then
+        runner=$(resolve_runner "bin/workloads/ml/kmeans/spark/run.sh") || die "kmeans runner not found"
+        RUNNERS+=("kmeans:$runner")
+    fi
+
+    if workload_selected bayes; then
+        runner=$(resolve_runner "bin/workloads/ml/bayes/spark/run.sh") || die "bayes runner not found"
+        RUNNERS+=("bayes:$runner")
+    fi
+
+    if workload_selected sql_nweight; then
+        if runner=$(resolve_runner "bin/workloads/sql/nweight/spark/run.sh"); then
+            RUNNERS+=("sql_nweight:$runner")
+        else
+            warn "sql_nweight runner not found — continuing without sql_nweight"
+        fi
+    fi
+
+    [ "${#RUNNERS[@]}" -gt 0 ] || die "no runnable workloads selected"
+
     {
-        printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nhibench_home=%s\nspark_home=%s\n' \
-            "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
+        printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nworkloads=%s\nhibench_home=%s\nspark_home=%s\n' \
+            "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$WORKLOADS_CSV" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
     } > "$outdir/metadata.env"
 
     # Main loop: for each workload, run all variants back-to-back so measurements
