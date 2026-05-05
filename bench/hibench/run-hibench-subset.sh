@@ -144,9 +144,13 @@ parse_args() {
 
     if [ "${#WORKLOADS[@]}" -gt 1 ]; then
         for w in "${WORKLOADS[@]}"; do
-            [ "$w" = "all" ] && die "--workloads cannot mix 'all' with specific workloads"
+            if [ "$w" = "all" ]; then
+                die "--workloads cannot mix 'all' with specific workloads"
+            fi
         done
     fi
+
+    return 0
 }
 
 workload_selected() {
