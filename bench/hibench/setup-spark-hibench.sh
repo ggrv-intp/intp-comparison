@@ -63,6 +63,44 @@ ensure_hadoop_localmode_runtime() {
     [ -x "$HADOOP_HOME/bin/hadoop" ] || die "hadoop executable not found at $HADOOP_HOME/bin/hadoop"
 }
 
+ensure_localhost_ssh_noninteractive() {
+    # HiBench prepare scripts can invoke ssh localhost; make this non-interactive.
+    local ssh_dir="/root/.ssh"
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+
+    if [ ! -f "$ssh_dir/id_rsa" ]; then
+        ssh-keygen -q -N "" -t rsa -f "$ssh_dir/id_rsa"
+    fi
+
+    touch "$ssh_dir/authorized_keys"
+    chmod 600 "$ssh_dir/authorized_keys"
+    local pubkey
+    pubkey=$(cat "$ssh_dir/id_rsa.pub")
+    grep -qxF "$pubkey" "$ssh_dir/authorized_keys" || echo "$pubkey" >> "$ssh_dir/authorized_keys"
+
+    touch "$ssh_dir/known_hosts"
+    chmod 600 "$ssh_dir/known_hosts"
+    for h in localhost localhost.localdomain 127.0.0.1; do
+        ssh-keyscan -H "$h" >> "$ssh_dir/known_hosts" 2>/dev/null || true
+    done
+
+    mkdir -p /etc/ssh/ssh_config.d
+    cat > /etc/ssh/ssh_config.d/99-hibench-localhost.conf <<'EOF'
+Host localhost localhost.localdomain 127.0.0.1
+    StrictHostKeyChecking no
+    UserKnownHostsFile /root/.ssh/known_hosts
+    LogLevel ERROR
+EOF
+
+    # If sshd exists, refresh to ensure localhost auth path is ready.
+    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^ssh\.service'; then
+        systemctl restart ssh >/dev/null 2>&1 || true
+    fi
+
+    log "localhost SSH configured for non-interactive HiBench prepare"
+}
+
 install_os_deps() {
     log "installing OS dependencies"
     export DEBIAN_FRONTEND=noninteractive
@@ -261,6 +299,7 @@ download_spark
 clone_hibench
 build_hibench
 ensure_hadoop_localmode_runtime
+ensure_localhost_ssh_noninteractive
 configure_hibench
 prepare_datasets
 print_summary
