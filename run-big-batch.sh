@@ -21,10 +21,16 @@
 #     VM_CPUS=16                vCPUs for QEMU guest
 #
 #   Segment toggles
+#     RUN_STRESS_BENCH=1        run stress-ng full bench stages (detect/build/solo/pairwise/overhead/timeseries/report)
 #     RUN_HIBENCH=1             run HiBench Spark subset
 #     HIBENCH_SIZE=medium       HiBench dataset: small | medium | large
 #       (maps to HiBench scale: tiny | small | large)
 #     HIBENCH_PROFILE=both      standard | netp-extreme | both
+#     HIBENCH_WORKLOADS=all     comma-separated HiBench workloads
+#     HIBENCH_INTERVAL=1        HiBench profiler sampling interval (seconds)
+#     HIBENCH_WARMUP=15         HiBench pre-job warmup before Spark run (seconds)
+#     HIBENCH_MAX_DURATION=600  HiBench profiler max duration per Spark invocation (seconds)
+#     HIBENCH_MIN_ELAPSED=120   Min cumulative Spark runtime per workload (seconds)
 #     HADOOP_PROFILE=3          Spark binary variant (hadoop2 or hadoop3)
 #       (used by setup-spark-hibench.sh to select spark-X.Y.Z-bin-hadoop3.tgz)
 #     RUN_PLOTS=1               generate plots at end
@@ -79,10 +85,15 @@ VM_MEM="${VM_MEM:-32G}"
 VM_CPUS="${VM_CPUS:-16}"
 
 # ── Segment toggles ────────────────────────────────────────────────────────────
+RUN_STRESS_BENCH="${RUN_STRESS_BENCH:-1}"
 RUN_HIBENCH="${RUN_HIBENCH:-1}"
 HIBENCH_SIZE="${HIBENCH_SIZE:-medium}"
 HIBENCH_PROFILE="${HIBENCH_PROFILE:-both}"
 HIBENCH_WORKLOADS="${HIBENCH_WORKLOADS:-all}"
+HIBENCH_INTERVAL="${HIBENCH_INTERVAL:-$INTERVAL}"
+HIBENCH_WARMUP="${HIBENCH_WARMUP:-$WARMUP}"
+HIBENCH_MAX_DURATION="${HIBENCH_MAX_DURATION:-$TIMESERIES_DURATION}"
+HIBENCH_MIN_ELAPSED="${HIBENCH_MIN_ELAPSED:-$DURATION}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
@@ -126,7 +137,9 @@ echo "  bench_envs=$BENCH_ENVS"
 echo "  bench_variants=$BENCH_VARIANTS"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
+echo "  run_stress_bench=$RUN_STRESS_BENCH"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
+echo "    hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v3_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 
@@ -177,19 +190,23 @@ fi
 
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
 # V3 cleanup guard is exported above; bench script inherits it automatically.
-run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
-  bash bench/run-intp-bench.sh \
-    --stage detect,build,solo,pairwise,overhead,timeseries,report \
-    --variants "$BENCH_VARIANTS" \
-    --env "$BENCH_ENVS" \
-    --interval "$INTERVAL" \
-    --duration "$DURATION" \
-    --reps "$REPS" \
-    --warmup "$WARMUP" \
-    --cooldown "$COOLDOWN" \
-    --timeseries-duration "$TIMESERIES_DURATION" \
-    --overhead-duration "$OVERHEAD_DURATION" \
-    --output-dir "$OUT/bench-full"
+if [ "$RUN_STRESS_BENCH" = "1" ]; then
+  run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
+    bash bench/run-intp-bench.sh \
+      --stage detect,build,solo,pairwise,overhead,timeseries,report \
+      --variants "$BENCH_VARIANTS" \
+      --env "$BENCH_ENVS" \
+      --interval "$INTERVAL" \
+      --duration "$DURATION" \
+      --reps "$REPS" \
+      --warmup "$WARMUP" \
+      --cooldown "$COOLDOWN" \
+      --timeseries-duration "$TIMESERIES_DURATION" \
+      --overhead-duration "$OVERHEAD_DURATION" \
+      --output-dir "$OUT/bench-full"
+else
+  echo "Skipping full bench stress-ng segment (RUN_STRESS_BENCH=$RUN_STRESS_BENCH)"
+fi
 
 # ── Segment 2: HiBench Spark subset ──────────────────────────────────────────
 if [ "$RUN_HIBENCH" = "1" ]; then
@@ -199,6 +216,10 @@ if [ "$RUN_HIBENCH" = "1" ]; then
       --workloads "$HIBENCH_WORKLOADS" \
       --size "$HIBENCH_SIZE" \
       --profile "$HIBENCH_PROFILE" \
+      --interval "$HIBENCH_INTERVAL" \
+      --warmup "$HIBENCH_WARMUP" \
+      --max-duration "$HIBENCH_MAX_DURATION" \
+      --min-elapsed "$HIBENCH_MIN_ELAPSED" \
       --out-root "$OUT/hibench"
 else
   echo "Skipping HiBench subset (RUN_HIBENCH=$RUN_HIBENCH)"
@@ -206,7 +227,9 @@ fi
 
 # ── Segment 3: plots ───────────────────────────────────────────────────────────
 if [ "$RUN_PLOTS" = "1" ]; then
-  if command -v python3 >/dev/null 2>&1; then
+  if [ ! -d "$OUT/bench-full" ]; then
+    echo "Skipping plots: bench-full not found at $OUT/bench-full"
+  elif command -v python3 >/dev/null 2>&1; then
     run_step "render plots from bench results" \
       python3 bench/plot/plot-intp-bench.py "$OUT/bench-full"
   else

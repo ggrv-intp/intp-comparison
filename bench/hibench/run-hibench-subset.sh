@@ -46,6 +46,7 @@ DRY_RUN=0
 INTERVAL=1
 WARMUP=15                   # seconds to let Spark ramp before recording
 MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
+MIN_WORKLOAD_ELAPSED=0      # minimum cumulative Spark runtime per workload (seconds)
 STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Process name that stap will filter for Spark JVM processes.
 # Spark driver/executors all run as "java" on the host.
@@ -95,6 +96,7 @@ Options:
   --interval N                Profiler sampling interval in seconds (default: $INTERVAL)
   --warmup N                  Seconds to let Spark ramp before recording (default: $WARMUP)
   --max-duration N            Max profiler window per job in seconds (default: $MAX_WORKLOAD_DURATION)
+    --min-elapsed N             Min cumulative Spark runtime per workload via reruns (default: $MIN_WORKLOAD_ELAPSED)
   --stap-target NAME          Process name for V3 stap filter (default: $STAP_TARGET)
   --dry-run                   Print actions without executing
   -h, --help                  Show this help
@@ -119,6 +121,7 @@ parse_args() {
             --interval)      INTERVAL="$2"; shift 2 ;;
             --warmup)        WARMUP="$2"; shift 2 ;;
             --max-duration)  MAX_WORKLOAD_DURATION="$2"; shift 2 ;;
+            --min-elapsed)   MIN_WORKLOAD_ELAPSED="$2"; shift 2 ;;
             --stap-target)   STAP_TARGET="$2"; shift 2 ;;
             --dry-run)       DRY_RUN=1; shift ;;
             -h|--help)       usage; exit 0 ;;
@@ -464,31 +467,52 @@ run_workload_with_profiler() {
     # Warmup: let Spark JVM appear before recording
     [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
 
-    log "  [$variant] $workload_name — running Spark job"
-    local t0; t0=$(date +%s)
-    if [ "$DRY_RUN" -eq 1 ]; then
-        log "  DRY: (spark_env) && bash $spark_script > $workload_log 2>&1"
-        sleep 2
-    else
-        (
-            eval "$spark_env"
-            [ -n "$SPARK_HOME" ] && export SPARK_HOME
-            export HIBENCH_HOME
-            bash "$spark_script"
-        ) > "$workload_log" 2>&1 || warn "  [$variant] $workload_name Spark job failed (see $workload_log)"
-    fi
-    local elapsed=$(( $(date +%s) - t0 ))
+    local elapsed=0
+    local reps=0
+    local run_elapsed t0
+    : > "$workload_log"
 
-    log "  [$variant] $workload_name — stopping profiler (job ran ${elapsed}s)"
+    while true; do
+        reps=$((reps + 1))
+        log "  [$variant] $workload_name — running Spark job (rep=${reps})"
+        t0=$(date +%s)
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "  DRY: (spark_env) && bash $spark_script >> $workload_log 2>&1"
+            sleep 2
+        else
+            {
+                printf '\n===== rep %s start %s =====\n' "$reps" "$(date -Iseconds)"
+                (
+                    eval "$spark_env"
+                    [ -n "$SPARK_HOME" ] && export SPARK_HOME
+                    export HIBENCH_HOME
+                    bash "$spark_script"
+                )
+                rc=$?
+                printf '===== rep %s end rc=%s %s =====\n' "$reps" "$rc" "$(date -Iseconds)"
+                exit "$rc"
+            } >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${reps} failed (see $workload_log)"
+        fi
+
+        run_elapsed=$(( $(date +%s) - t0 ))
+        elapsed=$((elapsed + run_elapsed))
+
+        if [ "$MIN_WORKLOAD_ELAPSED" -le 0 ] || [ "$elapsed" -ge "$MIN_WORKLOAD_ELAPSED" ]; then
+            break
+        fi
+        log "  [$variant] $workload_name — cumulative ${elapsed}s < min ${MIN_WORKLOAD_ELAPSED}s, rerunning"
+    done
+
+    log "  [$variant] $workload_name — stopping profiler (cumulative job ran ${elapsed}s across ${reps} rep(s))"
     stop_profiler "$variant" "$profiler_tsv"
 
     local samples=0
     [ -f "$profiler_tsv" ] && samples=$(awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" 2>/dev/null)
 
     cat > "$outdir/run.json" <<EOF
-{"variant":"$variant","workload":"$workload_name","elapsed_s":$elapsed,"samples":$samples,"status":"ok"}
+{"variant":"$variant","workload":"$workload_name","elapsed_s":$elapsed,"repetitions":$reps,"samples":$samples,"status":"ok"}
 EOF
-    log "  [$variant] $workload_name — done (elapsed=${elapsed}s samples=${samples})"
+    log "  [$variant] $workload_name — done (elapsed=${elapsed}s reps=${reps} samples=${samples})"
 }
 
 # -----------------------------------------------------------------------------
@@ -531,7 +555,7 @@ run_subset_for_profile() {
     outdir="$OUT_ROOT/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$outdir" || { outdir="/tmp/hibench-runs/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"; mkdir -p "$outdir"; }
 
-    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV"
+    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV min_elapsed=${MIN_WORKLOAD_ELAPSED}s"
     log "output: $outdir"
 
     set_hibench_size
@@ -583,6 +607,7 @@ run_subset_for_profile() {
     {
         printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nworkloads=%s\nhibench_home=%s\nspark_home=%s\n' \
             "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$WORKLOADS_CSV" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
+        printf 'min_workload_elapsed=%s\n' "$MIN_WORKLOAD_ELAPSED"
     } > "$outdir/metadata.env"
 
     # Main loop: for each workload, run all variants back-to-back so measurements
