@@ -40,6 +40,7 @@ SPARK_HOME_VERSIONED="$INSTALL_ROOT/$SPARK_DIR"
 SPARK_HOME="${SPARK_HOME:-/opt/spark}"   # canonical symlink used by all scripts
 HIBENCH_HOME="${HIBENCH_HOME:-$INSTALL_ROOT/HiBench}"
 HADOOP_HOME="${HADOOP_HOME:-/usr/lib/hadoop}"
+HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-$HADOOP_HOME/etc/hadoop}"
 SCALA_VERSION="2.12"
 
 install_os_deps() {
@@ -147,6 +148,8 @@ configure_hibench() {
 
     sed -i "s|^hibench\.hadoop\.home.*|hibench.hadoop.home             /usr/lib/hadoop|" "$confdir/hadoop.conf"
     sed -i "s|^hibench\.hdfs\.master.*|hibench.hdfs.master             file:///|" "$confdir/hadoop.conf"
+    grep -q '^hibench.hadoop.configure.dir' "$confdir/hadoop.conf" || \
+        printf 'hibench.hadoop.configure.dir      %s\n' "$HADOOP_CONF_DIR" >> "$confdir/hadoop.conf"
     grep -q '^hibench.hadoop.executable' "$confdir/hadoop.conf" || \
         printf 'hibench.hadoop.executable         %s/bin/hadoop\n' "$HADOOP_HOME" >> "$confdir/hadoop.conf"
     grep -q '^hibench.hadoop.release' "$confdir/hadoop.conf" || \
@@ -200,6 +203,8 @@ prepare_datasets() {
             log "  prepare: $wl"
             export JAVA_HOME SPARK_HOME HIBENCH_HOME
             export HADOOP_HOME
+            export HADOOP_CONF_DIR
+            export YARN_CONF_DIR="$HADOOP_CONF_DIR"
             export PATH="$HADOOP_HOME/bin:$PATH"
             export HADOOP_EXECUTABLE="${HADOOP_EXECUTABLE:-$HADOOP_HOME/bin/hadoop}"
             # Some HiBench prepare scripts require these variables when running
