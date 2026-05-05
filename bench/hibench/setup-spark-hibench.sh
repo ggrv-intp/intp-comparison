@@ -169,26 +169,63 @@ clone_hibench() {
         https://github.com/Intel-bigdata/HiBench.git "$HIBENCH_HOME" 2>&1 | tail -5
 }
 
+_find_java8_home() {
+    # HiBench uses Scala 2.10/2.11 which is incompatible with Java 9+.
+    # Return the first Java 8 JAVA_HOME found, or empty string if none.
+    local candidates=(
+        /usr/lib/jvm/java-8-openjdk-amd64
+        /usr/lib/jvm/java-8-openjdk
+        /usr/lib/jvm/java-8-openjdk-arm64
+        /usr/local/jdk1.8.0
+    )
+    for d in "${candidates[@]}"; do
+        if [ -x "$d/bin/javac" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    # fallback: scan /usr/lib/jvm
+    find /usr/lib/jvm -maxdepth 2 -name javac 2>/dev/null | while read -r p; do
+        local home="${p%/bin/javac}"
+        local ver
+        ver=$("$home/bin/java" -version 2>&1 | awk -F'"' '/version/{print $2}' | head -1)
+        case "$ver" in 1.8.*|8.*) echo "$home"; return 0 ;; esac
+    done
+}
+
 build_hibench() {
     local autogen_jar="$HIBENCH_HOME/autogen/target/autogen-8.0-SNAPSHOT-jar-with-dependencies.jar"
     if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ -f "$autogen_jar" ]; then
         log "HiBench already built at $HIBENCH_HOME — skipping build"
         return 0
     fi
+
+    # Scala 2.10 (used by hibench-common) requires Java 8 to compile.
+    local build_java_home
+    build_java_home="$(_find_java8_home)"
+    if [ -z "$build_java_home" ]; then
+        log "Java 8 not found — installing openjdk-8-jdk for HiBench build…"
+        apt-get install -y -qq openjdk-8-jdk 2>&1 | tail -3
+        build_java_home="$(_find_java8_home)"
+        [ -n "$build_java_home" ] || die "Java 8 install failed; cannot build HiBench"
+    fi
+    log "using Java 8 at $build_java_home for HiBench build (Scala 2.10 compat)"
+
     if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ ! -f "$autogen_jar" ]; then
         log "HiBench run scripts present but autogen JAR missing — building autogen module only…"
         (
             cd "$HIBENCH_HOME"
-            export JAVA_HOME
+            JAVA_HOME="$build_java_home" \
             MAVEN_OPTS="-Xmx2g" mvn -q -pl autogen -am -DskipTests clean package 2>&1 | tail -20
         ) || { warn "autogen build failed — check Maven output above"; return 1; }
         log "autogen build complete"
         return 0
     fi
+
     log "building HiBench for Spark $(echo "$SPARK_VERSION" | cut -d. -f1-2) — takes 5–15 min…"
     (
         cd "$HIBENCH_HOME"
-        export JAVA_HOME
+        JAVA_HOME="$build_java_home" \
         MAVEN_OPTS="-Xmx2g" mvn -q \
             -Psparkbench \
             -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
