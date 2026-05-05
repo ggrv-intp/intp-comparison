@@ -170,8 +170,19 @@ clone_hibench() {
 }
 
 build_hibench() {
-    if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ]; then
+    local autogen_jar="$HIBENCH_HOME/autogen/target/autogen-8.0-SNAPSHOT-jar-with-dependencies.jar"
+    if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ -f "$autogen_jar" ]; then
         log "HiBench already built at $HIBENCH_HOME — skipping build"
+        return 0
+    fi
+    if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ ! -f "$autogen_jar" ]; then
+        log "HiBench run scripts present but autogen JAR missing — building autogen module only…"
+        (
+            cd "$HIBENCH_HOME"
+            export JAVA_HOME
+            MAVEN_OPTS="-Xmx2g" mvn -q -pl autogen -am -DskipTests clean package 2>&1 | tail -20
+        ) || { warn "autogen build failed — check Maven output above"; return 1; }
+        log "autogen build complete"
         return 0
     fi
     log "building HiBench for Spark $(echo "$SPARK_VERSION" | cut -d. -f1-2) — takes 5–15 min…"
