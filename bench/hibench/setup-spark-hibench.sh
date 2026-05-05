@@ -39,9 +39,27 @@ SPARK_DIR="spark-$SPARK_VERSION-bin-hadoop$HADOOP_PROFILE"
 SPARK_HOME_VERSIONED="$INSTALL_ROOT/$SPARK_DIR"
 SPARK_HOME="${SPARK_HOME:-/opt/spark}"   # canonical symlink used by all scripts
 HIBENCH_HOME="${HIBENCH_HOME:-$INSTALL_ROOT/HiBench}"
-HADOOP_HOME="${HADOOP_HOME:-/usr/lib/hadoop}"
+HADOOP_HOME="${HADOOP_HOME:-/opt/hadoop}"
 HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-$HADOOP_HOME/etc/hadoop}"
 SCALA_VERSION="2.12"
+
+ensure_hadoop_localmode_runtime() {
+    local helper="$SCRIPT_DIR/setup-hadoop-localmode.sh"
+    [ -x "$helper" ] || die "missing helper script: $helper"
+
+    # HiBench depends on python2 loader + Hadoop CLI even in file:/// local mode.
+    # Delegate provisioning to the dedicated helper to keep this script simple.
+    log "ensuring Hadoop local-mode runtime (python2 + hadoop cli)"
+    SKIP_DATA_PREP=1 SKIP_SMOKE=1 \
+    HIBENCH_HOME="$HIBENCH_HOME" \
+    INSTALL_ROOT="$INSTALL_ROOT" \
+    JOBS_DIR="$JOBS_DIR" \
+    HADOOP_HOME="$HADOOP_HOME" \
+    bash "$helper"
+
+    HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-$HADOOP_HOME/etc/hadoop}"
+    [ -x "$HADOOP_HOME/bin/hadoop" ] || die "hadoop executable not found at $HADOOP_HOME/bin/hadoop"
+}
 
 install_os_deps() {
     log "installing OS dependencies"
@@ -146,7 +164,7 @@ configure_hibench() {
     [ -f "$confdir/spark.conf" ]  || cp -f "$confdir/spark.conf.template"  "$confdir/spark.conf"
     [ -f "$confdir/hibench.conf" ] || cp -f "$confdir/hibench.conf.template" "$confdir/hibench.conf"
 
-    sed -i "s|^hibench\.hadoop\.home.*|hibench.hadoop.home             /usr/lib/hadoop|" "$confdir/hadoop.conf"
+    sed -i "s|^hibench\.hadoop\.home.*|hibench.hadoop.home             $HADOOP_HOME|" "$confdir/hadoop.conf"
     sed -i "s|^hibench\.hdfs\.master.*|hibench.hdfs.master             file:///|" "$confdir/hadoop.conf"
     grep -q '^hibench.hadoop.configure.dir' "$confdir/hadoop.conf" || \
         printf 'hibench.hadoop.configure.dir      %s\n' "$HADOOP_CONF_DIR" >> "$confdir/hadoop.conf"
@@ -240,6 +258,7 @@ install_python_deps
 download_spark
 clone_hibench
 build_hibench
+ensure_hadoop_localmode_runtime
 configure_hibench
 prepare_datasets
 print_summary
