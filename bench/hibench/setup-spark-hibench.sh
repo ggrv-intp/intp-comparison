@@ -160,10 +160,17 @@ configure_hibench() {
 
     sed -i "s|^hibench\.scale\.profile.*|hibench.scale.profile             $HIBENCH_SCALE|" "$confdir/hibench.conf"
     sed -i "s|^hibench\.report\.dir.*|hibench.report.dir              $JOBS_DIR/report|" "$confdir/hibench.conf"
-    grep -q '^hibench.workload.input' "$confdir/hibench.conf" || \
-        printf 'hibench.workload.input            %s/input\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
-    grep -q '^hibench.workload.output' "$confdir/hibench.conf" || \
-        printf 'hibench.workload.output           %s/output\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
+    # Local-mode: use explicit file:// paths so prepare/run scripts don't expect HDFS.
+    if grep -q '^hibench.workload.input' "$confdir/hibench.conf"; then
+        sed -i "s|^hibench\.workload\.input.*|hibench.workload.input            file://$JOBS_DIR/input|" "$confdir/hibench.conf"
+    else
+        printf 'hibench.workload.input            file://%s/input\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
+    fi
+    if grep -q '^hibench.workload.output' "$confdir/hibench.conf"; then
+        sed -i "s|^hibench\.workload\.output.*|hibench.workload.output           file://$JOBS_DIR/output|" "$confdir/hibench.conf"
+    else
+        printf 'hibench.workload.output           file://%s/output\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
+    fi
 }
 
 prepare_datasets() {
@@ -180,11 +187,18 @@ prepare_datasets() {
         "ml/bayes"
         "sql/nweight"
     )
+    mkdir -p "$JOBS_DIR/input" "$JOBS_DIR/output" "$JOBS_DIR/report"
+
     for wl in "${workloads[@]}"; do
         local prep="$HIBENCH_HOME/bin/workloads/$wl/prepare/prepare.sh"
         if [ -x "$prep" ]; then
             log "  prepare: $wl"
             export JAVA_HOME SPARK_HOME HIBENCH_HOME
+            # Some HiBench prepare scripts require these variables when running
+            # in local mode and can fail with INPUT_HDFS unbound otherwise.
+            export INPUT_HDFS="file://$JOBS_DIR/input"
+            export OUTPUT_HDFS="file://$JOBS_DIR/output"
+            export REPORT_DIR="$JOBS_DIR/report"
             bash "$prep" 2>&1 | tail -3 || warn "  $wl prepare failed (non-fatal)"
         else
             log "  SKIP $wl (prepare script not found)"

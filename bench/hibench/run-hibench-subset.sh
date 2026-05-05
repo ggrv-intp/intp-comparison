@@ -523,8 +523,11 @@ run_subset_for_profile() {
     runner=$(resolve_runner "bin/workloads/ml/bayes/spark/run.sh") || die "bayes runner not found"
     RUNNERS+=("bayes:$runner")
 
-    runner=$(resolve_runner "bin/workloads/sql/nweight/spark/run.sh") || die "sql_nweight runner not found"
-    RUNNERS+=("sql_nweight:$runner")
+    if runner=$(resolve_runner "bin/workloads/sql/nweight/spark/run.sh"); then
+        RUNNERS+=("sql_nweight:$runner")
+    else
+        warn "sql_nweight runner not found — continuing without sql_nweight"
+    fi
 
     {
         printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nhibench_home=%s\nspark_home=%s\n' \
