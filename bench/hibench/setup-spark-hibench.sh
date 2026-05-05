@@ -195,7 +195,8 @@ _find_java8_home() {
 
 build_hibench() {
     local autogen_jar="$HIBENCH_HOME/autogen/target/autogen-8.0-SNAPSHOT-jar-with-dependencies.jar"
-    if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ -f "$autogen_jar" ]; then
+    local sparkbench_jar="$HIBENCH_HOME/sparkbench/assembly/target/sparkbench-assembly-8.0-SNAPSHOT-dist.jar"
+    if [ -f "$autogen_jar" ] && [ -f "$sparkbench_jar" ]; then
         log "HiBench already built at $HIBENCH_HOME — skipping build"
         return 0
     fi
@@ -211,14 +212,35 @@ build_hibench() {
     fi
     log "using Java 8 at $build_java_home for HiBench build (Scala 2.10 compat)"
 
-    if [ -f "$HIBENCH_HOME/bin/workloads/micro/wordcount/spark/run.sh" ] && [ ! -f "$autogen_jar" ]; then
-        log "HiBench run scripts present but autogen JAR missing — building autogen module only…"
+    if [ -f "$autogen_jar" ] && [ ! -f "$sparkbench_jar" ]; then
+        log "autogen present but sparkbench JAR missing — building sparkbench module…"
         (
             cd "$HIBENCH_HOME"
             JAVA_HOME="$build_java_home" \
-            MAVEN_OPTS="-Xmx2g" mvn -q -pl autogen -am -DskipTests clean package 2>&1 | tail -20
-        ) || { warn "autogen build failed — check Maven output above"; return 1; }
-        log "autogen build complete"
+            MAVEN_OPTS="-Xmx2g" mvn -q \
+                -pl sparkbench/assembly -am \
+                -Psparkbench \
+                -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
+                -Dscala="$SCALA_VERSION" \
+                -DskipTests clean package 2>&1 | tail -20
+        ) || { warn "sparkbench build failed — check Maven output above"; return 1; }
+        log "sparkbench build complete"
+        return 0
+    fi
+
+    if [ ! -f "$autogen_jar" ] || [ ! -f "$sparkbench_jar" ]; then
+        log "one or more JARs missing — building autogen + sparkbench modules…"
+        (
+            cd "$HIBENCH_HOME"
+            JAVA_HOME="$build_java_home" \
+            MAVEN_OPTS="-Xmx2g" mvn -q \
+                -pl autogen,sparkbench/assembly -am \
+                -Psparkbench \
+                -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
+                -Dscala="$SCALA_VERSION" \
+                -DskipTests clean package 2>&1 | tail -20
+        ) || { warn "HiBench partial build failed"; return 1; }
+        log "HiBench partial build complete"
         return 0
     fi
 
