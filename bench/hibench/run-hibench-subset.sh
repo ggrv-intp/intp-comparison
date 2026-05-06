@@ -324,13 +324,32 @@ stop_profiler() {
 
     # Kill V2/V3.1/V3 background tree (subshell wrapper + binary + awk pipeline)
     if [ -n "$PROFILER_PID" ]; then
+        local pre_kids
+        pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ')
+        log "  [stop_profiler] PROFILER_PID=$PROFILER_PID children='${pre_kids}'"
         _kill_tree TERM "$PROFILER_PID"
         local i=0
         while [ $i -lt 6 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
             sleep 0.5; i=$((i+1))
         done
+        log "  [stop_profiler] after TERM grace=${i}/6 wrapper_alive=$(kill -0 "$PROFILER_PID" 2>/dev/null && echo yes || echo no)"
         _kill_tree KILL "$PROFILER_PID"
-        wait "$PROFILER_PID" 2>/dev/null || true
+        # Belt-and-suspenders: nuke anything still pointing to the outfile or
+        # matching profiler binary names. With heavy concurrent stressor load
+        # signal delivery can lag; this guarantees no orphan keeps writing.
+        local survivors
+        survivors=$(pgrep -f "intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py" 2>/dev/null | grep -v "^$$\$" | tr '\n' ' ')
+        if [ -n "$survivors" ]; then
+            log "  [stop_profiler] survivors after KILL: '${survivors}' — nuking"
+            # shellcheck disable=SC2086
+            kill -KILL $survivors 2>/dev/null || true
+        fi
+        # Don't `wait` the wrapper PID — if it never properly reparented the
+        # children, wait can block. Use timed kill -0 polling instead.
+        local j=0
+        while [ $j -lt 4 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
+            sleep 0.25; j=$((j+1))
+        done
         PROFILER_PID=""
     fi
 
