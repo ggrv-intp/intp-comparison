@@ -335,22 +335,21 @@ start_profiler() {
 stop_profiler() {
     local variant="$1" outfile="$2"
 
-    # Kill V2/V3.1/V3 background tree. Direct SIGKILL — under heavy stressor
-    # load, SIGTERM grace + pgrep BFS hangs for minutes. Profiler.tsv is
-    # flushed line-by-line so we don't need clean binary shutdown.
+    # Run cleanup with errexit OFF: backgrounded jobs that die via SIGKILL
+    # produce 137 exit codes that bash's job table reports asynchronously.
+    # Under `set -e` + pipefail, those notifications can abort the script
+    # unpredictably (we lost v3.1 and v3 because the script exited right
+    # after v2's wrapper was killed). The cleanup phase is best-effort
+    # already — there's nothing to abort on.
+    set +e
+
     if [ -n "$PROFILER_PID" ]; then
         local pre_kids
-        pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ' || true)
+        pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ')
         log "  [stop_profiler] PROFILER_PID=$PROFILER_PID children='${pre_kids}'"
         _kill_tree KILL "$PROFILER_PID"
-        # Belt-and-suspenders: catch survivors that escaped the BFS
-        pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null || true
-        pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-        # Wait for the wrapper to actually disappear, by polling kill -0.
-        # We avoid `wait` because under set -e + pipefail, a backgrounded
-        # subshell that died via SIGKILL (137) makes `wait $PID` return 137,
-        # and even with `set +e` toggled the exit propagation is fragile in
-        # some bash versions. kill -0 polling has no exit-code trap.
+        pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null
+        pkill -KILL -f 'bpftrace -q' 2>/dev/null
         local k=0
         while [ $k -lt 8 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
             sleep 0.25; k=$((k + 1))
@@ -381,6 +380,7 @@ stop_profiler() {
         stap_deep_cleanup "post-hibench-${outfile##*/}"
     fi
 
+    set -e
     return 0
 }
 
@@ -574,16 +574,13 @@ start_stressor() {
 
 stop_stressor() {
     [ -n "$STRESSOR_PID" ] || return 0
-    # SIGKILL directly: stress-ng workers have many short-lived children that
-    # ignore SIGTERM during heavy memory-pressure cycles, and waiting for the
-    # tree to settle gracefully blocks signal delivery for the rest of the
-    # cleanup. Just nuke the whole tree.
+    # Best-effort cleanup with errexit OFF (same reasoning as stop_profiler).
+    set +e
     _kill_tree KILL "$STRESSOR_PID"
-    # Belt-and-suspenders: catch any sibling stress-ng instance that escaped
-    # the tree (e.g. if stress-ng forked workers into a new session).
-    pkill -KILL -f 'stress-ng' 2>/dev/null || true
+    pkill -KILL -f 'stress-ng' 2>/dev/null
     log "  [stressor] stopped"
     STRESSOR_PID=""
+    set -e
 }
 
 set_hibench_size() {
