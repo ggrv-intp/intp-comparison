@@ -195,9 +195,24 @@ case ",$BENCH_ENVS," in
 esac
 
 if [ "$RUN_HIBENCH" = "1" ]; then
-  run_step "spark + hibench setup" \
-    env HADOOP_PROFILE="$HADOOP_PROFILE" \
-    bash bench/hibench/setup-spark-hibench.sh
+  # Map our user-facing HIBENCH_SIZE → setup-spark-hibench's HIBENCH_SCALE.
+  # Set SKIP_SPARK_HIBENCH_SETUP=1 to bypass entirely when running on a host
+  # already configured (e.g. HDFS pseudo-distributed already up with prepared
+  # datasets). The setup script overwrites scale.profile and workload.input/output
+  # which clobbers a hand-tuned HDFS setup.
+  case "$HIBENCH_SIZE" in
+    small)  HIBENCH_SCALE_MAPPED=tiny ;;
+    medium) HIBENCH_SCALE_MAPPED=small ;;
+    large)  HIBENCH_SCALE_MAPPED=large ;;
+    *)      HIBENCH_SCALE_MAPPED="$HIBENCH_SIZE" ;;
+  esac
+  if [ "${SKIP_SPARK_HIBENCH_SETUP:-0}" = "1" ]; then
+    echo "Skipping spark+hibench setup (SKIP_SPARK_HIBENCH_SETUP=1)"
+  else
+    run_step "spark + hibench setup (scale=$HIBENCH_SCALE_MAPPED)" \
+      env HADOOP_PROFILE="$HADOOP_PROFILE" HIBENCH_SCALE="$HIBENCH_SCALE_MAPPED" \
+      bash bench/hibench/setup-spark-hibench.sh
+  fi
 fi
 
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
