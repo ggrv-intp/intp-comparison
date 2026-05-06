@@ -11,7 +11,10 @@
 #
 # Figures (paper reference in parens):
 #   fig01_fingerprint.png        per-(profile,variant) panel × workload metric bars
-#   fig02_sensitivity.png        Δ(netp-extreme − standard) per variant
+#   fig02_sensitivity_<P>.png    Δ(<P> − standard) per variant; one PNG per
+#                                non-standard profile present (under the
+#                                all-stress sweep this emits one per pressure
+#                                profile: cpu/mem/cache/disk/netp/nets-extreme)
 #   fig03_metric_compare.png     per-metric variant comparison across workloads
 #   fig04_per_workload_bars.png  (IntP Fig. 4)  one panel per workload, bars =
 #                                              variants × metrics
@@ -73,8 +76,15 @@ VARIANT_LABELS = {
     "v3.1": "v3.1 (eBPF-py)",
     "v3":   "v3 (eBPF CO-RE)",
 }
-PROFILE_ORDER = ["standard", "netp-extreme"]
-PROFILE_LABEL = {"standard": "standard", "netp-extreme": "netp-extreme"}
+# Profiles accepted by run-hibench-subset.sh. Keep "standard" first (it is the
+# baseline reference for the sensitivity figure); the rest are co-runner
+# pressure variants the all-stress sweep emits.
+PROFILE_ORDER = [
+    "standard",
+    "cpu-extreme", "mem-extreme", "cache-extreme",
+    "disk-extreme", "netp-extreme", "nets-extreme",
+]
+PROFILE_LABEL = {p: p for p in PROFILE_ORDER}
 WORKLOAD_ORDER = ["kmeans", "bayes", "pagerank", "terasort", "wordcount",
                   "sql", "join", "scan", "aggregation", "lr", "rf"]
 METRICS = ["netp", "nets", "blk", "mbw", "llcmr", "llcocc", "cpu"]
@@ -100,7 +110,15 @@ VARIANT_COLORS = {
     "v3.1": "#ff7f0e",
     "v3":   "#2ca02c",
 }
-PROFILE_HATCH = {"standard": "", "netp-extreme": "//"}
+PROFILE_HATCH = {
+    "standard":      "",
+    "cpu-extreme":   "..",
+    "mem-extreme":   "xx",
+    "cache-extreme": "++",
+    "disk-extreme":  "\\\\",
+    "netp-extreme":  "//",
+    "nets-extreme":  "--",
+}
 
 # Logical resource families used by IntP Fig. 8 / IADA Fig. 5 / Fig. 6
 RESOURCE_FAMILY = {
@@ -291,50 +309,66 @@ def fig_fingerprint(df: pd.DataFrame, outdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fig 02 — Sensitivity Δ(netp-extreme − standard)
+# Fig 02 — Sensitivity Δ(<pressure-profile> − standard) per variant
+#
+# Emits one PNG per non-standard profile present in the run. Each PNG shows
+# one row per variant; bars are per metric and per workload, computed as
+# (profile − standard) so positive bars mean the profile pushed the metric up.
 # ---------------------------------------------------------------------------
 
 def fig_sensitivity(df: pd.DataFrame, outdir: Path) -> None:
+    profiles_present = set(df["profile"].unique())
+    if "standard" not in profiles_present:
+        print("[fig02] no 'standard' profile rows; cannot compute sensitivity — skip")
+        return
+    targets = [p for p in PROFILE_ORDER if p != "standard" and p in profiles_present]
+    if not targets:
+        print("[fig02] only 'standard' profile present — skip")
+        return
+
     variants = _ordered_variants(df["variant"].unique())
     workloads = _ordered_workloads(df["workload"].unique())
-    if not {"standard", "netp-extreme"}.issubset(df["profile"].unique()):
-        print("[fig02] need both profiles for sensitivity — skip")
-        return
     std_df = (df[df["profile"] == "standard"]
               .set_index(["variant", "workload"])[METRICS])
-    net_df = (df[df["profile"] == "netp-extreme"]
-              .set_index(["variant", "workload"])[METRICS])
-    delta = (net_df - std_df).reset_index()
 
-    nrows = len(variants)
-    fig, axes = plt.subplots(nrows, 1,
-                             figsize=_clamp_figsize(8.5, 2.7 * nrows),
-                             squeeze=False, sharex=True)
-    bar_w = 0.11
-    x = np.arange(len(workloads))
-    for ri, variant in enumerate(variants):
-        ax = axes[ri][0]
-        sub = (delta[delta["variant"] == variant]
-               .set_index("workload").reindex(workloads))
-        for mi, m in enumerate(METRICS):
-            offset = (mi - (len(METRICS) - 1) / 2) * bar_w
-            vals = sub[m].fillna(0).values
-            ax.bar(x + offset, vals, width=bar_w,
-                   label=METRIC_LABEL[m], color=METRIC_COLORS[m], alpha=0.92)
-        ax.axhline(0, color="black", linewidth=0.6, linestyle="--")
-        ax.set_xticks(x)
-        ax.set_xticklabels(workloads, rotation=20, ha="right", fontsize=8)
-        ax.set_title(f"{VARIANT_LABELS.get(variant, variant)} — "
-                     "Δ(netp-extreme − standard)", fontsize=9)
-        ax.set_ylabel("Δ metric value")
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               bbox_to_anchor=(0.5, 1.02),
-               ncol=len(METRICS), frameon=False, fontsize=8.5)
-    fig.suptitle("HiBench: sensitivity to network interference profile",
-                 fontsize=11, y=1.05)
-    fig.tight_layout()
-    _save(fig, outdir / "fig02_sensitivity.png", "fig02")
+    for target in targets:
+        cmp_df = (df[df["profile"] == target]
+                  .set_index(["variant", "workload"])[METRICS])
+        if cmp_df.empty:
+            continue
+        delta = (cmp_df - std_df).reset_index()
+
+        nrows = len(variants)
+        fig, axes = plt.subplots(nrows, 1,
+                                 figsize=_clamp_figsize(8.5, 2.7 * nrows),
+                                 squeeze=False, sharex=True)
+        bar_w = 0.11
+        x = np.arange(len(workloads))
+        for ri, variant in enumerate(variants):
+            ax = axes[ri][0]
+            sub = (delta[delta["variant"] == variant]
+                   .set_index("workload").reindex(workloads))
+            for mi, m in enumerate(METRICS):
+                offset = (mi - (len(METRICS) - 1) / 2) * bar_w
+                vals = sub[m].fillna(0).values
+                ax.bar(x + offset, vals, width=bar_w,
+                       label=METRIC_LABEL[m], color=METRIC_COLORS[m], alpha=0.92)
+            ax.axhline(0, color="black", linewidth=0.6, linestyle="--")
+            ax.set_xticks(x)
+            ax.set_xticklabels(workloads, rotation=20, ha="right", fontsize=8)
+            ax.set_title(f"{VARIANT_LABELS.get(variant, variant)} — "
+                         f"Δ({target} − standard)", fontsize=9)
+            ax.set_ylabel("Δ metric value")
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.02),
+                   ncol=len(METRICS), frameon=False, fontsize=8.5)
+        fig.suptitle(f"HiBench: sensitivity to '{target}' co-runner pressure",
+                     fontsize=11, y=1.05)
+        fig.tight_layout()
+        # Sanitise profile name for filename ("netp-extreme" -> "netp_extreme")
+        slug = target.replace("-", "_")
+        _save(fig, outdir / f"fig02_sensitivity_{slug}.png", f"fig02[{target}]")
 
 
 # ---------------------------------------------------------------------------

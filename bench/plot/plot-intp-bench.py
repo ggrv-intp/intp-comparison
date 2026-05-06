@@ -15,7 +15,9 @@
 #                                              (env,variant), bars = workloads
 #   fig02_pca_kmeans.png         (IntP Fig. 5)  PCA + k-means per (env,variant)
 #   fig03_timeseries.png         (IntP Fig. 3)  long mixed-load trace
-#   fig04_overhead_bars.png      (Volpert-style) profiler overhead per variant
+#   fig04_overhead_throughput.png  (A) bogo-ops/s slowdown per variant
+#   fig04b_overhead_cpu_jiffies.png (B) extra system-wide CPU jiffies per variant
+#   fig04c_overhead_sched_switch.png (C, opt) Δ sched:sched_switch per variant
 #   fig05_fidelity_matrix.png    (extended)     Pearson r vs ground truth
 #   fig06_env_heatmap.png        (extended)     env degradation ratio
 #   fig07_pairwise_heatmap.png   (extended)     pair × metric per variant
@@ -477,12 +479,75 @@ def fig_timeseries(results_dir: Path, outdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fig 04 — Volpert-style overhead bars per variant (any env)
+# Fig 04 — Profiler overhead, three layers
+#
+#   (A) workload throughput slowdown:   throughput.tsv (bogo_ops_per_s_real)
+#   (B) extra system-wide CPU jiffies:  cpu_stat.tsv (busy delta over window)
+#   (C) Volpert scheduler perturbation: perf_stat.csv (Δ sched_switch, opt-in)
+#
+# Each figure shows arms grouped by ref (x), one panel per env (rows). Bars
+# are arm−baseline; positive = profiler was costly. Std-error bars come from
+# the per-rep variance.
 # ---------------------------------------------------------------------------
 
-def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
-    rows = []
-    for elapsed_file in (results_dir / "overhead").rglob("elapsed_s"):
+
+def _read_kv_tsv(path: Path) -> dict[str, float]:
+    """Read a 2-column TSV (header `metric\\tvalue`). Returns {metric: float}.
+    Non-numeric values become NaN; missing files return {}."""
+    out: dict[str, float] = {}
+    try:
+        with path.open() as f:
+            f.readline()  # header
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                k = parts[0]
+                try:
+                    out[k] = float(parts[1])
+                except ValueError:
+                    out[k] = float("nan")
+    except OSError:
+        pass
+    return out
+
+
+def _read_perf_stat_csv(path: Path) -> dict[str, float]:
+    """Parse `perf stat -x ,` output. Returns {event: count}."""
+    out: dict[str, float] = {}
+    try:
+        with path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(",")
+                # Format: <count>,<unit>,<event>,<run_time>,<percent_run>,...
+                if len(parts) < 3:
+                    continue
+                try:
+                    val = float(parts[0])
+                except ValueError:
+                    continue
+                event = parts[2]
+                if event:
+                    out[event] = val
+    except OSError:
+        pass
+    return out
+
+
+def _collect_overhead_rows(results_dir: Path) -> pd.DataFrame:
+    """Walk results_dir/overhead, gather per-(env,variant,ref,rep) metrics."""
+    rows: list[dict] = []
+    overhead_root = results_dir / "overhead"
+    if not overhead_root.is_dir():
+        return pd.DataFrame()
+    for elapsed_file in overhead_root.rglob("elapsed_s"):
+        rep_dir = elapsed_file.parent
         parts = elapsed_file.parts
         try:
             env = parts[-5]; variant = parts[-4]; refid = parts[-3]
@@ -492,24 +557,32 @@ def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
         try:
             elapsed = float(elapsed_file.read_text().strip())
         except (ValueError, OSError):
-            continue
-        rows.append(dict(env=env, variant=variant, ref=refid, rep=rep, elapsed=elapsed))
-    if not rows:
-        print("[overhead] no overhead data — skip")
-        return
-    df = pd.DataFrame(rows)
-    _, did_rename = _maybe_rename_variants(df["variant"].unique())
-    if did_rename:
-        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
-    base = (df[df.variant == "_baseline"]
-            .groupby(["env", "ref"])["elapsed"].mean()
-            .rename("baseline").reset_index())
-    merged = df[df.variant != "_baseline"].merge(base, on=["env", "ref"], how="left")
-    merged["overhead_pct"] = (merged["elapsed"] - merged["baseline"]) / merged["baseline"] * 100
-    summary = (merged.groupby(["env", "variant", "ref"])["overhead_pct"]
-               .agg(["mean", "std"]).reset_index())
-    summary.to_csv(outdir / "overhead_summary.csv", index=False)
+            elapsed = float("nan")
+        thr  = _read_kv_tsv(rep_dir / "throughput.tsv")
+        cpu  = _read_kv_tsv(rep_dir / "cpu_stat.tsv")
+        cgcp = _read_kv_tsv(rep_dir / "cgroup_cpu_stat.tsv")
+        perf = _read_perf_stat_csv(rep_dir / "perf_stat.csv")
+        rows.append(dict(
+            env=env, variant=variant, ref=refid, rep=rep,
+            elapsed=elapsed,
+            bogo_ops_per_s=thr.get("bogo_ops_per_s_real", float("nan")),
+            cpu_busy_jiffies=cpu.get("busy", float("nan")),
+            cpu_total_jiffies=cpu.get("total", float("nan")),
+            cgroup_usage_usec=cgcp.get("usage_usec", float("nan")),
+            cs=perf.get("context-switches", float("nan")),
+            mig=perf.get("cpu-migrations", float("nan")),
+            sched_switch=perf.get("sched:sched_switch", float("nan")),
+            sched_wakeup=perf.get("sched:sched_wakeup", float("nan")),
+        ))
+    return pd.DataFrame(rows)
 
+
+def _render_overhead_bars(summary: pd.DataFrame, mean_col: str, std_col: str | None,
+                          ylabel: str, path: Path, label: str, *, title: str) -> None:
+    """Per-(env) panel grid: x=ref, grouped bars=variant, y=mean (± std)."""
+    if mean_col not in summary.columns or summary[mean_col].dropna().empty:
+        print(f"[{label}] no data for {mean_col} — skip")
+        return
     refs = sorted(summary["ref"].unique())
     envs = _ordered_envs(summary["env"].unique())
     fig, axes = plt.subplots(len(envs), 1,
@@ -527,13 +600,16 @@ def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
         width = 0.8 / max(1, len(variants_present))
         for j, v in enumerate(variants_present):
             row = sub[sub.variant == v].set_index("ref").reindex(refs)
+            errs = None
+            if std_col and std_col in row.columns:
+                errs = row[std_col].fillna(0).values
             ax.bar(x + (j - (len(variants_present) - 1) / 2) * width,
-                   row["mean"].values,
-                   yerr=row["std"].fillna(0).values, width=width,
+                   row[mean_col].values,
+                   yerr=errs, width=width,
                    color=VARIANT_COLORS.get(v, f"C{j}"),
                    label=v if i == 0 else None, capsize=2)
         ax.set_xticks(x); ax.set_xticklabels(refs, rotation=15)
-        ax.set_ylabel("overhead (%)"); ax.set_title(f"env={env}")
+        ax.set_ylabel(ylabel); ax.set_title(f"env={env}")
         ax.axhline(0, color="black", linewidth=0.5)
     handles = [plt.Rectangle((0, 0), 1, 1, color=VARIANT_COLORS.get(v, "C0"))
                for v in all_variants]
@@ -541,9 +617,86 @@ def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
                bbox_to_anchor=(0.5, 1.04),
                ncol=max(1, len(all_variants)), frameon=False, fontsize=9,
                title="variant", title_fontsize=9)
-    fig.suptitle("Profiler runtime overhead vs. baseline (Volpert-style)", y=1.10)
+    fig.suptitle(title, y=1.10)
     fig.tight_layout()
-    _save(fig, outdir / "fig04_overhead_bars.png", "fig04")
+    _save(fig, path, label)
+
+
+def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
+    df = _collect_overhead_rows(results_dir)
+    if df.empty:
+        print("[overhead] no overhead data — skip")
+        return
+    _, did_rename = _maybe_rename_variants(df["variant"].unique())
+    if did_rename:
+        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
+    df.to_csv(outdir / "overhead_raw.csv", index=False)
+
+    base = (df[df.variant == "_baseline"]
+            .groupby(["env", "ref"])
+            .agg(base_bogo=("bogo_ops_per_s",     "mean"),
+                 base_busy=("cpu_busy_jiffies",   "mean"),
+                 base_cs  =("cs",                 "mean"),
+                 base_mig =("mig",                "mean"),
+                 base_ss  =("sched_switch",       "mean"),
+                 base_sw  =("sched_wakeup",       "mean"))
+            .reset_index())
+    if base.empty:
+        print("[overhead] no _baseline rows; cannot compute deltas — skip")
+        return
+
+    arms = df[df.variant != "_baseline"].merge(base, on=["env", "ref"], how="left")
+
+    # (A) Throughput overhead %: positive = workload got slower.
+    arms["throughput_overhead_pct"] = (
+        (arms["base_bogo"] - arms["bogo_ops_per_s"]) / arms["base_bogo"] * 100.0
+    )
+    # (B) System-wide busy CPU jiffies, arm − baseline.
+    arms["cpu_extra_jiffies"] = arms["cpu_busy_jiffies"] - arms["base_busy"]
+    # (C) Volpert deltas — NaN when --overhead-volpert was off.
+    arms["delta_cs"]  = arms["cs"]           - arms["base_cs"]
+    arms["delta_mig"] = arms["mig"]          - arms["base_mig"]
+    arms["delta_ss"]  = arms["sched_switch"] - arms["base_ss"]
+    arms["delta_sw"]  = arms["sched_wakeup"] - arms["base_sw"]
+
+    metric_cols = ["throughput_overhead_pct", "cpu_extra_jiffies",
+                   "delta_cs", "delta_mig", "delta_ss", "delta_sw"]
+    summary = (arms.groupby(["env", "variant", "ref"])[metric_cols]
+               .agg(["mean", "std"]))
+    summary.columns = [f"{m}_{stat}" for m, stat in summary.columns]
+    summary = summary.reset_index()
+    summary.to_csv(outdir / "overhead_summary.csv", index=False)
+
+    # (A) Throughput slowdown
+    _render_overhead_bars(
+        summary,
+        "throughput_overhead_pct_mean", "throughput_overhead_pct_std",
+        "throughput overhead (%)",
+        outdir / "fig04_overhead_throughput.png", "fig04",
+        title="Profiler-induced workload slowdown\n"
+              "(baseline − with-profiler) / baseline of stress-ng bogo ops/s")
+
+    # (B) Extra system-wide CPU jiffies
+    _render_overhead_bars(
+        summary,
+        "cpu_extra_jiffies_mean", "cpu_extra_jiffies_std",
+        "Δ busy jiffies (arm − baseline)",
+        outdir / "fig04b_overhead_cpu_jiffies.png", "fig04b",
+        title="Extra system-wide CPU induced by the profiler\n"
+              "/proc/stat busy jiffies over the steady-state window")
+
+    # (C) Volpert flavour: scheduler perturbation
+    if summary.get("delta_ss_mean", pd.Series(dtype=float)).notna().any():
+        _render_overhead_bars(
+            summary,
+            "delta_ss_mean", "delta_ss_std",
+            "Δ sched:sched_switch events",
+            outdir / "fig04c_overhead_sched_switch.png", "fig04c",
+            title="Volpert-flavoured scheduler perturbation\n"
+                  "Δ sched:sched_switch over the steady-state window "
+                  "(perf stat -a)")
+    else:
+        print("[fig04c] no perf_stat.csv data (run with --overhead-volpert) — skip")
 
 
 # ---------------------------------------------------------------------------

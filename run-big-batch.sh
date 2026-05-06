@@ -10,7 +10,10 @@
 #     WARMUP=15            pre-recording ramp time (seconds)
 #     COOLDOWN=10          post-workload cooldown (seconds)
 #     TIMESERIES_DURATION=600   timeseries stage window (seconds)
-#     OVERHEAD_DURATION=60      overhead stage window (seconds)
+#     OVERHEAD_DURATION=60      overhead stage steady-state window (seconds)
+#     OVERHEAD_WARMUP=10        head-start before sampling each overhead arm
+#     OVERHEAD_VOLPERT=1        1 = enable perf-stat scheduler counters in overhead
+#     RUN_SEED=                 deterministic seed for per-rep shuffle (default: wall clock)
 #
 #   Execution environments (run-intp-bench.sh full-bench only)
 #     BENCH_ENVS=bare           comma-separated: bare | container | vm
@@ -71,6 +74,9 @@ REPS="${REPS:-5}"
 INTERVAL="${INTERVAL:-1}"
 TIMESERIES_DURATION="${TIMESERIES_DURATION:-600}"
 OVERHEAD_DURATION="${OVERHEAD_DURATION:-60}"
+OVERHEAD_WARMUP="${OVERHEAD_WARMUP:-10}"
+OVERHEAD_VOLPERT="${OVERHEAD_VOLPERT:-1}"
+RUN_SEED="${RUN_SEED:-}"
 WARMUP="${WARMUP:-15}"
 COOLDOWN="${COOLDOWN:-10}"
 
@@ -143,7 +149,7 @@ echo "Big batch config:"
 echo "  out=$OUT"
 echo "  duration=$DURATION  reps=$REPS  interval=$INTERVAL"
 echo "  warmup=$WARMUP  cooldown=$COOLDOWN"
-echo "  timeseries_duration=$TIMESERIES_DURATION  overhead_duration=$OVERHEAD_DURATION"
+echo "  timeseries_duration=$TIMESERIES_DURATION  overhead_duration=$OVERHEAD_DURATION  overhead_warmup=$OVERHEAD_WARMUP  overhead_volpert=$OVERHEAD_VOLPERT  run_seed=${RUN_SEED:-<auto>}"
 echo "  bench_envs=$BENCH_ENVS"
 echo "  bench_variants=$BENCH_VARIANTS"
 echo "    container_image=$CONTAINER_IMAGE"
@@ -218,6 +224,9 @@ fi
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
 # V1 cleanup guard is exported above; bench script inherits it automatically.
 if [ "$RUN_STRESS_BENCH" = "1" ]; then
+  BENCH_EXTRA_ARGS=()
+  [ "$OVERHEAD_VOLPERT" = "1" ] && BENCH_EXTRA_ARGS+=(--overhead-volpert)
+  [ -n "$RUN_SEED" ]            && BENCH_EXTRA_ARGS+=(--seed "$RUN_SEED")
   run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
     bash bench/run-intp-bench.sh \
       --stage detect,build,solo,pairwise,overhead,timeseries,report \
@@ -230,6 +239,8 @@ if [ "$RUN_STRESS_BENCH" = "1" ]; then
       --cooldown "$COOLDOWN" \
       --timeseries-duration "$TIMESERIES_DURATION" \
       --overhead-duration "$OVERHEAD_DURATION" \
+      --overhead-warmup "$OVERHEAD_WARMUP" \
+      "${BENCH_EXTRA_ARGS[@]}" \
       --output-dir "$OUT/bench-full"
 else
   echo "Skipping full bench stress-ng segment (RUN_STRESS_BENCH=$RUN_STRESS_BENCH)"
