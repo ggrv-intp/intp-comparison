@@ -101,6 +101,13 @@ HIBENCH_ELAPSED_CV_WARN_PCT="${HIBENCH_ELAPSED_CV_WARN_PCT:-20}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
+# ── Calibration knobs (host-specific ground-truth normalisation) ──────────────
+# Pass through to run-hibench-subset.sh so utilization metrics aren't pinned
+# to default detect.c estimates that may be off for this NIC/DRAM/LLC.
+MEM_BW_MAX_BPS="${MEM_BW_MAX_BPS:-}"
+NIC_SPEED_BPS="${NIC_SPEED_BPS:-}"
+LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
+
 # ── V1 guard ───────────────────────────────────────────────────────────────────
 export INTP_BENCH_V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
 
@@ -146,6 +153,7 @@ echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$H
 echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v1_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
+echo "  calibration: mem_bw_max_bps=${MEM_BW_MAX_BPS:-auto}  nic_speed_bps=${NIC_SPEED_BPS:-auto}  llc_size_bytes=${LLC_SIZE_BYTES:-auto}"
 
 # ── Preflight ──────────────────────────────────────────────────────────────────
 run_step "preflight detect" bash shared/intp-detect.sh
@@ -214,6 +222,10 @@ fi
 
 # ── Segment 2: HiBench Spark subset ──────────────────────────────────────────
 if [ "$RUN_HIBENCH" = "1" ]; then
+  HIBENCH_EXTRA_ARGS=()
+  [ -n "$MEM_BW_MAX_BPS" ] && HIBENCH_EXTRA_ARGS+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
+  [ -n "$NIC_SPEED_BPS"  ] && HIBENCH_EXTRA_ARGS+=(--nic-speed-bps  "$NIC_SPEED_BPS")
+  [ -n "$LLC_SIZE_BYTES" ] && HIBENCH_EXTRA_ARGS+=(--llc-size-bytes "$LLC_SIZE_BYTES")
   run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$BENCH_VARIANTS" \
     bash bench/hibench/run-hibench-subset.sh \
       --variants "$BENCH_VARIANTS" \
@@ -226,6 +238,7 @@ if [ "$RUN_HIBENCH" = "1" ]; then
       --max-duration "$HIBENCH_MAX_DURATION" \
       --min-elapsed "$HIBENCH_MIN_ELAPSED" \
       --elapsed-cv-warn-pct "$HIBENCH_ELAPSED_CV_WARN_PCT" \
+      "${HIBENCH_EXTRA_ARGS[@]}" \
       --out-root "$OUT/hibench"
 else
   echo "Skipping HiBench subset (RUN_HIBENCH=$RUN_HIBENCH)"
