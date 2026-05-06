@@ -156,13 +156,15 @@ static struct {
     int                num_cores;
 } tp;
 
-/* True if the interface should be excluded from the aggregate: loopback and
- * common virtual/bridge/container devices that would double-count traffic
- * already seen on the physical NIC. */
+/* True if the interface should be excluded from the aggregate.
+ *
+ * For *stack* utilization we WANT loopback (HDFS pseudo-distributed, single-host
+ * IPC, container --network=host) — those packets do go through the network
+ * stack and consume softirq/NAPI time. Bridges and veths still get filtered
+ * because their packets are already counted on the underlying physical NIC. */
 static int iface_is_virtual(const char *name)
 {
     if (!name || !name[0]) return 1;
-    if (strcmp(name, "lo") == 0) return 1;
     if (strncmp(name, "docker", 6) == 0) return 1;
     if (strncmp(name, "br-",    3) == 0) return 1;
     if (strncmp(name, "virbr",  5) == 0) return 1;

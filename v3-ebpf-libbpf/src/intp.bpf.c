@@ -113,10 +113,26 @@ fill_header(struct intp_event_header *hdr, __u32 type)
  * netp -- network physical utilization
  * ===================================================================== */
 
+/* Skip loopback. In single-host workloads (e.g., Spark `local[*]`) the
+ * vast majority of "network" traffic is `lo`, which double-counts (xmit
+ * + receive on the same packet) and never crosses any NIC. Including
+ * loopback inflates netp by ≥2× and breaks correlation with the per-NIC
+ * sysfs ground-truth (which excludes lo). */
+static __always_inline int tp_dev_is_lo(void *ctx, unsigned int data_loc)
+{
+    /* tracepoint __data_loc fields are encoded as (length << 16) | offset.
+     * Resolve the string by adding the offset to ctx, then read 4 bytes. */
+    unsigned int offset = data_loc & 0xFFFFu;
+    char buf[4] = {};
+    bpf_probe_read_kernel_str(buf, sizeof(buf), (char *)ctx + offset);
+    return buf[0] == 'l' && buf[1] == 'o' && buf[2] == '\0';
+}
+
 SEC("tracepoint/net/net_dev_xmit")
 int tp_net_dev_xmit(struct trace_event_raw_net_dev_xmit *ctx)
 {
     if (!should_monitor_current()) return 0;
+    if (tp_dev_is_lo(ctx, ctx->__data_loc_name)) return 0;
 
     struct intp_net_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) return 0;
@@ -138,6 +154,7 @@ int tp_netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
      * isn't cheap. Emit everything and let userspace decide when in
      * system-wide mode; filter in per-PID mode. */
     if (!should_monitor_current()) return 0;
+    if (tp_dev_is_lo(ctx, ctx->__data_loc_name)) return 0;
 
     struct intp_net_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) return 0;

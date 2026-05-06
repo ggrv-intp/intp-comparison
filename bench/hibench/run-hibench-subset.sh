@@ -81,12 +81,27 @@ ACTIVE_RESCTRL_HELPER=0
 # These run *concurrently* with Spark to inject controlled interference
 # in a single-socket / local[*] setup where Spark itself can't generate
 # enough pressure to exercise mbw / llcocc / etc. backends.
+#
+# Pressure mapping (HiBench-app ↔ stress-ng) — keep these names aligned with
+# bench/run-intp-bench.sh app01..app15 so plots can pair real and synthetic:
+#
+#   axis      | hibench reference   | stress-ng profile     | metric
+#   --------- | ------------------- | --------------------- | ------
+#   cpu       | wordcount           | cpu-extreme           | cpu
+#   mbw       | terasort            | mem-extreme           | mbw
+#   llc       | kmeans              | cache-extreme         | llcocc/llcmr
+#   disk      | bayes / dfsioe      | disk-extreme          | blk
+#   netp      | dfsioe (HDFS RPC)   | netp-extreme          | netp
+#   nets      | dfsioe (HDFS RPC)   | nets-extreme          | nets
+#
 PROFILE_STRESSNG_standard=""
+PROFILE_STRESSNG_cpu_extreme="--cpu 8 --cpu-method matrixprod"
 PROFILE_STRESSNG_mem_extreme="--vm 2 --vm-bytes 30% --vm-method all"
 PROFILE_STRESSNG_cache_extreme="--cache 4 --cache-no-affinity"
 PROFILE_STRESSNG_disk_extreme="--hdd 2 --hdd-bytes 4G --temp-path /var/tmp"
 PROFILE_STRESSNG_netp_extreme="--netdev 4"
-VALID_PROFILES="standard mem-extreme cache-extreme disk-extreme netp-extreme all-stress both"
+PROFILE_STRESSNG_nets_extreme="--sock 8 --sock-port 23440 --udp 4 --udp-port 23450"
+VALID_PROFILES="standard cpu-extreme mem-extreme cache-extreme disk-extreme netp-extreme nets-extreme all-stress both"
 
 VARIANTS=()
 WORKLOADS=()
@@ -140,12 +155,14 @@ Options:
                               HiBench dataset profile (default: medium)
   --profile MODE              Co-runner mode (default: standard). One of:
                                 standard       no co-runner (baseline)
-                                mem-extreme    stress-ng --vm 4 --vm-bytes 70%
-                                cache-extreme  stress-ng --cache 8
-                                disk-extreme   stress-ng --hdd 4 --hdd-bytes 8G
-                                netp-extreme   stress-ng --netdev 4 (legacy)
+                                cpu-extreme    stress-ng --cpu 8 (matrixprod)
+                                mem-extreme    stress-ng --vm 2 --vm-bytes 30%
+                                cache-extreme  stress-ng --cache 4
+                                disk-extreme   stress-ng --hdd 2 --hdd-bytes 4G
+                                netp-extreme   stress-ng --netdev 4
+                                nets-extreme   stress-ng --sock 8 --udp 4 (loopback TCP/UDP)
                                 both           standard + netp-extreme (legacy combo)
-                                all-stress     standard + mem/cache/disk-extreme
+                                all-stress     full sweep: standard + cpu/mem/cache/disk/netp/nets
   --out-root DIR              Output root (default: $OUT_ROOT)
   --hibench-home DIR          HiBench installation (default: $HIBENCH_HOME)
   --spark-home DIR            Spark home override
@@ -194,7 +211,7 @@ parse_args() {
 
     case "$SIZE" in small|medium|large|huge|gigantic) ;; *) die "invalid --size: $SIZE" ;; esac
     case "$PROFILE" in
-        standard|mem-extreme|cache-extreme|disk-extreme|netp-extreme|both|all-stress) ;;
+        standard|cpu-extreme|mem-extreme|cache-extreme|disk-extreme|netp-extreme|nets-extreme|both|all-stress) ;;
         *) die "invalid --profile: $PROFILE (valid: $VALID_PROFILES)" ;;
     esac
     case "$WORKLOAD_REPS" in ''|*[!0-9]*) die "invalid --reps: $WORKLOAD_REPS" ;; esac
@@ -535,10 +552,12 @@ stressor_args_for_profile() {
     local mode="$1"
     case "$mode" in
         standard)       echo "" ;;
+        cpu-extreme)    echo "$PROFILE_STRESSNG_cpu_extreme" ;;
         mem-extreme)    echo "$PROFILE_STRESSNG_mem_extreme" ;;
         cache-extreme)  echo "$PROFILE_STRESSNG_cache_extreme" ;;
         disk-extreme)   echo "$PROFILE_STRESSNG_disk_extreme" ;;
         netp-extreme)   echo "$PROFILE_STRESSNG_netp_extreme" ;;
+        nets-extreme)   echo "$PROFILE_STRESSNG_nets_extreme" ;;
         *)              echo "" ;;
     esac
 }
@@ -931,7 +950,7 @@ main() {
             run_subset_for_profile netp-extreme
             ;;
         all-stress)
-            for p in standard mem-extreme cache-extreme disk-extreme; do
+            for p in standard cpu-extreme mem-extreme cache-extreme disk-extreme netp-extreme nets-extreme; do
                 run_subset_for_profile "$p"
             done
             ;;
