@@ -17,11 +17,27 @@
 #               Fig.5 (PCA + k-means).
 #   pairwise    Antagonist + victim co-located -- ground truth for
 #               cross-application interference, complementing Fig.8 of the
-#               paper. Captures both the profiler reading AND the victim's
+#               original paper. Captures both the profiler reading AND the victim's
 #               throughput delta vs. its solo baseline.
-#   overhead   Profiler runtime overhead (Volpert et al. 2025 methodology):
-#               same compute / stream / iperf workload run with and without
-#               each profiler attached, delta on completion time and CPU.
+#   overhead   Profiler runtime overhead (system-wide impact of running the
+#               IntP profiler in real time on top of a deterministic workload).
+#               Three layers of measurement, all on the same workload run with
+#               and without each profiler attached:
+#                 (A) workload throughput delta -- bogo ops/s parsed from
+#                     stress-ng --metrics-brief.
+#                 (B) profiler self-cost -- system-wide CPU jiffies delta from
+#                     /proc/stat plus per-arm cgroup cpu.stat (when cgroup
+#                     targeting is on).
+#                 (C) Volpert-flavoured scheduler perturbation -- system-wide
+#                     perf stat counts of context-switches, cpu-migrations and
+#                     sched:sched_{wakeup,switch}, gated behind the
+#                     --overhead-volpert flag.
+#               Each rep shuffles the (ref x arm) order deterministically
+#               from --seed so thermal/cache drift is averaged out across
+#               reps. The first OVH_WARMUP seconds of every workload run are
+#               head-start (profiler and gauges only sample the steady-state
+#               window); both arms include the same warm-up so the delta
+#               itself is unbiased.
 #   timeseries  Long capture (default 5 min) per variant for a fixed mixed
 #               workload, used for time-series figures.
 #   report      Consolidate every run into TSVs ready for plot-intp-bench.py.
@@ -90,6 +106,17 @@ INTERVAL=1
 REPS=4
 TIMESERIES_DURATION=300
 OVERHEAD_DURATION=60
+# Head-start applied at the beginning of every overhead-stage workload run
+# before any gauge starts sampling. Both baseline and with-profiler arms get
+# the same head-start, so the steady-state delta is unbiased; the absolute
+# bogo ops/s figure is conservative (averages over warm-up + steady-state).
+OVH_WARMUP="${INTP_BENCH_OVH_WARMUP:-10}"
+# Volpert-flavoured perf stat measurement (context-switches, cpu-migrations,
+# sched:sched_{wakeup,switch}) is opt-in: it adds one perf process per arm.
+OVERHEAD_VOLPERT=0
+# Seed for reproducible per-rep shuffle of (ref x arm) order. Empty -> filled
+# from $(date +%s) at start; persisted to metadata.txt for replay.
+RUN_SEED="${INTP_BENCH_SEED:-}"
 DRY_RUN=0
 SKIP_BUILD=0
 ALLOW_V0_ON_NEW_KERNEL=0
@@ -253,7 +280,12 @@ Timing:
   --interval SECONDS       Sampling interval (default: $INTERVAL)
   --reps N                 Repetitions per (env,variant,workload) (default: $REPS)
   --timeseries-duration S  Long-trace duration (default: $TIMESERIES_DURATION)
-  --overhead-duration S    Overhead-microbench duration (default: $OVERHEAD_DURATION)
+  --overhead-duration S    Overhead-microbench steady-state window (default: $OVERHEAD_DURATION)
+  --overhead-warmup S      Head-start before sampling (default: $OVH_WARMUP)
+  --overhead-volpert       Enable Volpert-flavoured perf stat (context-switches,
+                           cpu-migrations, sched:sched_{wakeup,switch}) per arm
+  --seed N                 Seed for per-rep shuffle of (ref x arm) order
+                           (default: \$INTP_BENCH_SEED or wall clock)
 
 Other:
   --output-dir DIR         Override output dir
@@ -310,6 +342,9 @@ parse_args() {
             --reps)                  REPS="$2"; shift 2 ;;
             --timeseries-duration)   TIMESERIES_DURATION="$2"; shift 2 ;;
             --overhead-duration)     OVERHEAD_DURATION="$2"; shift 2 ;;
+            --overhead-warmup)       OVH_WARMUP="$2"; shift 2 ;;
+            --overhead-volpert)      OVERHEAD_VOLPERT=1; shift ;;
+            --seed)                  RUN_SEED="$2"; shift 2 ;;
             --output-dir)            OUTPUT_DIR="$2"; shift 2 ;;
             --container-image)       CONTAINER_IMAGE="$2"; shift 2 ;;
             --vm-image)              VM_IMAGE="$2"; shift 2 ;;
@@ -330,7 +365,14 @@ parse_args() {
     validate_positive_int reps "$REPS"
     validate_positive_int timeseries-duration "$TIMESERIES_DURATION"
     validate_positive_int overhead-duration "$OVERHEAD_DURATION"
+    case "$OVH_WARMUP" in
+        ''|*[!0-9]*) die "Invalid --overhead-warmup value: '$OVH_WARMUP' (non-negative integer)" ;;
+    esac
     validate_positive_int vm-cpus "$VM_CPUS"
+    if [ -z "$RUN_SEED" ]; then RUN_SEED="$(date +%s)"; fi
+    case "$RUN_SEED" in
+        ''|*[!0-9]*) die "Invalid --seed value: '$RUN_SEED' (must be a non-negative integer)" ;;
+    esac
 
     split_csv "$STAGES_CSV" STAGES
     split_csv "$VARIANTS_CSV" VARIANTS
@@ -467,6 +509,7 @@ write_metadata() {
         echo "workloads=${WORKLOAD_FILTER:-all}"
         echo "duration=$DURATION warmup=$WARMUP cooldown=$COOLDOWN interval=$INTERVAL reps=$REPS"
         echo "timeseries_duration=$TIMESERIES_DURATION overhead_duration=$OVERHEAD_DURATION"
+        echo "overhead_warmup=$OVH_WARMUP overhead_volpert=$OVERHEAD_VOLPERT run_seed=$RUN_SEED"
         echo "container_image=$CONTAINER_IMAGE"
         echo "vm_image=${VM_IMAGE:-none} vm_mem=$VM_MEM vm_cpus=$VM_CPUS"
         echo "set_cpu_governor=$SET_CPU_GOVERNOR"
@@ -1302,65 +1345,298 @@ stage_pairwise() {
 }
 
 # -----------------------------------------------------------------------------
-# 14. Stage: overhead (profiler runtime cost, Volpert-style)
+# 14. Stage: overhead (system-wide profiler runtime cost)
 #
-# Same reference workload run twice: once with profiler off ("baseline"), once
-# with profiler attached ("with"). Throughput delta (op rate from stress-ng
-# --metrics-brief or wall-clock completion delta) gives us the % overhead.
+# For each (env, ref, rep) the script runs a deterministic stress-ng workload
+# for OVH_WARMUP + OVERHEAD_DURATION seconds. The first OVH_WARMUP seconds are
+# discarded (head-start so caches/thermals stabilise); the steady-state window
+# is when each arm's gauges actually sample.
+#
+# Three layers of measurement, all symmetric across baseline and each variant:
+#   (A) Throughput   bogo ops + bogo ops/s parsed from stress-ng --metrics-brief
+#                    (workload.log -> throughput.tsv)
+#   (B) Self-cost    /proc/stat jiffies delta over the steady-state window
+#                    (cpu_stat.tsv) plus cgroup cpu.stat delta when cgroup
+#                    targeting is active (cgroup_cpu_stat.tsv).
+#   (C) Volpert      perf stat -a context-switches, cpu-migrations,
+#                    sched:sched_{wakeup,switch} (perf_stat.csv) — opt-in via
+#                    --overhead-volpert.
+#
+# Per-rep ordering of (refs x arms) is shuffled with a seed derived from
+# RUN_SEED so thermal/cache drift is averaged out across reps. Output paths
+# are independent of order, so resume keeps working across reseed/rerun.
 # -----------------------------------------------------------------------------
 
+# Derive a 32-bit unsigned subseed from RUN_SEED + a key string so different
+# (env, rep) buckets shuffle independently and reproducibly.
+_overhead_subseed() {
+    printf '%s-%s' "$RUN_SEED" "$1" | cksum | awk '{print $1}'
+}
+
+# Fisher-Yates shuffle of an array, deterministic for a given seed.
+_overhead_shuffle_into() {
+    # $1 seed, $2 output-array name, rest = items
+    local __seed="$1" __out_name="$2"; shift 2
+    local __items=("$@")
+    local __n=${#__items[@]}
+    local -n __out_ref="$__out_name"
+    if [ "$__n" -le 1 ]; then
+        __out_ref=("${__items[@]}")
+        return 0
+    fi
+    local __order
+    __order=$(awk -v n="$__n" -v s="$__seed" 'BEGIN{
+        srand(s)
+        for (i=0; i<n; i++) a[i]=i
+        for (i=n-1; i>0; i--) {
+            j = int(rand()*(i+1))
+            t = a[i]; a[i] = a[j]; a[j] = t
+        }
+        for (i=0; i<n; i++) printf "%d ", a[i]
+    }')
+    __out_ref=()
+    local __idx
+    for __idx in $__order; do
+        __out_ref+=("${__items[$__idx]}")
+    done
+}
+
+# Snapshot of /proc/stat aggregate cpu line as space-separated jiffies:
+# user nice system idle iowait irq softirq steal guest guest_nice
+_overhead_proc_stat_snapshot() {
+    awk '/^cpu / { for (i=2; i<=11; i++) printf "%s%s", $i, (i==11?"\n":" "); exit }' /proc/stat
+}
+
+# Snapshot of cgroup-v2 cpu.stat as: usage_usec nr_periods nr_throttled throttled_usec
+_overhead_cgroup_cpustat_snapshot() {
+    local cg="$1"
+    if [ -z "$cg" ] || [ ! -r "$cg/cpu.stat" ]; then
+        echo "0 0 0 0"
+        return 0
+    fi
+    awk '
+        $1=="usage_usec"     { u  = $2 }
+        $1=="nr_periods"     { np = $2 }
+        $1=="nr_throttled"   { nt = $2 }
+        $1=="throttled_usec" { tu = $2 }
+        END { printf "%d %d %d %d\n", u+0, np+0, nt+0, tu+0 }
+    ' "$cg/cpu.stat"
+}
+
+# TSV delta from two /proc/stat snapshots (one labelled jiffies row each).
+_overhead_proc_stat_delta_tsv() {
+    awk -v b="$1" -v a="$2" '
+    BEGIN {
+        nb = split(b, B, " "); na = split(a, A, " ")
+        labels[1]="user";    labels[2]="nice";   labels[3]="system";  labels[4]="idle"
+        labels[5]="iowait";  labels[6]="irq";    labels[7]="softirq"; labels[8]="steal"
+        labels[9]="guest";   labels[10]="guest_nice"
+        printf "metric\tjiffies\n"
+        if (nb != 10 || na != 10) {
+            printf "error\tincomplete_snapshot\n"
+            exit 0
+        }
+        busy = 0; total = 0
+        for (i=1; i<=10; i++) {
+            d = A[i] - B[i]
+            printf "%s\t%d\n", labels[i], d
+            total += d
+            # Standard "non-idle" busy: exclude idle (4) and iowait (5).
+            if (i != 4 && i != 5) busy += d
+        }
+        printf "busy\t%d\n",  busy
+        printf "total\t%d\n", total
+    }'
+}
+
+# TSV delta from two cgroup cpu.stat snapshots.
+_overhead_cgroup_cpustat_delta_tsv() {
+    awk -v b="$1" -v a="$2" '
+    BEGIN {
+        split(b, B, " "); split(a, A, " ")
+        printf "metric\tvalue\n"
+        printf "usage_usec\t%d\n",     A[1] - B[1]
+        printf "nr_periods\t%d\n",     A[2] - B[2]
+        printf "nr_throttled\t%d\n",   A[3] - B[3]
+        printf "throttled_usec\t%d\n", A[4] - B[4]
+    }'
+}
+
+# Parse stress-ng --metrics-brief output. One row per stressor; we sum bogo
+# ops and per-second figures across stressors and take the max real time
+# (stressors run concurrently). Tolerant of stress-ng version differences:
+# we only require that field 5 of a data row is numeric.
+_overhead_parse_stressng() {
+    awk '
+        /stress-ng: metrc:/ {
+            if ($5 !~ /^[0-9]+(\.[0-9]+)?$/) next
+            ops    += $5
+            if ($6 + 0 > rt) rt = $6 + 0
+            ops_r  += $9
+            ops_us += $10
+            n++
+        }
+        END {
+            if (n == 0) { print "NA\tNA\tNA\tNA"; exit 0 }
+            printf "%d\t%.3f\t%.3f\t%.3f\n", ops, rt, ops_r, ops_us
+        }' "$1"
+}
+
+# One arm of one (env, ref, rep). Caller already enforced kernel/env gating.
+_overhead_run_arm() {
+    local env="$1" arm="$2" rid="$3" rargs="$4" r="$5"
+    local outroot="$OUTPUT_DIR/overhead"
+    local subdir
+    if [ "$arm" = "_baseline" ]; then
+        subdir="$outroot/$env/_baseline/$rid/rep$r"
+    else
+        subdir="$outroot/$env/$arm/$rid/rep$r"
+    fi
+
+    # Resume guard: if elapsed_s exists, this (env, arm, rid, rep) was completed.
+    if [ -f "$subdir/elapsed_s" ]; then
+        log "  skip [overhead $env $arm $rid rep=$r]: already_done"
+        return 0
+    fi
+
+    mkdir -p "$subdir"
+    local wl_log="$subdir/workload.log"
+    local prof="$subdir/profiler.tsv"
+    local cname="intp-bench-ovh-${arm}-${rid}-${r}-$$"
+    local total=$(( OVH_WARMUP + OVERHEAD_DURATION ))
+    log "  overhead [$env $arm $rid rep=$r] total=${total}s warmup=${OVH_WARMUP}s window=${OVERHEAD_DURATION}s"
+
+    local t0; t0=$(date +%s.%N)
+    local wpid
+    wpid=$(launch_workload "$env" "$wl_log" "$total" "$rargs" "$cname" 2>&1 | tail -1 || echo 0)
+    if [ -z "$wpid" ] || [ "$wpid" = "0" ]; then
+        warn "[overhead/$arm/$rid] workload launch failed"
+        record_index "$env" "$arm" overhead "$rid" "$r" "$(date -Iseconds)" 0 1 "" "" "" "launch_failed" "system-wide"
+        return 0
+    fi
+    local wl_cgroup="${CURRENT_WORKLOAD_CGROUP:-}"
+
+    # Head-start: let the workload reach steady state before any sampling.
+    [ "$DRY_RUN" -eq 0 ] && [ "$OVH_WARMUP" -gt 0 ] && sleep "$OVH_WARMUP"
+
+    # Snapshots opening the steady-state window.
+    local ss_before cg_before
+    ss_before=$(_overhead_proc_stat_snapshot)
+    cg_before=$(_overhead_cgroup_cpustat_snapshot "$wl_cgroup")
+
+    # (C) Optional Volpert perf-stat: bounded to OVERHEAD_DURATION via sleep.
+    local perf_pid=""
+    if [ "$OVERHEAD_VOLPERT" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] && command -v perf >/dev/null 2>&1; then
+        perf stat -a -x , \
+            -e context-switches,cpu-migrations,sched:sched_wakeup,sched:sched_switch \
+            -o "$subdir/perf_stat.csv" \
+            -- sleep "$OVERHEAD_DURATION" >/dev/null 2>&1 &
+        perf_pid=$!
+    fi
+
+    # The sampling window itself: profiler in a variant arm; idle sleep in
+    # baseline. Both consume exactly OVERHEAD_DURATION seconds.
+    if [ "$arm" = "_baseline" ]; then
+        [ "$DRY_RUN" -eq 0 ] && sleep "$OVERHEAD_DURATION"
+        : > "$prof"   # empty marker; baseline arm has no profiler output
+        echo 0 > "$prof.samples"
+    else
+        run_profiler "$arm" "$prof" "$OVERHEAD_DURATION" "$wpid" "$wl_cgroup" || true
+    fi
+
+    # Wait for perf stat (same window length) before snapping the closing CPU.
+    if [ -n "$perf_pid" ]; then
+        wait "$perf_pid" 2>/dev/null || true
+    fi
+
+    local ss_after cg_after
+    ss_after=$(_overhead_proc_stat_snapshot)
+    cg_after=$(_overhead_cgroup_cpustat_snapshot "$wl_cgroup")
+
+    # The workload exits on its own --timeout; this waits for the residual.
+    [ "$DRY_RUN" -eq 0 ] && wait_pid_timeout "$wpid" "$WAIT_TIMEOUT_S" "overhead/$arm/$rid" || true
+    stop_workload "$env" "$wpid" "$cname" "$wl_cgroup"
+
+    local elapsed
+    elapsed=$(awk -v t0="$t0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
+
+    # (A) Throughput from stress-ng metrics-brief.
+    local thr bo rt opr opu
+    thr=$(_overhead_parse_stressng "$wl_log" 2>/dev/null || true)
+    [ -z "$thr" ] && thr=$'NA\tNA\tNA\tNA'
+    IFS=$'\t' read -r bo rt opr opu <<< "$thr"
+    {
+        printf 'metric\tvalue\n'
+        printf 'bogo_ops_total\t%s\n'        "$bo"
+        printf 'real_time_s\t%s\n'           "$rt"
+        printf 'bogo_ops_per_s_real\t%s\n'   "$opr"
+        printf 'bogo_ops_per_s_usrsys\t%s\n' "$opu"
+    } > "$subdir/throughput.tsv"
+
+    # (B) System-wide CPU jiffies delta and cgroup cpu.stat delta.
+    _overhead_proc_stat_delta_tsv "$ss_before" "$ss_after" > "$subdir/cpu_stat.tsv"
+    if [ -n "$wl_cgroup" ]; then
+        _overhead_cgroup_cpustat_delta_tsv "$cg_before" "$cg_after" > "$subdir/cgroup_cpu_stat.tsv"
+    fi
+
+    {
+        printf 'arm=%s\nrid=%s\nrep=%d\nseed=%s\nwarmup_s=%s\nwindow_s=%s\ntotal_s=%s\nelapsed_s=%s\nwl_pid=%s\nwl_cgroup=%s\nvolpert=%s\n' \
+            "$arm" "$rid" "$r" "$RUN_SEED" "$OVH_WARMUP" "$OVERHEAD_DURATION" "$total" "$elapsed" "$wpid" "${wl_cgroup:-}" "$OVERHEAD_VOLPERT"
+    } > "$subdir/run.meta"
+    echo "$elapsed" > "$subdir/elapsed_s"
+
+    local note prof_path
+    if [ "$arm" = "_baseline" ]; then
+        note="no_profiler"; prof_path=""
+    else
+        note="with_profiler"; prof_path="$prof"
+    fi
+    record_index "$env" "$arm" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed" 0 "" "$prof_path" "" "$note" "system-wide"
+}
+
 stage_overhead() {
-    log "== overhead (profiler runtime cost) =="
+    log "== overhead (system-wide profiler runtime cost) =="
+    log "   warmup=${OVH_WARMUP}s window=${OVERHEAD_DURATION}s seed=${RUN_SEED} volpert=${OVERHEAD_VOLPERT}"
     local outroot="$OUTPUT_DIR/overhead"
     mkdir -p "$outroot"
-    local env variant entry rid rargs r
-    for env in "${ENVS[@]}"; do
-        for entry in "${OVERHEAD_REFS[@]}"; do
-            IFS='|' read -r rid rargs <<< "$entry"
-            workload_selected "$rid" || [ ${#WORKLOAD_NAMES[@]} -eq 0 ] || continue
-            for r in $(seq 1 "$REPS"); do
-                # Baseline (no profiler)
-                local b_dir="$outroot/$env/_baseline/$rid/rep$r"
-                if [ -f "$b_dir/elapsed_s" ]; then
-                    log "  skip [overhead $env baseline $rid rep=$r]: already_done"
-                else
-                mkdir -p "$b_dir"
-                local b_log="$b_dir/workload.log"
-                local cname_b="intp-bench-bovh-$rid-$r-$$"
-                log "  overhead [$env baseline $rid rep=$r]"
-                local t0; t0=$(date +%s.%N)
-                local pid
-                pid=$(launch_workload "$env" "$b_log" "$OVERHEAD_DURATION" "$rargs" "$cname_b" || echo 0)
-                [ "$DRY_RUN" -eq 0 ] && wait_pid_timeout "$pid" "$WAIT_TIMEOUT_S" "overhead/baseline/$rid" || true
-                stop_workload "$env" "$pid" "$cname_b"
-                local elapsed_b; elapsed_b=$(awk -v t0="$t0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
-                echo "$elapsed_b" > "$b_dir/elapsed_s"
-                record_index "$env" "_baseline" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_b" 0 "" "" "" "no_profiler" "system-wide"
-                fi  # resume guard baseline
 
-                # With each profiler attached
-                for variant in "${VARIANTS[@]}"; do
-                    if ! variant_kernel_ok "$variant"; then continue; fi
-                    local w_dir="$outroot/$env/$variant/$rid/rep$r"
-                    if [ -f "$w_dir/elapsed_s" ]; then
-                        log "  skip [overhead $env $variant $rid rep=$r]: already_done"
-                        continue
-                    fi
-                    mkdir -p "$w_dir"
-                    local w_log="$w_dir/workload.log"
-                    local prof="$w_dir/profiler.tsv"
-                    local cname_w="intp-bench-wovh-$variant-$rid-$r-$$"
-                    log "  overhead [$env $variant $rid rep=$r]"
-                    local tw0; tw0=$(date +%s.%N)
-                    local wpid
-                    wpid=$(launch_workload "$env" "$w_log" "$OVERHEAD_DURATION" "$rargs" "$cname_w" || echo 0)
-                    [ "$DRY_RUN" -eq 0 ] && sleep 1
-                    run_profiler "$variant" "$prof" "$OVERHEAD_DURATION" "$wpid" || true
-                    [ "$DRY_RUN" -eq 0 ] && wait_pid_timeout "$wpid" "$WAIT_TIMEOUT_S" "overhead/$variant/$rid" || true
-                    stop_workload "$env" "$wpid" "$cname_w"
-                    local elapsed_w; elapsed_w=$(awk -v t0="$tw0" 'BEGIN{cmd="date +%s.%N";cmd|getline t1;close(cmd);printf "%.3f",t1-t0}')
-                    echo "$elapsed_w" > "$w_dir/elapsed_s"
-                    record_index "$env" "$variant" overhead "$rid" "$r" "$(date -Iseconds)" "$elapsed_w" 0 "" "$prof" "" "with_profiler" "system-wide"
+    if [ "$OVERHEAD_VOLPERT" -eq 1 ] && ! command -v perf >/dev/null 2>&1; then
+        warn "--overhead-volpert: 'perf' not found; perf-stat data will be skipped"
+    fi
+
+    # Build the kernel-OK arm pool once. Baseline is also an arm so that all
+    # five (or however many) arms compete on equal footing in the shuffle.
+    local arms_pool=("_baseline")
+    local v
+    for v in "${VARIANTS[@]}"; do
+        if variant_kernel_ok "$v"; then arms_pool+=("$v"); fi
+    done
+
+    local env r entry rid rargs arm
+    for env in "${ENVS[@]}"; do
+        for r in $(seq 1 "$REPS"); do
+            local refs_seed
+            refs_seed=$(_overhead_subseed "refs-$env-$r")
+            local refs_order=()
+            _overhead_shuffle_into "$refs_seed" refs_order "${OVERHEAD_REFS[@]}"
+
+            mkdir -p "$outroot/$env"
+            local rep_log="$outroot/$env/rep$r.order.txt"
+            : > "$rep_log"
+            printf 'seed=%s rep=%d refs_order=%s\n' "$RUN_SEED" "$r" "${refs_order[*]/|*/}" >> "$rep_log"
+
+            for entry in "${refs_order[@]}"; do
+                IFS='|' read -r rid rargs <<< "$entry"
+                workload_selected "$rid" || [ ${#WORKLOAD_NAMES[@]} -eq 0 ] || continue
+
+                local arms_seed
+                arms_seed=$(_overhead_subseed "arms-$env-$r-$rid")
+                local arms_order=()
+                _overhead_shuffle_into "$arms_seed" arms_order "${arms_pool[@]}"
+                printf '  ref=%s arms_order=%s\n' "$rid" "${arms_order[*]}" >> "$rep_log"
+
+                for arm in "${arms_order[@]}"; do
+                    _overhead_run_arm "$env" "$arm" "$rid" "$rargs" "$r"
                 done
             done
         done
