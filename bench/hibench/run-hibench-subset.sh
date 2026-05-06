@@ -346,14 +346,17 @@ stop_profiler() {
         # Belt-and-suspenders: catch survivors that escaped the BFS
         pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null || true
         pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-        # CRITICAL: reap the zombie so bash doesn't auto-print job status
-        # ("Killed" message) at an unpredictable point and trip pipefail.
-        # set +e around wait because exit 137 from SIGKILL is expected.
-        set +e
-        wait "$PROFILER_PID" 2>/dev/null
-        set -e
+        # Wait for the wrapper to actually disappear, by polling kill -0.
+        # We avoid `wait` because under set -e + pipefail, a backgrounded
+        # subshell that died via SIGKILL (137) makes `wait $PID` return 137,
+        # and even with `set +e` toggled the exit propagation is fragile in
+        # some bash versions. kill -0 polling has no exit-code trap.
+        local k=0
+        while [ $k -lt 8 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
+            sleep 0.25; k=$((k + 1))
+        done
         PROFILER_PID=""
-        log "  [stop_profiler] reaped"
+        log "  [stop_profiler] cleaned (polled=${k}/8)"
     fi
 
     # Kill V1 collector loop tree
