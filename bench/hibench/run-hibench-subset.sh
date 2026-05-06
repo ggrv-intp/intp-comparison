@@ -474,7 +474,7 @@ _start_v46_profiler() {
     {
         printf '# variant=%s hibench\n' "$variant"
         "$bin" "${args[@]}" 2>"$log" \
-            | awk '/^#/||/^netp/{print;next} {print systime() "\t" $0}'
+            | awk '/^#/||/^netp/{print; fflush(); next} {print systime() "\t" $0; fflush()}'
     } > "$outfile" &
     PROFILER_PID=$!
 }
@@ -497,7 +497,7 @@ _start_v5_profiler() {
     {
         printf '# variant=v3.1 hibench\n'
         "$V5_RUNNER" "${v5_args[@]}" 2>"$log" \
-            | awk '/^#/||/^netp/{print;next} {print systime() "\t" $0}'
+            | awk '/^#/||/^netp/{print; fflush(); next} {print systime() "\t" $0; fflush()}'
     } > "$outfile" &
     PROFILER_PID=$!
 }
