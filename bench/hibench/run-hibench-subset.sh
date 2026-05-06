@@ -64,7 +64,19 @@ _ORIG_AUTOGROUP=""
 PROFILER_PID=""
 STAP_PID=""
 STAP_COLLECTOR_PID=""
+STRESSOR_PID=""
 ACTIVE_RESCTRL_HELPER=0
+
+# Profile → stress-ng args. Empty = no co-runner.
+# These run *concurrently* with Spark to inject controlled interference
+# in a single-socket / local[*] setup where Spark itself can't generate
+# enough pressure to exercise mbw / llcocc / etc. backends.
+PROFILE_STRESSNG_standard=""
+PROFILE_STRESSNG_mem_extreme="--vm 4 --vm-bytes 70% --vm-keep --aggressive"
+PROFILE_STRESSNG_cache_extreme="--cache 8 --cache-no-affinity"
+PROFILE_STRESSNG_disk_extreme="--hdd 4 --hdd-bytes 8G --hdd-ops 100000 --temp-path /var/tmp"
+PROFILE_STRESSNG_netp_extreme="--netdev 4"
+VALID_PROFILES="standard mem-extreme cache-extreme disk-extreme netp-extreme all-stress both"
 
 VARIANTS=()
 WORKLOADS=()
@@ -77,6 +89,30 @@ log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { log "WARN: $*" >&2; }
 die()  { log "FATAL: $*" >&2; exit 1; }
 
+# Recursively SIGTERM/SIGKILL a PID and all its descendants. Needed because
+# the profiler is launched as `{ printf; bin | awk; } > out &` — `$!` captures
+# the wrapper subshell, and a plain `kill $!` leaves bin and awk as orphans
+# that keep writing to `out` until --duration expires.
+_kill_tree() {
+    local sig="$1" root="$2"
+    [ -n "$root" ] || return 0
+    # BFS collect all descendants while still alive
+    local frontier="$root"
+    local all="$root"
+    local depth=0
+    while [ -n "$frontier" ] && [ $depth -lt 8 ]; do
+        local next=""
+        for p in $frontier; do
+            local kids
+            kids=$(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')
+            [ -n "$kids" ] && { next="$next $kids"; all="$all $kids"; }
+        done
+        frontier="$next"
+        depth=$((depth+1))
+    done
+    kill "-$sig" $all 2>/dev/null || true
+}
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
@@ -88,10 +124,18 @@ Usage: sudo $0 [options]
 Options:
   --variants CSV              IntP variants to run (default: v2,v3.1,v3)
                               Supported: v1,v2,v3.1,v3
-    --workloads CSV             Workloads to run (default: all)
-                                                            Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight
-  --size small|medium|large   HiBench dataset profile (default: medium)
-  --profile standard|netp-extreme|both
+  --workloads CSV             Workloads to run (default: all)
+                              Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight,dfsioe
+  --size small|medium|large|huge|gigantic
+                              HiBench dataset profile (default: medium)
+  --profile MODE              Co-runner mode (default: standard). One of:
+                                standard       no co-runner (baseline)
+                                mem-extreme    stress-ng --vm 4 --vm-bytes 70%
+                                cache-extreme  stress-ng --cache 8
+                                disk-extreme   stress-ng --hdd 4 --hdd-bytes 8G
+                                netp-extreme   stress-ng --netdev 4 (legacy)
+                                both           standard + netp-extreme (legacy combo)
+                                all-stress     standard + mem/cache/disk-extreme
   --out-root DIR              Output root (default: $OUT_ROOT)
   --hibench-home DIR          HiBench installation (default: $HIBENCH_HOME)
   --spark-home DIR            Spark home override
@@ -135,8 +179,11 @@ parse_args() {
         esac
     done
 
-    case "$SIZE" in small|medium|large) ;; *) die "invalid --size: $SIZE" ;; esac
-    case "$PROFILE" in standard|netp-extreme|both) ;; *) die "invalid --profile: $PROFILE" ;; esac
+    case "$SIZE" in small|medium|large|huge|gigantic) ;; *) die "invalid --size: $SIZE" ;; esac
+    case "$PROFILE" in
+        standard|mem-extreme|cache-extreme|disk-extreme|netp-extreme|both|all-stress) ;;
+        *) die "invalid --profile: $PROFILE (valid: $VALID_PROFILES)" ;;
+    esac
     case "$WORKLOAD_REPS" in ''|*[!0-9]*) die "invalid --reps: $WORKLOAD_REPS" ;; esac
     [ "$WORKLOAD_REPS" -ge 1 ] || die "--reps must be >= 1"
     case "$ELAPSED_CV_WARN_PCT" in ''|*[!0-9.]*|.*.*) die "invalid --elapsed-cv-warn-pct: $ELAPSED_CV_WARN_PCT" ;; esac
@@ -275,23 +322,32 @@ start_profiler() {
 stop_profiler() {
     local variant="$1" outfile="$2"
 
-    # Kill V2/V3.1/V3 background binary
+    # Kill V2/V3.1/V3 background tree (subshell wrapper + binary + awk pipeline)
     if [ -n "$PROFILER_PID" ]; then
-        kill "$PROFILER_PID" 2>/dev/null || true
+        _kill_tree TERM "$PROFILER_PID"
+        local i=0
+        while [ $i -lt 6 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
+            sleep 0.5; i=$((i+1))
+        done
+        _kill_tree KILL "$PROFILER_PID"
         wait "$PROFILER_PID" 2>/dev/null || true
         PROFILER_PID=""
     fi
 
-    # Kill V1 collector loop
+    # Kill V1 collector loop tree
     if [ -n "$STAP_COLLECTOR_PID" ]; then
-        kill "$STAP_COLLECTOR_PID" 2>/dev/null || true
+        _kill_tree TERM "$STAP_COLLECTOR_PID"
+        sleep 0.5
+        _kill_tree KILL "$STAP_COLLECTOR_PID"
         wait "$STAP_COLLECTOR_PID" 2>/dev/null || true
         STAP_COLLECTOR_PID=""
     fi
 
-    # Kill V1 stap itself
+    # Kill V1 stap tree
     if [ -n "$STAP_PID" ]; then
-        kill "$STAP_PID" 2>/dev/null || true
+        _kill_tree TERM "$STAP_PID"
+        sleep 0.5
+        _kill_tree KILL "$STAP_PID"
         wait "$STAP_PID" 2>/dev/null || true
         STAP_PID=""
     fi
@@ -433,15 +489,65 @@ spark_env_for_profile() {
     local local_dir="/var/lib/hibench/spark-local/$mode"
     mkdir -p "$local_dir" 2>/dev/null || { local_dir="/tmp/hibench-spark-local/$mode"; mkdir -p "$local_dir"; }
 
-    if [ "$mode" = "netp-extreme" ]; then
-        printf 'export SPARK_LOCAL_DIRS=%s\nexport SPARK_SUBMIT_OPTS="%s"\n' \
-            "$local_dir" \
-            "-Dspark.sql.shuffle.partitions=1200 -Dspark.default.parallelism=1200 -Dspark.shuffle.spill=true -Dspark.executor.instances=6 -Dspark.executor.cores=4 -Dspark.executor.memory=8g -Dspark.driver.memory=8g"
-    else
-        printf 'export SPARK_LOCAL_DIRS=%s\nexport SPARK_SUBMIT_OPTS="%s"\n' \
-            "$local_dir" \
-            "-Dspark.sql.shuffle.partitions=400 -Dspark.default.parallelism=400 -Dspark.shuffle.spill=true -Dspark.executor.instances=4 -Dspark.executor.cores=4 -Dspark.executor.memory=8g -Dspark.driver.memory=8g"
+    # All profiles use the same Spark settings now: the *-extreme profiles
+    # differentiate themselves via the stress-ng co-runner, not Spark config.
+    # (The legacy netp-extreme partition bump had no effect in local[*] mode.)
+    printf 'export SPARK_LOCAL_DIRS=%s\nexport SPARK_SUBMIT_OPTS="%s"\n' \
+        "$local_dir" \
+        "-Dspark.sql.shuffle.partitions=400 -Dspark.default.parallelism=400 -Dspark.shuffle.spill=true -Dspark.executor.instances=4 -Dspark.executor.cores=4 -Dspark.executor.memory=8g -Dspark.driver.memory=8g"
+}
+
+# Resolve stress-ng args for a given profile name.
+# Hyphen → underscore for variable lookup (bash assoc-array workaround).
+stressor_args_for_profile() {
+    local mode="$1"
+    case "$mode" in
+        standard)       echo "" ;;
+        mem-extreme)    echo "$PROFILE_STRESSNG_mem_extreme" ;;
+        cache-extreme)  echo "$PROFILE_STRESSNG_cache_extreme" ;;
+        disk-extreme)   echo "$PROFILE_STRESSNG_disk_extreme" ;;
+        netp-extreme)   echo "$PROFILE_STRESSNG_netp_extreme" ;;
+        *)              echo "" ;;
+    esac
+}
+
+# Start a stress-ng co-runner for the given profile. Sets STRESSOR_PID.
+# Runs concurrently with Spark+profiler so the IntP variants can be
+# evaluated on their ability to *detect* injected interference.
+start_stressor() {
+    local mode="$1" outdir="$2"
+    STRESSOR_PID=""
+    local args
+    args="$(stressor_args_for_profile "$mode")"
+    [ -z "$args" ] && return 0
+
+    if ! command -v stress-ng >/dev/null 2>&1; then
+        warn "[stressor/$mode] stress-ng not installed — running without co-runner"
+        return 0
     fi
+
+    [ "$DRY_RUN" -eq 1 ] && {
+        log "  DRY: stress-ng $args"
+        STRESSOR_PID=$$
+        return 0
+    }
+
+    local sl="$outdir/stressor.log"
+    # shellcheck disable=SC2086
+    stress-ng $args --metrics-brief > "$sl" 2>&1 &
+    STRESSOR_PID=$!
+    log "  [stressor/$mode] started PID=$STRESSOR_PID  args='$args'"
+    sleep 2  # let stress-ng ramp before profiler starts
+}
+
+stop_stressor() {
+    [ -n "$STRESSOR_PID" ] || return 0
+    _kill_tree TERM "$STRESSOR_PID"
+    sleep 0.5
+    _kill_tree KILL "$STRESSOR_PID"
+    wait "$STRESSOR_PID" 2>/dev/null || true
+    log "  [stressor] stopped"
+    STRESSOR_PID=""
 }
 
 set_hibench_size() {
@@ -449,9 +555,11 @@ set_hibench_size() {
     [ "$DRY_RUN" -eq 1 ] && [ ! -f "$conf" ] && { warn "dry-run: skipping size config"; return 0; }
     [ -f "$conf" ] || die "missing $conf"
     case "$SIZE" in
-        small)  sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             tiny/'  "$conf" || true ;;
-        medium) sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             small/' "$conf" || true ;;
-        large)  sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             large/' "$conf" || true ;;
+        small)    sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             tiny/'     "$conf" || true ;;
+        medium)   sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             small/'    "$conf" || true ;;
+        large)    sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             large/'    "$conf" || true ;;
+        huge)     sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             huge/'     "$conf" || true ;;
+        gigantic) sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             gigantic/' "$conf" || true ;;
     esac
 }
 
@@ -460,14 +568,19 @@ set_hibench_size() {
 # -----------------------------------------------------------------------------
 
 run_workload_with_profiler() {
-    local variant="$1" workload_name="$2" spark_script="$3" spark_env="$4" outdir="$5"
+    local variant="$1" workload_name="$2" spark_script="$3" spark_env="$4" outdir="$5" profile_mode="${6:-standard}"
     local profiler_tsv="$outdir/profiler.tsv"
     local workload_log="$outdir/workload.log"
     mkdir -p "$outdir"
 
+    # Stressor first (must be steady before profiler measures), then profiler,
+    # then warmup, then Spark reps.
+    start_stressor "$profile_mode" "$outdir"
+
     log "  [$variant] $workload_name — starting profiler"
     start_profiler "$variant" "$profiler_tsv" || {
         warn "  [$variant] $workload_name — profiler failed to start; skipping"
+        stop_stressor
         printf '{"variant":"%s","workload":"%s","status":"profiler_start_failed"}\n' \
             "$variant" "$workload_name" > "$outdir/run.json"
         return 0
@@ -516,6 +629,7 @@ run_workload_with_profiler() {
 
     log "  [$variant] $workload_name — stopping profiler (cumulative job ran ${elapsed}s across ${reps} rep(s))"
     stop_profiler "$variant" "$profiler_tsv"
+    stop_stressor
 
     rep_elapsed_csv=$(IFS=,; echo "${REP_ELAPSED[*]}")
     read -r elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s <<EOF
@@ -645,6 +759,16 @@ run_subset_for_profile() {
         fi
     fi
 
+    if workload_selected dfsioe; then
+        if runner=$(resolve_runner \
+            "bin/workloads/micro/dfsioe/hadoop/run.sh" \
+            "bin/workloads/micro/dfsioe/spark/run.sh"); then
+            RUNNERS+=("dfsioe:$runner")
+        else
+            warn "dfsioe runner not found — continuing without dfsioe (HDFS required)"
+        fi
+    fi
+
     [ "${#RUNNERS[@]}" -gt 0 ] || die "no runnable workloads selected"
 
     {
@@ -664,7 +788,7 @@ run_subset_for_profile() {
         for variant in "${VARIANTS[@]}"; do
             run_workload_with_profiler \
                 "$variant" "$workload_name" "$script" "$spark_env" \
-                "$outdir/bare/$variant/$workload_name/rep1"
+                "$outdir/bare/$variant/$workload_name/rep1" "$mode"
         done
     done
 
@@ -706,6 +830,17 @@ preflight() {
 # -----------------------------------------------------------------------------
 
 _on_exit() {
+    # Make sure no stress-ng or profiler tree survives the script
+    stop_stressor
+    if [ -n "$PROFILER_PID" ]; then
+        _kill_tree KILL "$PROFILER_PID" 2>/dev/null || true
+    fi
+    if [ -n "$STAP_COLLECTOR_PID" ]; then
+        _kill_tree KILL "$STAP_COLLECTOR_PID" 2>/dev/null || true
+    fi
+    if [ -n "$STAP_PID" ]; then
+        _kill_tree KILL "$STAP_PID" 2>/dev/null || true
+    fi
     restore_cpu_env
     stop_resctrl_helper
     local v
@@ -728,12 +863,20 @@ main() {
     parse_args "$@"
     preflight
 
-    if [ "$PROFILE" = "both" ]; then
-        run_subset_for_profile standard
-        run_subset_for_profile netp-extreme
-    else
-        run_subset_for_profile "$PROFILE"
-    fi
+    case "$PROFILE" in
+        both)
+            run_subset_for_profile standard
+            run_subset_for_profile netp-extreme
+            ;;
+        all-stress)
+            for p in standard mem-extreme cache-extreme disk-extreme; do
+                run_subset_for_profile "$p"
+            done
+            ;;
+        *)
+            run_subset_for_profile "$PROFILE"
+            ;;
+    esac
 
     log "all requested profiles finished"
 }

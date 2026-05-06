@@ -61,8 +61,12 @@ METRIC_COLORS = {
     "llcocc": "#e377c2",  # pink
     "cpu":    "#8c564b",  # brown
 }
-VARIANT_ORDER = ["v0", "v0.1", "v1", "v2", "v3.1", "v3"]
+VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
 ENV_ORDER = ["bare", "container", "vm"]
+
+# Pre-rename → current names. Applied at load time so legacy result trees
+# (v3,v4,v5,v6 directories) are displayed with the current nomenclature.
+RENAME = {"v1": "v0", "v2": "v0.1", "v3": "v1", "v4": "v2", "v5": "v3.1", "v6": "v3"}
 
 
 # -----------------------------------------------------------------------------
@@ -104,6 +108,14 @@ def load_index(results_dir: Path) -> pd.DataFrame:
     return df
 
 
+def _maybe_rename_variants(values) -> tuple:
+    """Auto-detect legacy naming (v4/v5/v6 present) and apply RENAME if so."""
+    legacy_markers = {"v4", "v5", "v6"}
+    if any(v in legacy_markers for v in values):
+        return tuple(RENAME.get(v, v) for v in values), True
+    return tuple(values), False
+
+
 def collect_means(results_dir: Path) -> pd.DataFrame:
     """Load every profiler.tsv and return a per-run mean per metric.
 
@@ -125,7 +137,13 @@ def collect_means(results_dir: Path) -> pd.DataFrame:
         for m in METRICS:
             rec[m] = df[m].mean(skipna=True)
         rows.append(rec)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        renamed, did = _maybe_rename_variants(df["variant"].unique())
+        if did:
+            df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
+            print(f"  applied legacy variant rename: {RENAME}")
+    return df
 
 
 # -----------------------------------------------------------------------------
@@ -233,6 +251,7 @@ def fig_timeseries(results_dir: Path, outdir: Path) -> None:
     if not files:
         print("[timeseries] no timeseries data -- skip")
         return
+    legacy = any(f.parts[-5] in {"v4", "v5", "v6"} for f in files)
     n = len(files)
     cols = min(2, n)
     rows = (n + cols - 1) // cols
@@ -240,6 +259,8 @@ def fig_timeseries(results_dir: Path, outdir: Path) -> None:
     for idx, f in enumerate(files):
         ax = axes[idx // cols][idx % cols]
         env = f.parts[-6]; variant = f.parts[-5]
+        if legacy:
+            variant = RENAME.get(variant, variant)
         df = load_profiler_tsv(f)
         if df.empty: continue
         if "ts" in df and df["ts"].notna().any():
@@ -280,6 +301,9 @@ def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
         print("[overhead] no overhead data -- skip")
         return
     df = pd.DataFrame(rows)
+    _, did_rename = _maybe_rename_variants(df["variant"].unique())
+    if did_rename:
+        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
     base = (df[df.variant == "_baseline"]
             .groupby(["env", "ref"])["elapsed"].mean()
             .rename("baseline").reset_index())
@@ -357,7 +381,11 @@ def fig_fidelity_matrix(results_dir: Path, outdir: Path) -> None:
     if not rows:
         print("[fidelity] no fidelity data -- skip")
         return
-    df = pd.DataFrame(rows).groupby(["env", "variant", "metric"])["r"].mean().reset_index()
+    df = pd.DataFrame(rows)
+    _, did_rename = _maybe_rename_variants(df["variant"].unique())
+    if did_rename:
+        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
+    df = df.groupby(["env", "variant", "metric"])["r"].mean().reset_index()
     df.to_csv(outdir / "fidelity_matrix.csv", index=False)
 
     pivot = df.pivot_table(index="variant", columns="metric", values="r", aggfunc="mean")
