@@ -23,7 +23,8 @@
 #include <unistd.h>
 #include <stdint.h>
 
-#define MBW_GROUP_PREFIX "intp_v4"
+#define MBW_GROUP_PREFIX "intp_v2_mbw"
+#define RESCTRL_ROOT_SENTINEL "<root>"
 
 static long resolve_mem_bw_bps(void)
 {
@@ -51,11 +52,18 @@ static int resctrl_probe(void)
 
 static int resctrl_init_(void)
 {
-    snprintf(mb.group, sizeof(mb.group), "%s_%d", MBW_GROUP_PREFIX, getpid());
-    if (resctrl_create_mongroup(mb.group) != 0) return -1;
+    /* With explicit --pid: own mon_group scoped to those tasks.
+     * Without --pid: read the resctrl root group (system-wide) so a
+     * stress-ng co-runner on neighbouring CPUs is captured. */
     const intp_target_t *t = intp_target_get();
-    if (t && t->n_pids > 0)
+    if (t && t->n_pids > 0) {
+        snprintf(mb.group, sizeof(mb.group), "%s_%d", MBW_GROUP_PREFIX, getpid());
+        if (resctrl_create_mongroup(mb.group) != 0) return -1;
         resctrl_assign_pids(mb.group, t->pids, (size_t)t->n_pids);
+    } else {
+        snprintf(mb.group, sizeof(mb.group), "%s", RESCTRL_ROOT_SENTINEL);
+        if (resctrl_create_mongroup(mb.group) != 0) return -1;
+    }
     long b = resctrl_read_mbm_total(mb.group);
     if (b < 0) return -1;
     mb.prev_bytes = b;

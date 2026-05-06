@@ -15,8 +15,8 @@
  *   resctrl_destroy_group()     -- rmdir + free
  */
 
-#ifndef INTP_V6_RESCTRL_H
-#define INTP_V6_RESCTRL_H
+#ifndef INTP_V3_RESCTRL_H
+#define INTP_V3_RESCTRL_H
 
 #include <stddef.h>
 #include <sys/types.h>
@@ -35,6 +35,13 @@ int resctrl_ensure_mounted(void);
  * The handle tracks the previous mbm sample so resctrl_read_mbm_delta()
  * can compute a delta across intervals. Returns NULL on failure. */
 resctrl_group_t *resctrl_create_group(const char *name);
+
+/* Return a handle pointing at the resctrl root group (system-wide).
+ * The root group's tasks file already contains every task on the
+ * system by default, so its mon_data reflects aggregate bandwidth and
+ * occupancy. Use this when running without --pid to detect interference
+ * anywhere on the box. The destroy path is a no-op for the root handle. */
+resctrl_group_t *resctrl_use_root_group(void);
 
 /* Assign PIDs to the group's tasks file. Safe to call again to add more. */
 int resctrl_assign_pids(resctrl_group_t *g, const pid_t *pids, size_t n_pids);
@@ -71,4 +78,4 @@ void resctrl_destroy_group(resctrl_group_t *g);
 int resctrl_max_rmids(void);
 int resctrl_rmids_in_use(void);
 
-#endif /* INTP_V6_RESCTRL_H */
+#endif /* INTP_V3_RESCTRL_H */

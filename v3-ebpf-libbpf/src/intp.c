@@ -210,7 +210,13 @@ static int open_cache_counters(struct bpf_program *prog,
     attr.config = (PERF_COUNT_HW_CACHE_LL)
                 | (PERF_COUNT_HW_CACHE_OP_READ << 8)
                 | (cache_result << 16);
-    attr.sample_period = 10000;    /* one BPF invocation per 10k events */
+    /* sample_period was 10000 — too high for cache-friendly workloads that
+     * never accumulate enough events within the 1Hz sample interval, leaving
+     * llcmr=0 even though the counter is being incremented. Lower to 1000
+     * so even ~1k LLC events/sec triggers at least one BPF invocation per
+     * interval. The accumulated value is still scaled by sample_period in
+     * userspace, so the absolute count stays correct. */
+    attr.sample_period = 1000;
     attr.wakeup_events = 1;
     attr.disabled      = 0;
 
@@ -359,13 +365,13 @@ static void emit_json(FILE *out, const intp_sample_t *s, double t_sec)
 static void emit_prometheus(FILE *out, const intp_sample_t *s)
 {
     fprintf(out,
-        "intp_v6{metric=\"netp\"} %.2f\n"
-        "intp_v6{metric=\"nets\"} %.2f\n"
-        "intp_v6{metric=\"blk\"} %.2f\n"
-        "intp_v6{metric=\"mbw\"} %.2f\n"
-        "intp_v6{metric=\"llcmr\"} %.2f\n"
-        "intp_v6{metric=\"llcocc\"} %.2f\n"
-        "intp_v6{metric=\"cpu\"} %.2f\n",
+        "intp_v3{metric=\"netp\"} %.2f\n"
+        "intp_v3{metric=\"nets\"} %.2f\n"
+        "intp_v3{metric=\"blk\"} %.2f\n"
+        "intp_v3{metric=\"mbw\"} %.2f\n"
+        "intp_v3{metric=\"llcmr\"} %.2f\n"
+        "intp_v3{metric=\"llcocc\"} %.2f\n"
+        "intp_v3{metric=\"cpu\"} %.2f\n",
         s->netp, s->nets, s->blk, s->mbw, s->llcmr, s->llcocc, s->cpu);
     fflush(out);
 }
@@ -503,14 +509,25 @@ int main(int argc, char **argv)
         }
     }
 
-    /* ------- resctrl for mbw / llcocc ------- */
+    /* ------- resctrl for mbw / llcocc -------
+     * With explicit --pid (or --cgroup): create our own mon_group and assign
+     * those tasks. Counters reflect only the targeted workload.
+     * Without targets (system-wide mode): point at the resctrl root group.
+     * The root group already contains every task on the box by default, so
+     * its mon_data measures aggregate bandwidth/occupancy across the whole
+     * system — including any co-runner injecting interference. */
     resctrl_group_t *rg = NULL;
     if (!args.no_resctrl && caps.resctrl_usable) {
-        rg = resctrl_create_group(GROUP_NAME);
-        if (rg && args.num_pids > 0) {
-            if (resctrl_assign_pid_threads(rg, args.pids, args.num_pids) != 0
+        if (args.num_pids > 0) {
+            rg = resctrl_create_group(GROUP_NAME);
+            if (rg && resctrl_assign_pid_threads(rg, args.pids, args.num_pids) != 0
                 && args.verbose)
                 fprintf(stderr, "warn: failed to assign PIDs to resctrl group\n");
+        } else {
+            rg = resctrl_use_root_group();
+            if (!rg && args.verbose)
+                fprintf(stderr, "warn: resctrl root group not readable; "
+                                "mbw/llcocc will be 0\n");
         }
     }
 

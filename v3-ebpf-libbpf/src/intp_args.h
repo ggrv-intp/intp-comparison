@@ -2,8 +2,8 @@
  * intp_args.h -- command-line arguments for intp-ebpf.
  */
 
-#ifndef INTP_V6_ARGS_H
-#define INTP_V6_ARGS_H
+#ifndef INTP_V3_ARGS_H
+#define INTP_V3_ARGS_H
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -41,4 +41,4 @@ int  intp_args_parse(int argc, char **argv, intp_args_t *out);
 /* Print usage text to stream (fd). */
 void intp_args_usage(const char *prog, FILE *out);
 
-#endif /* INTP_V6_ARGS_H */
+#endif /* INTP_V3_ARGS_H */

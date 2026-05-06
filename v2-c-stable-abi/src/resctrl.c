@@ -39,15 +39,41 @@ int resctrl_ensure_mounted(void)
     return -1;
 }
 
+/* Special sentinel: when name is "<root>", target the resctrl root group
+ * itself instead of a child mon_group. The root group's tasks file already
+ * contains every task by default, so its mon_data captures system-wide
+ * bandwidth/occupancy. Lifecycle ops (create/remove/assign) on "<root>"
+ * are no-ops, which lets the rest of the v2 code stay name-keyed. */
+#define RESCTRL_ROOT_SENTINEL "<root>"
+
+static int is_root_group(const char *name)
+{
+    return name && strcmp(name, RESCTRL_ROOT_SENTINEL) == 0;
+}
+
 static void group_dir(const char *name, char *out, size_t outsz)
 {
-    snprintf(out, outsz, "%s/mon_groups/%s", RESCTRL_ROOT, name);
+    if (is_root_group(name))
+        snprintf(out, outsz, "%s", RESCTRL_ROOT);
+    else
+        snprintf(out, outsz, "%s/mon_groups/%s", RESCTRL_ROOT, name);
+}
+
+static void group_mon_data(const char *name, char *out, size_t outsz)
+{
+    if (is_root_group(name))
+        snprintf(out, outsz, "%s/mon_data", RESCTRL_ROOT);
+    else
+        snprintf(out, outsz, "%s/mon_groups/%s/mon_data", RESCTRL_ROOT, name);
 }
 
 int resctrl_create_mongroup(const char *name)
 {
     if (!name || !*name) return -1;
     if (resctrl_ensure_mounted() != 0) return -1;
+    /* Root group is implicit — never mkdir RESCTRL_ROOT. */
+    if (is_root_group(name))
+        return dir_exists(RESCTRL_ROOT "/mon_data") ? 0 : -1;
 
     char dir[RESCTRL_PATH_MAX];
     group_dir(name, dir, sizeof(dir));
@@ -61,6 +87,8 @@ int resctrl_assign_pids(const char *name,
                         size_t n_pids)
 {
     if (!name || !pids || n_pids == 0) return -1;
+    /* Root group is system-wide by default; nothing to assign. */
+    if (is_root_group(name)) return 0;
 
     char tasks[RESCTRL_PATH_MAX];
     snprintf(tasks, sizeof(tasks),
@@ -83,8 +111,7 @@ int resctrl_enumerate_domains(const char *name,
                               int max_domains)
 {
     char base[RESCTRL_PATH_MAX];
-    snprintf(base, sizeof(base),
-             "%s/mon_groups/%s/mon_data", RESCTRL_ROOT, name);
+    group_mon_data(name, base, sizeof(base));
 
     DIR *d = opendir(base);
     if (!d) return 0;
@@ -147,6 +174,8 @@ long resctrl_read_mbm_local(const char *name)
 
 int resctrl_remove_mongroup(const char *name)
 {
+    /* Never rmdir the root resctrl mountpoint. */
+    if (is_root_group(name)) return 0;
     char dir[RESCTRL_PATH_MAX];
     group_dir(name, dir, sizeof(dir));
     if (rmdir(dir) == 0) return 0;

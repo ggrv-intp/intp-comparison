@@ -26,6 +26,7 @@ struct resctrl_group {
     char                name[64];
     char                dir[RESCTRL_PATH_MAX];
     long long           prev_mbm_bytes;   /* -1 = no prior sample */
+    int                 is_root;          /* 1 = handle points at RESCTRL_ROOT (no rmdir on destroy) */
 };
 
 static int dir_exists(const char *p)
@@ -61,6 +62,21 @@ resctrl_group_t *resctrl_create_group(const char *name)
         return NULL;
     }
     g->prev_mbm_bytes = -1;
+    g->is_root = 0;
+    return g;
+}
+
+resctrl_group_t *resctrl_use_root_group(void)
+{
+    if (resctrl_ensure_mounted() != 0) return NULL;
+    /* Root group must already have mon_data populated by the kernel. */
+    if (!dir_exists(RESCTRL_ROOT "/mon_data")) return NULL;
+    resctrl_group_t *g = calloc(1, sizeof(*g));
+    if (!g) return NULL;
+    snprintf(g->name, sizeof(g->name), "%s", "<root>");
+    snprintf(g->dir,  sizeof(g->dir),  "%s", RESCTRL_ROOT);
+    g->prev_mbm_bytes = -1;
+    g->is_root = 1;
     return g;
 }
 
@@ -229,7 +245,7 @@ double resctrl_read_llcocc(resctrl_group_t *g,
 void resctrl_destroy_group(resctrl_group_t *g)
 {
     if (!g) return;
-    rmdir(g->dir);    /* errors ignored -- best-effort cleanup */
+    if (!g->is_root) rmdir(g->dir);   /* never rmdir RESCTRL_ROOT */
     free(g);
 }
 

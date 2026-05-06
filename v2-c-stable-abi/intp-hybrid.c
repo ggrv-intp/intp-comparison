@@ -172,7 +172,7 @@ static void emit_prometheus(FILE *out, metric_sample_t samples[7])
     for (int i = 0; i < 7; i++) {
         if (isnan(samples[i].value)) continue;
         fprintf(out,
-            "intp_v4{metric=\"%s\",backend=\"%s\",status=\"%s\"} %.3f\n",
+            "intp_v2{metric=\"%s\",backend=\"%s\",status=\"%s\"} %.3f\n",
             metric_order_names[i],
             samples[i].backend_id ? samples[i].backend_id : "none",
             status_str(samples[i].status),

@@ -46,6 +46,16 @@ DRY_RUN=0
 INTERVAL=1
 WARMUP=15                   # seconds to let Spark ramp before recording
 MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
+# Memory bandwidth ceiling used by v2/v3 to normalise mbw to a percentage.
+# Default is empty: each binary auto-detects via dmidecode, which on modern
+# servers (e.g. Sapphire Rapids w/ DDR5-4800 × 8 channels = ~307 GB/s) is
+# wildly off (binary defaults to 51 GB/s = DDR4-3200 × 2ch), causing mbw to
+# saturate at 100%. Override via env or CLI flag — measure the host's real
+# bandwidth with `stress-ng --vm 8 --vm-bytes 100% --metrics` plus reading
+# delta on /sys/fs/resctrl/mon_data/mon_L3_*/mbm_total_bytes.
+MEM_BW_MAX_BPS="${MEM_BW_MAX_BPS:-}"
+LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
+NIC_SPEED_BPS="${NIC_SPEED_BPS:-}"
 MIN_WORKLOAD_ELAPSED=0      # minimum cumulative Spark runtime per workload (seconds)
 WORKLOAD_REPS=1             # minimum number of Spark invocations per workload
 ELAPSED_CV_WARN_PCT=20      # warn when duration coefficient of variation reaches this percent
@@ -169,6 +179,9 @@ parse_args() {
             --interval)      INTERVAL="$2"; shift 2 ;;
             --warmup)        WARMUP="$2"; shift 2 ;;
             --max-duration)  MAX_WORKLOAD_DURATION="$2"; shift 2 ;;
+            --mem-bw-max-bps) MEM_BW_MAX_BPS="$2"; shift 2 ;;
+            --llc-size-bytes) LLC_SIZE_BYTES="$2"; shift 2 ;;
+            --nic-speed-bps)  NIC_SPEED_BPS="$2";  shift 2 ;;
             --min-elapsed)   MIN_WORKLOAD_ELAPSED="$2"; shift 2 ;;
             --reps)          WORKLOAD_REPS="$2"; shift 2 ;;
             --elapsed-cv-warn-pct) ELAPSED_CV_WARN_PCT="$2"; shift 2 ;;
@@ -322,22 +335,25 @@ start_profiler() {
 stop_profiler() {
     local variant="$1" outfile="$2"
 
-    # Kill V2/V3.1/V3 background tree. Skip SIGTERM grace — under heavy
-    # stressor load, signal delivery is throttled and waiting on bash forks
-    # for `pgrep` cycles makes the script hang for minutes. SIGKILL is fast,
-    # immune to mask state, and we don't need clean shutdown of the binary
-    # (profiler.tsv is already flushed line-by-line).
+    # Kill V2/V3.1/V3 background tree. Direct SIGKILL — under heavy stressor
+    # load, SIGTERM grace + pgrep BFS hangs for minutes. Profiler.tsv is
+    # flushed line-by-line so we don't need clean binary shutdown.
     if [ -n "$PROFILER_PID" ]; then
         local pre_kids
-        pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ')
+        pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ' || true)
         log "  [stop_profiler] PROFILER_PID=$PROFILER_PID children='${pre_kids}'"
         _kill_tree KILL "$PROFILER_PID"
-        # Belt-and-suspenders: catch any binary that escaped the descendant
-        # tree (e.g. if pgrep -P missed it due to timing).
+        # Belt-and-suspenders: catch survivors that escaped the BFS
         pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null || true
         pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-        # No `wait` — could block on a non-direct-child PID under load.
+        # CRITICAL: reap the zombie so bash doesn't auto-print job status
+        # ("Killed" message) at an unpredictable point and trip pipefail.
+        # set +e around wait because exit 137 from SIGKILL is expected.
+        set +e
+        wait "$PROFILER_PID" 2>/dev/null
+        set -e
         PROFILER_PID=""
+        log "  [stop_profiler] reaped"
     fi
 
     # Kill V1 collector loop tree
@@ -449,10 +465,13 @@ _start_v46_profiler() {
     }
 
     args=(--interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --output tsv)
+    [ -n "$MEM_BW_MAX_BPS" ] && args+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
+    [ -n "$LLC_SIZE_BYTES" ] && args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
+    [ -n "$NIC_SPEED_BPS" ]  && args+=(--nic-speed-bps  "$NIC_SPEED_BPS")
     {
         printf '# variant=%s hibench\n' "$variant"
         "$bin" "${args[@]}" 2>"$log" \
-            | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
+            | awk '/^#/||/^netp/{print;next} {print systime() "\t" $0}'
     } > "$outfile" &
     PROFILER_PID=$!
 }
@@ -468,10 +487,14 @@ _start_v5_profiler() {
         return 0
     }
 
+    local v5_args=(--interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --header)
+    [ -n "$MEM_BW_MAX_BPS" ] && v5_args+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
+    [ -n "$LLC_SIZE_BYTES" ] && v5_args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
+    [ -n "$NIC_SPEED_BPS" ]  && v5_args+=(--nic-speed-bps  "$NIC_SPEED_BPS")
     {
         printf '# variant=v3.1 hibench\n'
-        "$V5_RUNNER" --interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --header 2>"$log" \
-            | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
+        "$V5_RUNNER" "${v5_args[@]}" 2>"$log" \
+            | awk '/^#/||/^netp/{print;next} {print systime() "\t" $0}'
     } > "$outfile" &
     PROFILER_PID=$!
 }
@@ -825,7 +848,11 @@ cleanup_stale_orphans() {
         sleep 1
     fi
     pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-    [ -d /sys/fs/resctrl/mon_groups/intp-v5 ] && rmdir /sys/fs/resctrl/mon_groups/intp-v5 2>/dev/null || true
+    # Stale resctrl mon groups from any prior aborted run (current variants
+    # use intp-v3 and intp-v3.1; intp-v5 is the legacy-name leftover).
+    for g in /sys/fs/resctrl/mon_groups/intp-v*; do
+        [ -d "$g" ] && rmdir "$g" 2>/dev/null || true
+    done
 }
 
 preflight() {

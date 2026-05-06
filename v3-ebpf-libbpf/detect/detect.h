@@ -6,8 +6,8 @@
  * system_capabilities_t so the main loop and backends share one pass.
  */
 
-#ifndef INTP_V6_DETECT_H
-#define INTP_V6_DETECT_H
+#ifndef INTP_V3_DETECT_H
+#define INTP_V3_DETECT_H
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -96,4 +96,4 @@ void print_capabilities(const system_capabilities_t *caps, FILE *out);
 /* Cached accessor -- calls detect_all() if the cache is empty. */
 const system_capabilities_t *detect_cached(void);
 
-#endif /* INTP_V6_DETECT_H */
+#endif /* INTP_V3_DETECT_H */

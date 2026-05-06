@@ -23,7 +23,8 @@
 
 extern double intp_llcmr_last_value(void);  /* defined in llcmr.c */
 
-#define OCC_GROUP_PREFIX "intp_v4_occ"
+#define OCC_GROUP_PREFIX "intp_v2_occ"
+#define RESCTRL_ROOT_SENTINEL "<root>"
 
 static struct {
     int   valid;
@@ -52,11 +53,17 @@ static int resctrl_probe(void)
 
 static int resctrl_init_(void)
 {
-    snprintf(st.group, sizeof(st.group), "%s_%d", OCC_GROUP_PREFIX, getpid());
-    if (resctrl_create_mongroup(st.group) != 0) return -1;
+    /* Same logic as mbw.c: scoped mon_group when --pid is set, root group
+     * otherwise, so co-runners are visible when the profiler runs system-wide. */
     const intp_target_t *t = intp_target_get();
-    if (t && t->n_pids > 0)
+    if (t && t->n_pids > 0) {
+        snprintf(st.group, sizeof(st.group), "%s_%d", OCC_GROUP_PREFIX, getpid());
+        if (resctrl_create_mongroup(st.group) != 0) return -1;
         resctrl_assign_pids(st.group, t->pids, (size_t)t->n_pids);
+    } else {
+        snprintf(st.group, sizeof(st.group), "%s", RESCTRL_ROOT_SENTINEL);
+        if (resctrl_create_mongroup(st.group) != 0) return -1;
+    }
     long b = resctrl_read_llc_occupancy(st.group);
     if (b < 0) return -1;
     st.llc_size_bytes = resolve_llc_bytes();

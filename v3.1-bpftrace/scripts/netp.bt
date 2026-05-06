@@ -17,12 +17,22 @@ BEGIN
     printf("{\"metric\":\"netp\",\"ready\":true}\n");
 }
 
+/*
+ * Filter loopback. In Spark `local[*]` (and any single-host workload) the
+ * majority of "network" traffic is `lo`, where each packet fires both
+ * net_dev_xmit AND netif_receive_skb tracepoints — a double-count that
+ * never crosses any physical NIC. Including lo inflates netp by ≥2× and
+ * produces strong anti-correlation against the per-iface sysfs ground
+ * truth (which excludes lo). Skip lo to keep the metric comparable.
+ */
 tracepoint:net:net_dev_xmit
+/str(args->name) != "lo"/
 {
     @tx_bytes = @tx_bytes + args->len;
 }
 
 tracepoint:net:netif_receive_skb
+/str(((struct sk_buff *)args->skbaddr)->dev->name) != "lo"/
 {
     @rx_bytes = @rx_bytes + args->len;
 }
