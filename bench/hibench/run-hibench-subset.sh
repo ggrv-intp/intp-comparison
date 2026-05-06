@@ -800,8 +800,30 @@ run_subset_for_profile() {
 # Preflight
 # -----------------------------------------------------------------------------
 
+cleanup_stale_orphans() {
+    # Defensive: nuke any IntP-related orphan from a previous run that crashed
+    # before stop_profiler completed. These typically have PPID=1 and would
+    # otherwise contaminate the next run's profiler.tsv (writing via inherited
+    # FDs) or hold resctrl/perf resources.
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local victims
+    victims=$(pgrep -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py|bench/hibench/run-hibench-subset' 2>/dev/null \
+              | grep -v "^$$\$" || true)
+    if [ -n "$victims" ]; then
+        warn "[preflight] killing stale IntP processes: $(echo $victims | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        kill -KILL $victims 2>/dev/null || true
+        sleep 1
+    fi
+    pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
+    # Drop stale resctrl mon group from a prior aborted run
+    [ -d /sys/fs/resctrl/mon_groups/intp-v5 ] && rmdir /sys/fs/resctrl/mon_groups/intp-v5 2>/dev/null || true
+}
+
 preflight() {
     [ "$(id -u)" = "0" ] || [ "$DRY_RUN" -eq 1 ] || die "must run as root (profilers need PMU/resctrl)"
+
+    cleanup_stale_orphans
 
     local v
     for v in "${VARIANTS[@]}"; do
