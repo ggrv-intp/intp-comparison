@@ -1,4 +1,4 @@
-# V3 Modernization -- Reliability Findings on Modern Host
+# V1 Modernization -- Reliability Findings on Modern Host
 
 **Date range:** 2026-05-01
 **Host:** intp-master (Hetzner SB)
@@ -10,13 +10,13 @@
 
 ## Objective
 
-Assess whether the V3 SystemTap path can be considered a reliable modernized
+Assess whether the V1 SystemTap path can be considered a reliable modernized
 equivalent of the original IntP methodology, while preserving the 7-metric
 output contract.
 
 ---
 
-## What was improved in V3
+## What was improved in V1
 
 1. Build/runtime compatibility restored on kernel 6.8 via SystemTap 5.2 and
    script fixes.
@@ -41,7 +41,7 @@ output contract.
 2. **CPU metric path is the primary contention hotspot on SystemTap**
    - `timer.profile`/cpu-clock based collection causes lock contention under
      modern workloads.
-   - To stabilize V3 execution, CPU metric may need to be disabled (or moved
+   - To stabilize V1 execution, CPU metric may need to be disabled (or moved
      to userspace side-channel collection) while preserving TSV schema.
 
 3. **blk metric required defensive sanitization**
@@ -75,8 +75,8 @@ output contract.
      or out-of-band reboot access. In a shared-tenant or production
      environment, this is a hard blocker on running the SystemTap-based
      variants for sustained campaigns.
-   - **Implication for the framework comparison:** v4 (procfs polling), v5
-     (bpftrace) and v6 (eBPF/CO-RE) cannot reach this failure class by
+   - **Implication for the framework comparison:** v2 (procfs polling), v3.1
+     (bpftrace) and v3 (eBPF/CO-RE) cannot reach this failure class by
      construction — none of them install kernel probes that can recursively
      enter kernel locks held by the probed code path. eBPF in particular is
      verified to terminate.
@@ -87,16 +87,16 @@ output contract.
 
 This finding supports a two-layer conclusion:
 
-1. **V3 is a successful compatibility bridge** for reproducing the legacy
+1. **V1 is a successful compatibility bridge** for reproducing the legacy
    methodology on modern kernels/hardware.
-2. **V3 is not the reliability endpoint**: V4/V5/V6 remain more robust for
+2. **V1 is not the reliability endpoint**: V2/V3.1/V3 remain more robust for
    sustained benchmarking because they avoid the high-friction SystemTap kernel
    instrumentation path.
 
 In practice:
 
-- Use V3 to preserve historical continuity and document legacy behavior.
-- Use V4/V5/V6 as the reliability baseline for final comparative claims.
+- Use V1 to preserve historical continuity and document legacy behavior.
+- Use V2/V3.1/V3 as the reliability baseline for final comparative claims.
 
 ---
 
@@ -104,12 +104,12 @@ In practice:
 
 When presenting results, explicitly separate:
 
-1. **Historical comparability** (V1/V3 lineage).
-2. **Operational reliability** (V4/V5/V6).
+1. **Historical comparability** (V0/V1 lineage).
+2. **Operational reliability** (V2/V3.1/V3).
 
 Recommended phrasing:
 
-> The modernization of the original SystemTap methodology (V3) restored
+> The modernization of the original SystemTap methodology (V1) restored
 > functional portability but retained non-negligible runtime fragility under
-> high probe pressure. This gap motivated the framework transition in V4-V6,
+> high probe pressure. This gap motivated the framework transition in V2-V3,
 > which improved repeatability and reduced instrumentation-induced loss.

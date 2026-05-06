@@ -27,8 +27,8 @@ directional estimate only. UNAVAILABLE = metric emits `--` / NaN.
 
 | Generation | Microarch | RDT CMT | RDT MBM | CAT L3 | MBA | resctrl kernel |
 |------------|-----------|:-------:|:-------:|:------:|:---:|:--------------:|
-| Haswell-EP (v3) | Haswell | ✓ | — | — | — | 4.10+ |
-| Broadwell-EP (v4) | Broadwell | ✓ | ✓ | ✓ | — | 4.10+ |
+| Haswell-EP (v1) | Haswell | ✓ | — | — | — | 4.10+ |
+| Broadwell-EP (v2) | Broadwell | ✓ | ✓ | ✓ | — | 4.10+ |
 | Skylake-SP | Skylake | ✓ | ✓ | ✓ | ✓ | 4.12+ |
 | Cascade Lake-SP | Skylake | ✓ | ✓ | ✓ | ✓ | 4.12+ |
 | Ice Lake-SP | Sunny Cove | ✓ | ✓ | ✓ | ✓ | 5.0+ |
@@ -53,7 +53,7 @@ cat /sys/fs/resctrl/info/L3_MON/num_rmids
 ls /sys/devices/uncore_imc_*/
 ```
 
-### 2.3 IntP Backend Priority (V4)
+### 2.3 IntP Backend Priority (V2)
 
 ```
 mbw:   resctrl_mbm > perf_uncore_imc
@@ -64,8 +64,8 @@ llcmr:  perf_hwcache > perf_raw (0x4F2E / 0x412E)
 ### 2.4 Known Errata
 
 - **Haswell-EP:** CMT only (no MBM). `mbw` falls to `perf_uncore_imc`.
-- **Kernel 6.8:** `cqm_rmid` removed from `struct hw_perf_event`. V1
-  breaks; V2+ handle this. SystemTap's `perf_rmid_read()` no longer
+- **Kernel 6.8:** `cqm_rmid` removed from `struct hw_perf_event`. V0
+  breaks; V0.1+ handle this. SystemTap's `perf_rmid_read()` no longer
   available.
 - **RMID budget:** Each resctrl `mon_group` consumes 1 RMID.
   Haswell has 32, Broadwell+ has 128-256. IntP uses 1 group per run.
@@ -92,13 +92,13 @@ Both have **full RDT** (CMT + MBM + CAT + MBA).
 CLI overrides (if autodetect doesn't match):
 
 ```bash
-# V4
+# V2
 sudo ./intp-hybrid --nic-speed-bps 3125000000 --llc-size-bytes 57671680 --mem-bw-max-bps 140000000000
 
-# V5
+# V3.1
 sudo ./run-intp-bpftrace.sh --nic-speed-bps 3125000000 --llc-size-bytes 57671680 --mem-bw-max-bps 140000000000
 
-# V6
+# V3
 sudo ./intp-ebpf --nic-speed-bps 3125000000 --llc-size-bytes 57671680 --mem-bw-max-bps 140000000000
 ```
 
@@ -130,7 +130,7 @@ ls /sys/devices/amd_df*/
 grep AuthenticAMD /proc/cpuinfo
 ```
 
-### 3.3 IntP Backend Priority (V4)
+### 3.3 IntP Backend Priority (V2)
 
 ```texts
 mbw:    resctrl_mbm > perf_amd_df (DRAM beats, 64B granularity)
@@ -159,9 +159,9 @@ cat /sys/fs/resctrl/info/L3_MON/mon_features
 #    llc_occupancy  mbm_total_bytes  mbm_local_bytes
 
 # 3. Run (same commands as Intel)
-sudo ./intp-hybrid --pid $(pgrep -f my_workload)                # V4
-sudo ./run-intp-bpftrace.sh --pid $(pgrep -f my_workload)      # V5
-sudo ./intp-ebpf --pids $(pgrep -f my_workload)                # V6
+sudo ./intp-hybrid --pid $(pgrep -f my_workload)                # V2
+sudo ./run-intp-bpftrace.sh --pid $(pgrep -f my_workload)      # V3.1
+sudo ./intp-ebpf --pids $(pgrep -f my_workload)                # V3
 
 # 4. If on Naples (Zen 1) — no resctrl, mbw/llcocc unavailable
 sudo ./intp-hybrid --pid $(pgrep -f my_workload)
@@ -179,10 +179,10 @@ sudo ./intp-hybrid --pid $(pgrep -f my_workload)
 | Cortex-A55/A76/A78 | ARMv8.2 | — | — |
 | Neoverse N1 | ARMv8.2 | Partial | — |
 | **Neoverse N2** | ARMv9 | ✓ | 6.19+ |
-| Neoverse V2 (Grace) | ARMv9 | ✓ | 6.19+ |
-| Neoverse V3 | ARMv9 | ✓ | 6.19+ |
-| Graviton 3 (AWS) | Neoverse V1 | — | — |
-| **Graviton 4 (AWS)** | Neoverse V2 | ✓ | 6.19+ |
+| Neoverse V0.1 (Grace) | ARMv9 | ✓ | 6.19+ |
+| Neoverse V1 | ARMv9 | ✓ | 6.19+ |
+| Graviton 3 (AWS) | Neoverse V0 | — | — |
+| **Graviton 4 (AWS)** | Neoverse V0.1 | ✓ | 6.19+ |
 | Ampere Altra | ARMv8.2+ | — | — |
 
 ### 4.2 Runtime Detection
@@ -199,7 +199,7 @@ cat /sys/fs/resctrl/info/MB_MON/mon_features 2>/dev/null
 ls /sys/devices/arm_cmn*/
 ```
 
-### 4.3 IntP Backend Priority (V4)
+### 4.3 IntP Backend Priority (V2)
 
 ```text
 mbw:    resctrl_mbm > perf_arm_cmn (HN-F memory traffic, 64B)
@@ -225,19 +225,19 @@ llcmr:  perf_hwcache > perf_raw (LL_CACHE=0x32 / LL_CACHE_MISS_RD=0x37)
 # 1. Check kernel version (need 6.19+ for MPAM resctrl)
 uname -r
 
-# 2. Mount resctrl (Neoverse N2/V2+ with kernel 6.19+)
+# 2. Mount resctrl (Neoverse N2/V0.1+ with kernel 6.19+)
 sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 # 3. If no MPAM: mbw and llcocc will be proxy/unavailable
 #    Other 5 metrics work normally
 
-# V4 (works on any ARM64 with /proc and /sys)
+# V2 (works on any ARM64 with /proc and /sys)
 sudo ./intp-hybrid --pid $(pgrep -f my_workload)
 
-# V5 (needs bpftrace + BTF; aarch64 bpftrace available in Ubuntu 24.04)
+# V3.1 (needs bpftrace + BTF; aarch64 bpftrace available in Ubuntu 24.04)
 sudo ./run-intp-bpftrace.sh --pid $(pgrep -f my_workload)
 
-# V6 (needs clang + libbpf; cross-compile or native build on ARM64)
+# V3 (needs clang + libbpf; cross-compile or native build on ARM64)
 sudo ./intp-ebpf --pids $(pgrep -f my_workload)
 ```
 
@@ -271,18 +271,18 @@ sudo apt install build-essential clang libbpf-dev linux-tools-generic bpftrace p
 sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 # Build all
-cd v4-hybrid-procfs && make && cd ..
-cd v6-ebpf-core && make && cd ..
+cd v2-c-stable-abi && make && cd ..
+cd v3-ebpf-libbpf && make && cd ..
 
 # Validate 7/7
 ./shared/intp-detect.sh | grep INTP_
-sudo ./v4-hybrid-procfs/intp-hybrid --list-backends
-sudo ./v6-ebpf-core/intp-ebpf --list-capabilities
+sudo ./v2-c-stable-abi/intp-hybrid --list-backends
+sudo ./v3-ebpf-libbpf/intp-ebpf --list-capabilities
 
 # Run
-sudo ./v4-hybrid-procfs/intp-hybrid --interval 1 --duration 60
-sudo ./v5-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v6-ebpf-core/intp-ebpf --interval 1 --duration 60
+sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
+sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
 
 # Cross-variant comparison
 sudo ./shared/validate-cross-variant.sh --start-workload --duration 30
@@ -298,20 +298,20 @@ sudo apt install build-essential clang libbpf-dev linux-tools-generic bpftrace p
 sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 # Build
-cd v4-hybrid-procfs && make && cd ..
-cd v6-ebpf-core && make && cd ..
+cd v2-c-stable-abi && make && cd ..
+cd v3-ebpf-libbpf && make && cd ..
 
 # Verify — look for amd_df and resctrl features
 ls /sys/devices/amd_df*/ 2>/dev/null && echo "AMD DF: available"
 cat /sys/fs/resctrl/info/L3_MON/mon_features
 
 # Run (identical commands)
-sudo ./v4-hybrid-procfs/intp-hybrid --interval 1 --duration 60
-sudo ./v5-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v6-ebpf-core/intp-ebpf --interval 1 --duration 60
+sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
+sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
 ```
 
-### 6.3 ARM64 (Neoverse N2/V2, Graviton 4)
+### 6.3 ARM64 (Neoverse N2/V0.1, Graviton 4)
 
 ```bash
 # Dependencies (aarch64 packages)
@@ -322,17 +322,17 @@ uname -r   # must be >= 6.19
 sudo mount -t resctrl resctrl /sys/fs/resctrl 2>/dev/null
 
 # Build (native on ARM64)
-cd v4-hybrid-procfs && make && cd ..
-cd v6-ebpf-core && make && cd ..
+cd v2-c-stable-abi && make && cd ..
+cd v3-ebpf-libbpf && make && cd ..
 
 # Verify
 cat /sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || echo "No MPAM — mbw/llcocc will be proxy/unavailable"
 ls /sys/devices/arm_cmn*/ 2>/dev/null && echo "ARM CMN: available"
 
 # Run
-sudo ./v4-hybrid-procfs/intp-hybrid --interval 1 --duration 60
-sudo ./v5-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v6-ebpf-core/intp-ebpf --interval 1 --duration 60
+sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
+sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
 ```
 
 ---
@@ -345,7 +345,7 @@ sudo ./v6-ebpf-core/intp-ebpf --interval 1 --duration 60
 | `llcmr=--` | perf_event_paranoid too high | `sudo sysctl -w kernel.perf_event_paranoid=-1` |
 | `netp` value seems wrong | NIC speed misdetected | Use `--nic-speed-bps` override |
 | `mbw` always 0 | mem_bw_max autodetect failed | Use `--mem-bw-max-bps` override (check dmidecode) |
-| V6 build fails: "vmlinux.h not found" | BTF absent | `apt install linux-image-$(uname -r)-dbg` or check `CONFIG_DEBUG_INFO_BTF` |
-| V5: "bpftrace: failed to load BTF" | Kernel lacks BTF | Need kernel 5.8+ with `CONFIG_DEBUG_INFO_BTF=y` |
-| V6: "failed to attach" in container | Missing capabilities | `docker run --privileged` or add `CAP_BPF,CAP_PERFMON,CAP_SYS_RESOURCE` |
+| V3 build fails: "vmlinux.h not found" | BTF absent | `apt install linux-image-$(uname -r)-dbg` or check `CONFIG_DEBUG_INFO_BTF` |
+| V3.1: "bpftrace: failed to load BTF" | Kernel lacks BTF | Need kernel 5.8+ with `CONFIG_DEBUG_INFO_BTF=y` |
+| V3: "failed to attach" in container | Missing capabilities | `docker run --privileged` or add `CAP_BPF,CAP_PERFMON,CAP_SYS_RESOURCE` |
 | resctrl mount fails | Kernel lacks RDT/PQoS/MPAM | Hardware doesn't support it; mbw/llcocc degrade |

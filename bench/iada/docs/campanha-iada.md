@@ -13,7 +13,7 @@ Testar a hipótese central:
 > **Perfis de interferência coletados com instrumentação de maior fidelidade
 > produzem decisões de escalonamento de melhor qualidade?**
 
-A campanha IntP varia a *fonte* dos perfis (V1-V6 × bare/container/vm).
+A campanha IntP varia a *fonte* dos perfis (V0-V3 × bare/container/vm).
 Esta campanha alimenta cada conjunto de perfis no **mesmo** scheduler
 (IADA SAO + classificador SVM treinado em stressors sintéticos), isolando
 a fidelidade da instrumentação como variável independente.
@@ -103,10 +103,10 @@ para estimar custo da campanha completa.
 - [x] Scripts: run-iada-experiment.sh, generate-iada-input.py, parse-cloudsim-output.py, run-iada-campaign.sh
 
 ### Fase 1 -- Validação cruzada (próximo)
-Quando a Fase 2 da campanha IntP rodar HiBench em V5/V6 e gerar primeiro
+Quando a Fase 2 da campanha IntP rodar HiBench em V3.1/V3 e gerar primeiro
 conjunto Meyer real:
 - [ ] Rodar `generate-iada-tree.py` no `bench-full/`
-- [ ] Rodar 1 simulação de smoke: `run-iada-experiment.sh` com V5/bare
+- [ ] Rodar 1 simulação de smoke: `run-iada-experiment.sh` com V3.1/bare
 - [ ] Verificar que IDI e migrations são plausíveis vs paper-baseline
 
 ### Fase 2 -- Campanha completa

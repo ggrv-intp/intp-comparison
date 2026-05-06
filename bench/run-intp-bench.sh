@@ -3,7 +3,7 @@
 # run-intp-bench.sh -- Comprehensive IntP benchmark orchestrator.
 #
 # Reproduces the SBAC-PAD 2022 (Xavier & De Rose) experimental methodology
-# across all six IntP variants in this repository and across the three
+# across all seven IntP variants in this repository and across the three
 # execution environments described in the dissertation Phase 3 plan
 # (bare-metal, containerised, virtualised).
 #
@@ -11,7 +11,7 @@
 # be requested as a comma-separated list, default is "all"):
 #
 #   detect      Hardware capability detection + version manifest. Always run.
-#   build       Build v4 / v5 / v6 binaries that are missing.
+#   build       Build v2 / v3.1 / v3 binaries that are missing.
 #   solo        SBAC-PAD "1-after-1" methodology -- single workload, no
 #               co-runner. Reproduces Fig.3 (time series), Fig.4 (per-app bars),
 #               Fig.5 (PCA + k-means).
@@ -38,7 +38,7 @@
 # Usage:
 #   sudo ./run-intp-bench.sh                           # default full run
 #   sudo ./run-intp-bench.sh --stage solo,report
-#   sudo ./run-intp-bench.sh --variants v3,v4,v6 --env bare,container
+#   sudo ./run-intp-bench.sh --variants v1,v2,v3 --env bare,container
 #   sudo ./run-intp-bench.sh --duration 90 --reps 3
 #   sudo ./run-intp-bench.sh --dry-run
 #
@@ -66,15 +66,17 @@ SHARED_DIR="$REPO_ROOT/shared"
 DETECT_SH="$SHARED_DIR/intp-detect.sh"
 RESCTRL_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
 
-V1_STP="$REPO_ROOT/v1-original/intp.stp"
-V2_STP="$REPO_ROOT/v2-updated/intp-6.8.stp"
-V3_STP="$REPO_ROOT/v3-updated-resctrl/intp-resctrl.stp"
-V4_BIN="$REPO_ROOT/v4-hybrid-procfs/intp-hybrid"
-V5_RUNNER="$REPO_ROOT/v5-bpftrace/run-intp-bpftrace.sh"
-V6_BIN="$REPO_ROOT/v6-ebpf-core/intp-ebpf"
+V0_STP="$REPO_ROOT/v0-stap-classic/intp.stp"
+V0_1_STP="$REPO_ROOT/v0.1-stap-k68/intp-6.8.stp"
+V1_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
+V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
+V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
+V2_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
+V3_1_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
+V3_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
 
 DEFAULT_STAGES="detect,build,solo,pairwise,overhead,timeseries,report"
-DEFAULT_VARIANTS="v1,v2,v3,v4,v5,v6"
+DEFAULT_VARIANTS="v0,v0.1,v1,v1.1,v2,v3.1,v3"
 DEFAULT_ENVS="bare,container,vm"
 
 STAGES_CSV="$DEFAULT_STAGES"
@@ -90,17 +92,17 @@ TIMESERIES_DURATION=300
 OVERHEAD_DURATION=60
 DRY_RUN=0
 SKIP_BUILD=0
-ALLOW_V1_ON_NEW_KERNEL=0
+ALLOW_V0_ON_NEW_KERNEL=0
 OUTPUT_DIR=""
 
 CONTAINER_IMAGE="${INTP_BENCH_CONTAINER:-ubuntu:24.04}"
 VM_IMAGE="${INTP_BENCH_VM_IMAGE:-}"           # qcow2 path, optional
 VM_MEM="${INTP_BENCH_VM_MEM:-32G}"
 VM_CPUS="${INTP_BENCH_VM_CPUS:-16}"
-# v4/v6 PID filtering against launcher PID tends to miss child workers and
+# v2/v3 PID filtering against launcher PID tends to miss child workers and
 # softirq-context activity; default to system-wide for representative samples.
 V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
-# Run bare-metal workloads inside a dedicated cgroup and point v4/v6 to it.
+# Run bare-metal workloads inside a dedicated cgroup and point v2/v3 to it.
 # This improves attribution for child workers and resctrl-backed metrics.
 USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
 # Leave CPU governor management opt-in. Some Intel pstate hosts can block
@@ -111,7 +113,7 @@ SYSTEMTAP_READ_TIMEOUT_S="${INTP_BENCH_SYSTEMTAP_READ_TIMEOUT_S:-2}"
 
 ACTIVE_RESCTRL_HELPER=0
 CURRENT_WORKLOAD_CGROUP=""
-# V3-specific: count stap runs and do a deep kernel-module cleanup every N
+# V1-specific: count stap runs and do a deep kernel-module cleanup every N
 # runs to prevent stap_ module accumulation from draining the systemd DBus
 # session budget (pam_systemd creates a scope per SSH login; if stap_ modules
 # keep the previous session scope alive, DBus object counts grow unboundedly
@@ -262,13 +264,13 @@ Other:
     env INTP_BENCH_SET_CPU_GOVERNOR=1
                                                     Force governor -> performance during the run
   --skip-build             Do not auto-build missing variants
-  --allow-v1               Allow V1 on kernel >= 6.8 (will fail at runtime)
+  --allow-v0               Allow V0 on kernel >= 6.8 (will fail at runtime)
   --dry-run                Print actions without executing
   -h, --help               Show this help
 
 Examples:
   sudo $0
-  sudo $0 --stage solo,report --variants v4,v5,v6
+  sudo $0 --stage solo,report --variants v2,v3.1,v3
   sudo $0 --env bare,container --workloads app01_ml_llc,app10_search
   sudo $0 --stage overhead --reps 5
 EOF
@@ -314,7 +316,7 @@ parse_args() {
             --vm-mem)                VM_MEM="$2"; shift 2 ;;
             --vm-cpus)               VM_CPUS="$2"; shift 2 ;;
             --skip-build)            SKIP_BUILD=1; shift ;;
-            --allow-v1)              ALLOW_V1_ON_NEW_KERNEL=1; shift ;;
+            --allow-v0)              ALLOW_V0_ON_NEW_KERNEL=1; shift ;;
             --dry-run)               DRY_RUN=1; shift ;;
             -h|--help)               usage; exit 0 ;;
             *) die "Unknown option: $1" ;;
@@ -478,15 +480,16 @@ write_metadata() {
     {
         printf '# variant manifest\n'
         printf 'variant\tpath\tsha256\tmtime\n'
-        for v in v1 v2 v3 v4 v5 v6; do
+        for v in v0 v0.1 v1 v1.1 v2 v3.1 v3; do
             local p
             case "$v" in
+                v0) p="$V0_STP" ;;
+                v0.1) p="$V0_1_STP" ;;
                 v1) p="$V1_STP" ;;
-                v2) p="$V2_STP" ;;
-                v3) p="$V3_STP" ;;
-                v4) p="$V4_BIN" ;;
-                v5) p="$V5_RUNNER" ;;
-                v6) p="$V6_BIN" ;;
+                v1.1) p="$V1_1_STP" ;;
+                v2) p="$V2_BIN" ;;
+                v3.1) p="$V3_1_RUNNER" ;;
+                v3) p="$V3_BIN" ;;
             esac
             if [ -f "$p" ] || [ -x "$p" ]; then
                 printf '%s\t%s\t%s\t%s\n' "$v" "$p" \
@@ -509,18 +512,23 @@ stage_build() {
         log "  --skip-build set; nothing to do"
         return 0
     fi
-    if variant_selected v4 && [ ! -x "$V4_BIN" ]; then
-        log "Building v4..."
-        run_or_dry make -C "$REPO_ROOT/v4-hybrid-procfs"
+    if variant_selected v2 && [ ! -x "$V2_BIN" ]; then
+        log "Building v2..."
+        run_or_dry make -C "$REPO_ROOT/v2-c-stable-abi"
     fi
-    if variant_selected v6 && [ ! -x "$V6_BIN" ]; then
-        log "Building v6..."
-        run_or_dry make -C "$REPO_ROOT/v6-ebpf-core"
+    if variant_selected v3 && [ ! -x "$V3_BIN" ]; then
+        log "Building v3..."
+        run_or_dry make -C "$REPO_ROOT/v3-ebpf-libbpf"
     fi
+    if variant_selected v1.1 && [ ! -x "$V1_1_HELPER" ]; then
+        log "Building v1.1 helper..."
+        run_or_dry make -C "$REPO_ROOT/v1.1-stap-helper"
+    fi
+    if variant_selected v0 && [ ! -f "$V0_STP" ]; then warn "v0 selected but $V0_STP missing"; fi
+    if variant_selected v0.1 && [ ! -f "$V0_1_STP" ]; then warn "v0.1 selected but $V0_1_STP missing"; fi
     if variant_selected v1 && [ ! -f "$V1_STP" ]; then warn "v1 selected but $V1_STP missing"; fi
-    if variant_selected v2 && [ ! -f "$V2_STP" ]; then warn "v2 selected but $V2_STP missing"; fi
-    if variant_selected v3 && [ ! -f "$V3_STP" ]; then warn "v3 selected but $V3_STP missing"; fi
-    if variant_selected v5 && [ ! -x "$V5_RUNNER" ]; then warn "v5 selected but runner $V5_RUNNER not executable"; fi
+    if variant_selected v1.1 && [ ! -f "$V1_1_STP" ]; then warn "v1.1 selected but $V1_1_STP missing"; fi
+    if variant_selected v3.1 && [ ! -x "$V3_1_RUNNER" ]; then warn "v3.1 selected but runner $V3_1_RUNNER not executable"; fi
 }
 
 # -----------------------------------------------------------------------------
@@ -533,8 +541,8 @@ variant_kernel_ok() {
     k=$(uname -r | cut -d. -f1-2)
     major=${k%.*}; minor=${k#*.}
     case "$variant" in
-        v1)
-            if [ "$ALLOW_V1_ON_NEW_KERNEL" -eq 1 ]; then return 0; fi
+        v0)
+            if [ "$ALLOW_V0_ON_NEW_KERNEL" -eq 1 ]; then return 0; fi
             if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -ge 8 ]; }; then
                 return 1
             fi
@@ -838,7 +846,7 @@ stop_resctrl_helper() {
 }
 
 # Force-unload all lingering stap_ kernel modules with retry + exponential
-# backoff.  Called before every V3 stap launch and periodically between runs.
+# backoff.  Called before every V1 stap launch and periodically between runs.
 # Prevents the module-accumulation pattern that drains systemd DBus budget
 # and stalls pam_systemd scope creation on the next SSH login.
 stap_deep_cleanup() {
@@ -864,6 +872,31 @@ stap_deep_cleanup() {
     fi
 }
 
+# Resolve the comm-name to attach SystemTap probes against. The launch wrapper
+# is `bash -c '...; exec stress-ng'`, so during a small race window
+# /proc/$pid/comm reads as "bash" before exec. If we trace "bash" we end up
+# self-monitoring the orchestration scripts, which creates recursive probe
+# pressure and can deadlock the kernel under load. Wait briefly for exec to
+# land, and refuse to ever target shell wrappers.
+_detect_stap_target() {
+    local pid="$1"
+    local target="stress-ng"
+    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -d "/proc/$pid" ]; then
+        local _try
+        for _try in 1 2 3 4 5 6 7 8 9 10; do
+            target=$(awk '{print $2}' /proc/$pid/stat 2>/dev/null | tr -d '()')
+            case "$target" in
+                bash|sh|dash|"") sleep 0.5 ;;
+                *) break ;;
+            esac
+        done
+        case "$target" in
+            bash|sh|dash|"") target="stress-ng" ;;
+        esac
+    fi
+    printf '%s' "$target"
+}
+
 run_profiler_systemtap() {
     # $1 variant, $2 stp_path, $3 outfile, $4 duration, $5 target_pid
     local variant="$1" stp="$2" outfile="$3" duration="$4" pid="$5"
@@ -878,39 +911,24 @@ run_profiler_systemtap() {
     # SystemTap pre-run: increment run counter, clean any modules left from the
     # previous run, and do a full deep pause every V3_DEEP_CLEANUP_EVERY runs so
     # the kernel fully reclaims resources before loading the next stap_ module.
-    # Applies to v2 and v3 (both leak modules under load if a stapio orphan survives).
-    if [ "$variant" = "v2" ] || [ "$variant" = "v3" ]; then
-        V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
-        stap_deep_cleanup "pre-run-${variant}-${V3_RUN_COUNT}"
-        if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-            log "[$variant] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
-            sleep 8
-        fi
-    fi
-    if [ "$variant" = "v3" ]; then
+    # Applies to all stap-based variants (v0, v0.1, v1, v1.1) since any of them can
+    # leak modules under load if a stapio orphan survives.
+    case "$variant" in
+        v0|v0.1|v1|v1.1)
+            V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
+            stap_deep_cleanup "pre-run-${variant}-${V3_RUN_COUNT}"
+            if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+                log "[$variant] periodic deep pause at run ${V3_RUN_COUNT} (every ${V3_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
+                sleep 8
+            fi
+            ;;
+    esac
+    if [ "$variant" = "v1" ]; then
         start_resctrl_helper
     fi
 
-    # SystemTap variants attach by command name (stress-ng) -- they monitor
-    # all matching processes. The launch wrapper is `bash -c '...; exec stress-ng'`,
-    # so during a small race window /proc/$pid/comm reads as "bash" before exec.
-    # If we trace "bash" we end up self-monitoring the orchestration scripts, which
-    # creates recursive probe pressure and can deadlock the kernel under load.
-    # Wait briefly for exec to land, and refuse to ever target shell wrappers.
-    local target="stress-ng"
-    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -d "/proc/$pid" ]; then
-        local _try
-        for _try in 1 2 3 4 5 6 7 8 9 10; do
-            target=$(awk '{print $2}' /proc/$pid/stat 2>/dev/null | tr -d '()')
-            case "$target" in
-                bash|sh|dash|"") sleep 0.5 ;;
-                *) break ;;
-            esac
-        done
-        case "$target" in
-            bash|sh|dash|"") target="stress-ng" ;;  # never trace wrappers
-        esac
-    fi
+    local target
+    target=$(_detect_stap_target "$pid")
     log "  [$variant] stap target=$target (pid=$pid)"
 
     stap --suppress-handler-errors -g \
@@ -961,15 +979,59 @@ run_profiler_systemtap() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
+run_profiler_systemtap_v1_1() {
+    # v1.1 = stap script + userspace helper. Helper owns the RCU-unsafe
+    # operations (uncore IMC perf events, resctrl mon_group); the stap
+    # script reads /tmp/intp-hw-data from a procfs read probe.
+    local outfile="$1" duration="$2" pid="$3"
+    local helper_log="${outfile%.tsv}.helper.log"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: $V1_1_HELPER <target> & ; stap $V1_1_STP <target> for ${duration}s -> $outfile"
+        printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
+        echo 0 > "$outfile.samples"
+        return 0
+    fi
+
+    if [ ! -x "$V1_1_HELPER" ]; then
+        warn "[v1.1] helper not built ($V1_1_HELPER); run 'make -C $REPO_ROOT/v1.1-stap-helper'"
+        return 1
+    fi
+
+    local target
+    target=$(_detect_stap_target "$pid")
+
+    rm -f /tmp/intp-hw-data
+    "$V1_1_HELPER" "$target" >"$helper_log" 2>&1 &
+    local helper_pid=$!
+    sleep 0.3   # give the helper a moment to open events and write the first line
+
+    run_profiler_systemtap v1.1 "$V1_1_STP" "$outfile" "$duration" "$pid"
+    local rc=$?
+
+    if kill -0 "$helper_pid" 2>/dev/null; then
+        kill -TERM "$helper_pid" 2>/dev/null || true
+        local _try
+        for _try in 1 2 3 4 5; do
+            kill -0 "$helper_pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -KILL "$helper_pid" 2>/dev/null || true
+    fi
+    wait "$helper_pid" 2>/dev/null || true
+
+    return "$rc"
+}
+
 run_profiler_v4() {
     local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ -n "$cgroup_path" ]; then
-            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
+            log "DRY: $V2_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
         elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
-            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+            log "DRY: $V2_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
-            log "DRY: $V4_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
+            log "DRY: $V2_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
         fi
         printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
         echo 0 > "$outfile.samples"
@@ -987,8 +1049,8 @@ run_profiler_v4() {
     # Prefix every line with a wallclock timestamp via awk so all profilers
     # share the same (ts, metrics...) layout in their TSVs.
     {
-        printf '# variant=v4 scope=%s\n' "$scope"
-        "$V4_BIN" "${args[@]}" 2>"${outfile%.tsv}.v4.log" \
+        printf '# variant=v2 scope=%s\n' "$scope"
+        "$V2_BIN" "${args[@]}" 2>"${outfile%.tsv}.v2.log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" || true
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
@@ -997,7 +1059,7 @@ run_profiler_v4() {
 run_profiler_v5() {
     local outfile="$1" duration="$2" pid="$3"
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "DRY: $V5_RUNNER --interval $INTERVAL --duration $duration --pid $pid -> $outfile"
+        log "DRY: $V3_1_RUNNER --interval $INTERVAL --duration $duration --pid $pid -> $outfile"
         printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
         echo 0 > "$outfile.samples"
         return 0
@@ -1005,8 +1067,8 @@ run_profiler_v5() {
     local args=( --interval "$INTERVAL" --duration "$duration" --header )
     if [ -n "$pid" ] && [ "$pid" != "0" ]; then args+=( --pid "$pid" ); fi
     {
-        printf '# variant=v5 pid=%s\n' "$pid"
-        "$V5_RUNNER" "${args[@]}" 2>"${outfile%.tsv}.v5.log" \
+        printf '# variant=v3.1 pid=%s\n' "$pid"
+        "$V3_1_RUNNER" "${args[@]}" 2>"${outfile%.tsv}.v3.1.log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" || true
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
@@ -1016,11 +1078,11 @@ run_profiler_v6() {
     local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ -n "$cgroup_path" ]; then
-            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
+            log "DRY: $V3_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
         elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
-            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
+            log "DRY: $V3_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
-            log "DRY: $V6_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
+            log "DRY: $V3_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
         fi
         printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
         echo 0 > "$outfile.samples"
@@ -1036,8 +1098,8 @@ run_profiler_v6() {
         scope="pid=$pid"
     fi
     {
-        printf '# variant=v6 scope=%s\n' "$scope"
-        "$V6_BIN" "${args[@]}" 2>"${outfile%.tsv}.v6.log" \
+        printf '# variant=v3 scope=%s\n' "$scope"
+        "$V3_BIN" "${args[@]}" 2>"${outfile%.tsv}.v3.log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" || true
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
@@ -1046,12 +1108,13 @@ run_profiler_v6() {
 run_profiler() {
     local variant="$1" outfile="$2" duration="$3" pid="$4" cgroup_path="${5:-}"
     case "$variant" in
+        v0) run_profiler_systemtap v0 "$V0_STP" "$outfile" "$duration" "$pid" ;;
+        v0.1) run_profiler_systemtap v0.1 "$V0_1_STP" "$outfile" "$duration" "$pid" ;;
         v1) run_profiler_systemtap v1 "$V1_STP" "$outfile" "$duration" "$pid" ;;
-        v2) run_profiler_systemtap v2 "$V2_STP" "$outfile" "$duration" "$pid" ;;
-        v3) run_profiler_systemtap v3 "$V3_STP" "$outfile" "$duration" "$pid" ;;
-        v4) run_profiler_v4 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
-        v5) run_profiler_v5 "$outfile" "$duration" "$pid" ;;
-        v6) run_profiler_v6 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
+        v1.1) run_profiler_systemtap_v1_1 "$outfile" "$duration" "$pid" ;;
+        v2) run_profiler_v4 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
+        v3.1) run_profiler_v5 "$outfile" "$duration" "$pid" ;;
+        v3) run_profiler_v6 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         *) die "Unknown variant: $variant" ;;
     esac
 }

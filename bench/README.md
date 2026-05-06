@@ -1,7 +1,7 @@
 # bench/ -- IntP comprehensive evaluation suite
 
 Runs the primary IntP benchmark methodology
-across all six IntP variants in this repository, and extends it with the
+across all seven IntP variants in this repository, and extends it with the
 cross-environment dimensions (bare-metal / container / VM) called for by
 the dissertation Phase-3 plan. Captures additional ground-truth signals
 (perf, resctrl, /proc/diskstats, /proc/net/dev) so we can score each
@@ -22,9 +22,9 @@ each metric across environments.
 All benchmark diagnoses and reliability notes are centralized in
 `bench/findings/`.
 
-- V1 baseline compilation diagnosis:
+- V0 baseline compilation diagnosis:
     `bench/findings/v1-baseline-failure-diagnosis.md`
-- V3 modernization reliability findings:
+- V1 modernization reliability findings:
     `bench/findings/v3-modernization-reliability-findings.md`
 
 ## Quick start
@@ -38,7 +38,7 @@ pip install --user pandas numpy matplotlib scikit-learn          # for plotter
 sudo ./run-intp-bench.sh
 
 # focus on the modern variants only
-sudo ./run-intp-bench.sh --variants v3,v4,v5,v6
+sudo ./run-intp-bench.sh --variants v1,v2,v3.1,v3
 
 # enable container env (requires docker)
 sudo ./run-intp-bench.sh --env bare,container
@@ -59,7 +59,7 @@ python3 bench/convert-profiler-to-meyer.py \
 python3 bench/generate-iada-tree.py \
     --manifest results/intp-bench-<ts>/meyer-convert.tsv \
     --out-root results/intp-bench-<ts>/iada-tree \
-    --variant v4 --stage solo \
+    --variant v2 --stage solo \
     --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con
 
 # REPS > 4 without changing IADA/Classifier/CloudSim file names:
@@ -67,7 +67,7 @@ python3 bench/generate-iada-tree.py \
 python3 bench/generate-iada-tree.py \
     --manifest results/intp-bench-<ts>/meyer-convert.tsv \
     --out-root results/intp-bench-<ts>/iada-tree \
-    --variant v4 --stage solo \
+    --variant v2 --stage solo \
     --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con,rep5=inc,rep6=dec,rep7=osc \
     --pattern-merge median
 ```
@@ -77,7 +77,7 @@ python3 bench/generate-iada-tree.py \
 | Stage        | What it does                                                  | Maps to                       |
 | ------------ | ------------------------------------------------------------- | ----------------------------- |
 | `detect`     | Hardware/kernel snapshot, capabilities.env, variants.manifest | preflight                     |
-| `build`      | `make` for v4 / v6                                            | preflight                     |
+| `build`      | `make` for v2 / v3                                            | preflight                     |
 | `solo`       | 15 workloads x reps, one variant at a time, no co-runner      | legacy IntP-style figures (per-app + PCA) |
 | `pairwise`   | victim + antagonist co-located; profiler attached to victim   | cross-interference analysis   |
 | `overhead`   | reference workload with vs without each profiler              | Volpert et al. 2025           |
@@ -93,15 +93,15 @@ results/intp-bench-<ts>/
     variants.manifest
     index.tsv               # one row per (env,variant,stage,workload,rep)
     aggregate-means.tsv     # one row per run with per-metric mean
-    bare/v4/solo/app10_search/rep1/
+    bare/v2/solo/app10_search/rep1/
         profiler.tsv        # ts + 7 metrics
         groundtruth.tsv     # cpu / disk / net / resctrl + perf-stat.txt
         workload.log
         run.json
-    bare/v4/pairwise/cpu_v_cache/rep1/
+    bare/v2/pairwise/cpu_v_cache/rep1/
         antagonist.log
         ...
-    overhead/bare/v4/ref_cpu/rep1/
+    overhead/bare/v2/ref_cpu/rep1/
         elapsed_s
         workload.log
     plots/                  # populated by plot-intp-bench.py
@@ -136,9 +136,9 @@ If `intp-detect.sh` reports a memory bandwidth figure significantly lower
 than ~300 GB/s, half the channels are likely unpopulated -- DDR5
 single-channel can artificially inflate `mbw`.
 
-V1 requires kernel <= 6.7. The script refuses to run V1 on newer kernels
-unless `--allow-v1` is passed; the recommended flow is to dual-boot
-Ubuntu 22.04 for the V1 baseline and Ubuntu 24.04 for V2..V6, then run
+V0 requires kernel <= 6.7. The script refuses to run V0 on newer kernels
+unless `--allow-v0` is passed; the recommended flow is to dual-boot
+Ubuntu 22.04 for the V0 baseline and Ubuntu 24.04 for V0.1..V3, then run
 the script under each boot and keep the two output directories side by
 side -- the plotter will merge them if you point it at a parent dir.
 
@@ -153,7 +153,7 @@ side -- the plotter will merge them if you point it at a parent dir.
 | `fig05_fidelity_matrix.png`       | solo + GT      | new (Pearson r vs ground truth)      |
 | `fig06_env_heatmap.png`           | solo (envs)    | dissertation Phase 3                 |
 | `fig07_pairwise_heatmap_<env>.png`| pairwise       | new (cross-variant interference map) |
-| `fig08_metric_availability.png`   | any            | new (V2 llcocc=0 etc.)               |
+| `fig08_metric_availability.png`   | any            | new (V0.1 llcocc=0 etc.)               |
 
 Companion CSVs (`overhead_summary.csv`, `fidelity_matrix.csv`,
 `env_ratio.csv`, `pairwise_means.csv`, `metric_availability.csv`,

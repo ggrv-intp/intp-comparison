@@ -19,17 +19,17 @@ Use this chain when moving from setup instructions to evidence and analysis:
 1. Repository overview: `README.md`
 2. Bench orchestration and outputs: `bench/README.md`
 3. Findings index: `bench/findings/README.md`
-4. V1 baseline diagnosis: `bench/findings/v1-baseline-failure-diagnosis.md`
-5. V3 reliability diagnosis: `bench/findings/v3-modernization-reliability-findings.md`
+4. V0 baseline diagnosis: `bench/findings/v1-baseline-failure-diagnosis.md`
+5. V1 reliability diagnosis: `bench/findings/v3-modernization-reliability-findings.md`
 
 ## Why two disks, two OSes
 
-V1 (the original SystemTap probe) relies on the `cqm_rmid` field in
-`struct hw_perf_event`, which kernel 6.8 removed. So the V1 baseline must
-run on a kernel <= 6.7. V2..V6 are designed against 6.8.
+V0 (the original SystemTap probe) relies on the `cqm_rmid` field in
+`struct hw_perf_event`, which kernel 6.8 removed. So the V0 baseline must
+run on a kernel <= 6.7. V0.1..V3 are designed against 6.8.
 
 Rather than juggle GRUB entries on a single disk, we use the box's two NVMe
-drives: `nvme0n1` for the V1 baseline OS (Ubuntu 22.04 + HWE 6.5, newest
+drives: `nvme0n1` for the V0 baseline OS (Ubuntu 22.04 + HWE 6.5, newest
 pre-6.8 with full Sapphire Rapids uncore IMC support), `nvme1n1` for the
 modern OS (Ubuntu 24.04 + 6.8 stock). Switching between them is a boot-order
 toggle in Hetzner Robot.
@@ -41,7 +41,7 @@ toggle in Hetzner Robot.
 In Hetzner Robot, activate "Rescue system (English)", then reboot. SSH into
 the rescue ramdisk as `root` using the IP and the password Robot showed you.
 
-### 2. Image the V1 baseline disk (nvme0n1)
+### 2. Image the V0 baseline disk (nvme0n1)
 
 From rescue:
 
@@ -87,16 +87,16 @@ sudo bash ~/intp/bench/setup/setup-host.sh
 This pass installs SystemTap 5.2 from source plus matching debuginfo, the
 bench-script dependencies (stress-ng, perf, sysstat, etc.), optional Docker
 + qemu for the container/VM envs, mounts resctrl, sets
-`perf_event_paranoid=-1`, builds v4, and runs a smoke test of `stap`.
+`perf_event_paranoid=-1`, builds v2, and runs a smoke test of `stap`.
 
 Ubuntu 22.04's packaged SystemTap 4.6 does not build cleanly against the
-Jammy HWE 6.5 kernel used for the V1 baseline, so the bootstrap upgrades only
-the SystemTap toolchain, not the V1 probe itself.
+Jammy HWE 6.5 kernel used for the V0 baseline, so the bootstrap upgrades only
+the SystemTap toolchain, not the V0 probe itself.
 
-You can now run the V1 sweep:
+You can now run the V0 sweep:
 
 ```bash
-sudo ~/intp/bench/run-intp-bench.sh --variants v1 --env bare \
+sudo ~/intp/bench/run-intp-bench.sh --variants v0 --env bare \
     --output-dir ~/results/v1-baseline
 ```
 
@@ -136,12 +136,12 @@ sudo bash ~/intp/bench/setup/setup-host.sh
 ```
 
 24.04 ships with kernel 6.8, no pinning needed. The script installs
-SystemTap (V2/V3), bpftrace (V5), the libbpf+clang+pahole toolchain (V6),
-mounts resctrl, builds v4 and v6, and self-tests each.
+SystemTap (V0.1/V1), bpftrace (V3.1), the libbpf+clang+pahole toolchain (V3),
+mounts resctrl, builds v2 and v3, and self-tests each.
 
 ```bash
 sudo ~/intp/bench/run-intp-bench.sh \
-    --variants v2,v3,v4,v5,v6 \
+    --variants v0.1,v1,v2,v3.1,v3 \
     --env bare,container \
     --output-dir ~/results/modern
 ```
@@ -156,8 +156,8 @@ In Hetzner Robot:
 
 Operationally:
 
-- Set the boot disk to `nvme0n1` and reboot to enter Ubuntu 22.04 for V1.
-- Set the boot disk to `nvme1n1` and reboot to enter Ubuntu 24.04 for V2..V6.
+- Set the boot disk to `nvme0n1` and reboot to enter Ubuntu 22.04 for V0.
+- Set the boot disk to `nvme1n1` and reboot to enter Ubuntu 24.04 for V0.1..V3.
 
 This is disk-switching rather than a shared on-screen GRUB menu: each OS is
 installed independently on its own drive with its own bootloader.
@@ -171,13 +171,13 @@ pointed at a parent directory.
 
 | Flag                | Effect                                                              |
 | ------------------- | ------------------------------------------------------------------- |
-| `--profile legacy`  | Force the 22.04 / V1 path even if `/etc/os-release` says otherwise. |
-| `--profile modern`  | Force the 24.04 / V2..V6 path.                                      |
+| `--profile legacy`  | Force the 22.04 / V0 path even if `/etc/os-release` says otherwise. |
+| `--profile modern`  | Force the 24.04 / V0.1..V3 path.                                      |
 | `--no-optional`     | Skip Docker + qemu + cloud-utils (smaller install).                 |
-| `--no-build`        | Skip `make` of v4 / v6.                                             |
+| `--no-build`        | Skip `make` of v2 / v3.                                             |
 | `--no-debuginfo`    | Skip the ddebs repo and matching dbgsym package. SystemTap probes
                        lose access to a lot of internal symbols; only use this if you
-                       intend to run V4/V5/V6 only.                                    |
+                       intend to run V2/V3.1/V3 only.                                    |
 
 ## Sanity check after step 4 / step 6
 
@@ -185,14 +185,14 @@ The script's self-test prints a summary like:
 
 ```
 [hh:mm:ss]   stap        OK
-[hh:mm:ss]   v4          OK (cpu=procfs blk=tracepoint mbw=imc llcocc=resctrl ...)
+[hh:mm:ss]   v2          OK (cpu=procfs blk=tracepoint mbw=imc llcocc=resctrl ...)
 [hh:mm:ss]   resctrl     OK
 [hh:mm:ss]   BTF         OK              (modern only)
 [hh:mm:ss]   paranoid    -1
 ```
 
 Anything reporting `FAIL` or `missing` will narrow the variant set you
-can run -- e.g. no BTF means v5 / v6 will refuse to attach.
+can run -- e.g. no BTF means v3.1 / v3 will refuse to attach.
 
 ## Things this script deliberately does *not* do
 

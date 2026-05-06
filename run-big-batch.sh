@@ -14,7 +14,7 @@
 #
 #   Execution environments (run-intp-bench.sh full-bench only)
 #     BENCH_ENVS=bare           comma-separated: bare | container | vm
-#     BENCH_VARIANTS=v3,v4,v5,v6 comma-separated profiler variants for full bench/hibench
+#     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench/hibench
 #     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container env
 #     VM_IMAGE=                 path to .qcow2 for vm env (required when vm in BENCH_ENVS)
 #     VM_MEM=32G                memory for QEMU guest
@@ -37,7 +37,7 @@
 #       (used by setup-spark-hibench.sh to select spark-X.Y.Z-bin-hadoop3.tgz)
 #     RUN_PLOTS=1               generate plots at end
 #
-#   V3 SystemTap module-accumulation guard
+#   V1 SystemTap module-accumulation guard
 #     INTP_BENCH_V3_DEEP_CLEANUP_EVERY=5
 #
 # Usage examples:
@@ -80,7 +80,7 @@ COOLDOWN="${COOLDOWN:-10}"
 # vm      → stress-ng in QEMU/KVM guest (profiler measures qemu PID on host);
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
-BENCH_VARIANTS="${BENCH_VARIANTS:-v3,v4,v5,v6}"
+BENCH_VARIANTS="${BENCH_VARIANTS:-v1,v2,v3.1,v3}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"
 VM_MEM="${VM_MEM:-32G}"
@@ -101,7 +101,7 @@ HIBENCH_ELAPSED_CV_WARN_PCT="${HIBENCH_ELAPSED_CV_WARN_PCT:-20}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
-# ── V3 guard ───────────────────────────────────────────────────────────────────
+# ── V1 guard ───────────────────────────────────────────────────────────────────
 export INTP_BENCH_V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
 
 # ── Container / VM env vars forwarded to run-intp-bench.sh via env ─────────────
@@ -145,18 +145,18 @@ echo "  run_stress_bench=$RUN_STRESS_BENCH"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
 echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
 echo "  run_plots=$RUN_PLOTS"
-echo "  v3_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
+echo "  v1_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 
 # ── Preflight ──────────────────────────────────────────────────────────────────
 run_step "preflight detect" bash shared/intp-detect.sh
-run_step "v3 deps check" bash -lc '
+run_step "v1 deps check" bash -lc '
   command -v stap >/dev/null 2>&1 \
-  && test -f v3-updated-resctrl/intp-resctrl.stp \
+  && test -f v1-stap-native/intp-resctrl.stp \
   && test -x shared/intp-resctrl-helper.sh
 '
-run_step "build v4" make -C v4-hybrid-procfs all
-run_step "build v6" make -C v6-ebpf-core all
-run_step "v5 deps check" make -C v5-bpftrace deps
+run_step "build v2" make -C v2-c-stable-abi all
+run_step "build v3" make -C v3-ebpf-libbpf all
+run_step "v3.1 deps check" make -C v3.1-bpftrace deps
 run_step "python benchmark deps" bash -c '
   pip3 install --quiet --break-system-packages numpy matplotlib pandas scipy 2>/dev/null \
   || pip3 install --quiet numpy matplotlib pandas scipy
@@ -193,7 +193,7 @@ if [ "$RUN_HIBENCH" = "1" ]; then
 fi
 
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
-# V3 cleanup guard is exported above; bench script inherits it automatically.
+# V1 cleanup guard is exported above; bench script inherits it automatically.
 if [ "$RUN_STRESS_BENCH" = "1" ]; then
   run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
     bash bench/run-intp-bench.sh \

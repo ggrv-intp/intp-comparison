@@ -1,4 +1,4 @@
-# V1 Baseline — Diagnóstico de Falha de Compilação
+# V0 Baseline — Diagnóstico de Falha de Compilação
 
 **Data do diagnóstico:** 2026-04-30
 **Host:** intp-v1-baseline
@@ -10,9 +10,9 @@
 
 ## Contexto
 
-A campanha de baseline V1 foi executada neste host com os dados arquivados em
+A campanha de baseline V0 foi executada neste host com os dados arquivados em
 `v1-full-campaign-all-envs/`. Ao analisar os resultados, verificou-se que
-todas as execuções V1 produziram `samples=0` e todas as métricas no
+todas as execuções V0 produziram `samples=0` e todas as métricas no
 `aggregate-means.tsv` ficaram marcadas como `--`.
 
 A investigação dos logs de profiler (`profiler.stap.log`) revelou que a falha
@@ -34,7 +34,7 @@ ls -la /usr/local/bin/stap
 
 # Presença de cqm_rmid nos headers do kernel em uso
 grep -r cqm_rmid /usr/src/linux-headers-$(uname -r)/
-→ cqm_rmid AUSENTE nos headers -- V1 NAO COMPILA   ❌
+→ cqm_rmid AUSENTE nos headers -- V0 NAO COMPILA   ❌
 
 # MSR_IA32_QM nos headers (causam conflito de redefinição no probe)
 grep "MSR_IA32_QM" /usr/src/linux-headers-$(uname -r)/arch/x86/include/asm/msr-index.h
@@ -50,11 +50,11 @@ echo 'probe begin { println("stap ok"); exit() }' | sudo stap -
 
 ## Causa raiz
 
-O campo `cqm_rmid` em `struct hw_perf_event`, usado pelo V1 para vincular
+O campo `cqm_rmid` em `struct hw_perf_event`, usado pelo V0 para vincular
 um RMID Intel RDT a um perf event do kernel, **foi removido ou refatorado**
 no pacote `linux-headers-6.5.0-45.45~22.04.1` do Ubuntu HWE.
 
-O V1 assume acesso direto a esse campo interno em duas passagens do probe:
+O V0 assume acesso direto a esse campo interno em duas passagens do probe:
 
 ```c
 rr.rmid = pe->hw.cqm_rmid;         // linha 85 do C gerado pelo stap
@@ -67,7 +67,7 @@ Sem `cqm_rmid`, o compilador C rejeita o módulo. Somado a isso, os MSRs
 quando o SystemTap tenta redeclará-los no código gerado.
 
 O resultado são quatro erros fatais em Pass 4, presentes de forma idêntica
-em **todos** os logs de todas as execuções V1 (bare, container, vm):
+em **todos** os logs de todas as execuções V0 (bare, container, vm):
 
 ```
 error: "MSR_IA32_QM_CTR" redefined [-Werror]
@@ -91,29 +91,29 @@ Pass 4: compilation failed.  [man error::pass4]
 
 ## Conclusão para o paper
 
-O V1 **não pode compilar** nesse kernel sem modificações no probe, independente
+O V0 **não pode compilar** nesse kernel sem modificações no probe, independente
 de quantas vezes seja reexecutado. O campo `cqm_rmid` foi removido como parte
 da refatoração da interface interna de perf/RDT que a Canonical incorporou no
 pacote HWE `6.5.0-45.45~22.04.1`, mesmo que o número de versão 6.5 ainda
 esteja dentro do range documentado como "suportado".
 
 Isso motiva diretamente:
-- **V2**: patch mínimo que elimina a dependência de `cqm_rmid` e o conflito de MSR,
+- **V0.1**: patch mínimo que elimina a dependência de `cqm_rmid` e o conflito de MSR,
   ao custo de remover `llcocc`.
-- **V3**: restauração das 7 métricas via `/sys/fs/resctrl`, sem dependência de
+- **V1**: restauração das 7 métricas via `/sys/fs/resctrl`, sem dependência de
   campo interno de `hw_perf_event`.
-- **V4/V5/V6**: abordagens sem SystemTap, imunes a esse tipo de drift de ABI.
+- **V2/V3.1/V3**: abordagens sem SystemTap, imunes a esse tipo de drift de ABI.
 
 A campanha arquivada em `v1-full-campaign-all-envs/` deve ser citada no paper
-como **evidência de quebra de portabilidade do V1**, não como dados de desempenho.
+como **evidência de quebra de portabilidade do V0**, não como dados de desempenho.
 
 ---
 
 ## Referências internas
 
 - Logs de falha: `v1-full-campaign-all-envs/**/profiler.stap.log` (linha 19+)
-- Índice de amostras: `v1-full-campaign-all-envs/index.tsv` (todas as linhas V1 com `samples=0`)
-- Agregados: `v1-full-campaign-all-envs/aggregate-means.tsv` (todas as colunas V1 com `--`)
+- Índice de amostras: `v1-full-campaign-all-envs/index.tsv` (todas as linhas V0 com `samples=0`)
+- Agregados: `v1-full-campaign-all-envs/aggregate-means.tsv` (todas as colunas V0 com `--`)
 - Documentação do problema: `docs/KERNEL-6.8-CHANGES.md`
-- Patch que resolve: `v2-updated/intp-6.8.stp`
+- Patch que resolve: `v0.1-stap-k68/intp-6.8.stp`
 - Bootstrap do baseline: `bench/setup/setup-host.sh` função `install_legacy_stack()`

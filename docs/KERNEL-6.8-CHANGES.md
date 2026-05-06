@@ -242,14 +242,14 @@ If perf events are available, this might be simpler than resctrl.
 
 ## Files Modified
 
-- `v2-updated/intp-6.8.stp` -- Patched version (new file).
-- `v1-original/intp.stp` -- Original version (unchanged).
+- `v0.1-stap-k68/intp-6.8.stp` -- Patched version (new file).
+- `v0-stap-classic/intp.stp` -- Original version (unchanged).
 - `docs/KERNEL-6.8-CHANGES.md` -- this file (cross-variant root copy).
-- `v2-updated/docs/KERNEL-6.8-NOTES.md` -- per-variant V2 changelog (kept verbatim from the V2 working notes).
+- `v0.1-stap-k68/docs/KERNEL-6.8-NOTES.md` -- per-variant V0.1 changelog (kept verbatim from the V0.1 working notes).
 
 ## References
 
 - [Linux kernel resctrl documentation](https://docs.kernel.org/filesystems/resctrl.html) (current canonical URL; the `/x86/resctrl.html` path returns 404).
 - [Intel Resource Director Technology overview](https://www.intel.com/content/www/us/en/architecture-and-technology/resource-director-technology.html)
 - [Kernel 6.8 changelog](https://kernelnewbies.org/Linux_6.8)
-- Sohal, P. et al. (2022). *A Closer Look at Intel Resource Director Technology (RDT)*. RTNS 2022. (DOI: 10.1145/3534879.3534882) -- documents MBM accuracy errata on Skylake-class hardware that motivate the dual `resctrl_mbm` / `perf_uncore_imc` backend in V4.
+- Sohal, P. et al. (2022). *A Closer Look at Intel Resource Director Technology (RDT)*. RTNS 2022. (DOI: 10.1145/3534879.3534882) -- documents MBM accuracy errata on Skylake-class hardware that motivate the dual `resctrl_mbm` / `perf_uncore_imc` backend in V2.

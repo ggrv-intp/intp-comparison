@@ -5,12 +5,13 @@ benchmark campaign.
 
 ## Index
 
-- [V1 Baseline -- Compilation failure diagnosis](v1-baseline-failure-diagnosis.md)
-  - Documents why the original V1 probe fails deterministically on modern
+- [V0 Baseline -- Compilation failure diagnosis](v1-baseline-failure-diagnosis.md)
+  - Documents why the original V0 probe fails deterministically on modern
     kernel/header combinations.
-- [V3 Modernization -- Reliability findings](v3-modernization-reliability-findings.md)
-  - Documents what was improved in V3 and which operational limitations remain
-    under modern kernels and hardware.
+- [V1 Modernization -- Reliability findings](v3-modernization-reliability-findings.md)
+  - Documents what was improved in V1 (the restored stap-native build) and
+    which operational limitations remain under modern kernels and hardware.
+    The userspace-helper recovery path is implemented in V1.1.
 
 ## Scope
 
@@ -24,6 +25,7 @@ Each finding should include:
 
 ## Why this matters
 
-The dissertation compares historical portability (V1) versus modern reliability
-(V4/V5/V6). Keeping findings centralized and versioned in this directory makes
-that argument auditable and reproducible.
+The dissertation compares historical portability (V0) versus modern
+reliability (V1.1 stap+helper, V2 procfs, V3.1 bpftrace, V3 eBPF/CO-RE).
+Keeping findings centralized and versioned in this directory makes that
+argument auditable and reproducible.

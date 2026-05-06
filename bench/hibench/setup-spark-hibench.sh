@@ -359,7 +359,7 @@ print_summary() {
 
 Run IntP HiBench benchmarks with:
   sudo bash bench/hibench/run-hibench-subset.sh \\
-    --variants v3,v4,v5,v6 --size medium --profile both
+    --variants v1,v2,v3.1,v3 --size medium --profile both
 EOF
 }
 

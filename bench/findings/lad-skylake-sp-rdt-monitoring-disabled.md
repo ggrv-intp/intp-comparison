@@ -14,7 +14,7 @@ A combinação CPU + microcódigo + kernel disponível no LAD pantanal01 **não 
 as features de Cache Monitoring Technology (CMT) e Memory Bandwidth Monitoring
 (MBM) via interface `resctrl`, apesar das flags de CPUID declararem suporte.
 Isso impossibilita a coleta da métrica `llcocc` em qualquer variante do IntP
-(V1, V3, V4, V5, V6) neste hardware.
+(V0, V1, V2, V3.1, V3) neste hardware.
 
 Implicação: cobertura máxima da metodologia IntP no LAD pantanal01 é 6/7
 métricas, independente da variante de instrumentação escolhida.
@@ -95,10 +95,10 @@ no kernel (campo removido em kernel 6.8+).
 
 Caminhos alternativos para coletar `llcocc` em hardware moderno:
 
-- **V1 (kernel <=6.6):** lê `cqm_rmid` direto. Requer que o monitoring esteja
+- **V0 (kernel <=6.6):** lê `cqm_rmid` direto. Requer que o monitoring esteja
   habilitado pelo kernel — se o resctrl driver não ativa CMT, o RMID
   não é alocado e o campo retorna lixo ou zero.
-- **V3 / V4 / V5 / V6:** leem via interface `resctrl` em `/sys/fs/resctrl/`.
+- **V1 / V2 / V3.1 / V3:** leem via interface `resctrl` em `/sys/fs/resctrl/`.
   Requer que `info/L3_MON/` exista e que mon_groups consigam ser criados
   com `mon_data/mon_L3_*/llc_occupancy` populado.
 
@@ -140,10 +140,10 @@ Cobertura: 7/7 métricas em qualquer variante.
 
 Apesar da limitação de `llcocc`, o LAD pantanal01 segue útil para:
 
-1. **Reprodução parcial de V1** com cobertura 6/7 (excluindo `llcocc`).
+1. **Reprodução parcial de V0** com cobertura 6/7 (excluindo `llcocc`).
    Demonstra que a metodologia legada continua executável em hardware
    da era original do paper.
-2. **Sanity check de portabilidade de V4** (procfs+perf+resctrl, único
+2. **Sanity check de portabilidade de V2** (procfs+perf+resctrl, único
    variante que roda sem dependência de framework de kernel).
    Comparação cross-host (LAD vs Hetzner) das 6 métricas comuns valida
    transferibilidade dos resultados.

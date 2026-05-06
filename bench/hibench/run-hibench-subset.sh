@@ -9,9 +9,9 @@
 #
 # Usage:
 #   sudo bash bench/hibench/run-hibench-subset.sh \
-#     --variants v4,v5,v6 --size medium --profile both
+#     --variants v2,v3.1,v3 --size medium --profile both
 #   sudo bash bench/hibench/run-hibench-subset.sh \
-#     --variants v3,v4,v5,v6 --size medium --profile standard
+#     --variants v1,v2,v3.1,v3 --size medium --profile standard
 #
 # Output layout (mirrors run-intp-bench.sh):
 #   out_root/<profile>-<size>-<ts>/
@@ -28,16 +28,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHARED_DIR="$REPO_ROOT/shared"
 
-V3_STP="$REPO_ROOT/v3-updated-resctrl/intp-resctrl.stp"
+V3_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
 V3_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
-V4_BIN="$REPO_ROOT/v4-hybrid-procfs/intp-hybrid"
-V5_RUNNER="$REPO_ROOT/v5-bpftrace/run-intp-bpftrace.sh"
-V6_BIN="$REPO_ROOT/v6-ebpf-core/intp-ebpf"
+V4_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
+V5_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
+V6_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
 
 # Defaults
 SIZE="${SIZE:-medium}"
 PROFILE="${PROFILE:-both}"
-VARIANTS_CSV="${VARIANTS_CSV:-v4,v5,v6}"
+VARIANTS_CSV="${VARIANTS_CSV:-v2,v3.1,v3}"
 WORKLOADS_CSV="${WORKLOADS_CSV:-all}"
 OUT_ROOT="${OUT_ROOT:-/var/lib/hibench/runs}"
 HIBENCH_HOME="${HIBENCH_HOME:-/opt/HiBench}"
@@ -54,7 +54,7 @@ STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Spark driver/executors all run as "java" on the host.
 STAP_TARGET="${STAP_TARGET:-java}"
 
-# V3 module-accumulation guard
+# V1 module-accumulation guard
 V3_RUN_COUNT=0
 V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
 _ORIG_GOVERNORS=""
@@ -86,8 +86,8 @@ usage() {
 Usage: sudo $0 [options]
 
 Options:
-  --variants CSV              IntP variants to run (default: v4,v5,v6)
-                              Supported: v3,v4,v5,v6
+  --variants CSV              IntP variants to run (default: v2,v3.1,v3)
+                              Supported: v1,v2,v3.1,v3
     --workloads CSV             Workloads to run (default: all)
                                                             Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight
   --size small|medium|large   HiBench dataset profile (default: medium)
@@ -101,14 +101,14 @@ Options:
     --min-elapsed N             Min cumulative Spark runtime per workload via reruns (default: $MIN_WORKLOAD_ELAPSED)
     --reps N                    Min number of Spark invocations per workload (default: $WORKLOAD_REPS)
     --elapsed-cv-warn-pct N     Warn threshold for duration CV percent across reps (default: $ELAPSED_CV_WARN_PCT)
-  --stap-target NAME          Process name for V3 stap filter (default: $STAP_TARGET)
+  --stap-target NAME          Process name for V1 stap filter (default: $STAP_TARGET)
   --dry-run                   Print actions without executing
   -h, --help                  Show this help
 
 Examples:
-  sudo $0 --variants v4,v5,v6 --size medium --profile both
-  sudo $0 --variants v3,v4,v5,v6 --size medium --profile standard
-  INTP_BENCH_V3_DEEP_CLEANUP_EVERY=4 sudo $0 --variants v3 --size small
+  sudo $0 --variants v2,v3.1,v3 --size medium --profile both
+  sudo $0 --variants v1,v2,v3.1,v3 --size medium --profile standard
+  INTP_BENCH_V3_DEEP_CLEANUP_EVERY=4 sudo $0 --variants v1 --size small
 EOF
 }
 
@@ -175,7 +175,7 @@ workload_selected() {
 }
 
 # -----------------------------------------------------------------------------
-# V3 module-accumulation guard (same logic as run-intp-bench.sh)
+# V1 module-accumulation guard (same logic as run-intp-bench.sh)
 # -----------------------------------------------------------------------------
 
 stap_deep_cleanup() {
@@ -256,7 +256,7 @@ restore_cpu_env() {
 # Profiler launchers
 # start_profiler  variant outfile  → sets PROFILER_PID / STAP_PID / STAP_COLLECTOR_PID
 #                                    returns 1 on startup failure (caller skips run)
-# stop_profiler   variant outfile  → kills bg processes, V3 cleans modules
+# stop_profiler   variant outfile  → kills bg processes, V1 cleans modules
 # -----------------------------------------------------------------------------
 
 start_profiler() {
@@ -264,10 +264,10 @@ start_profiler() {
     PROFILER_PID="" STAP_PID="" STAP_COLLECTOR_PID=""
 
     case "$variant" in
-        v3) _start_v3_profiler "$outfile" ;;
-        v4) _start_v46_profiler v4 "$outfile" ;;
-        v5) _start_v5_profiler "$outfile" ;;
-        v6) _start_v46_profiler v6 "$outfile" ;;
+        v1) _start_v3_profiler "$outfile" ;;
+        v2) _start_v46_profiler v2 "$outfile" ;;
+        v3.1) _start_v5_profiler "$outfile" ;;
+        v3) _start_v46_profiler v3 "$outfile" ;;
         *)  warn "unknown variant $variant"; return 1 ;;
     esac
 }
@@ -275,28 +275,28 @@ start_profiler() {
 stop_profiler() {
     local variant="$1" outfile="$2"
 
-    # Kill V4/V5/V6 background binary
+    # Kill V2/V3.1/V3 background binary
     if [ -n "$PROFILER_PID" ]; then
         kill "$PROFILER_PID" 2>/dev/null || true
         wait "$PROFILER_PID" 2>/dev/null || true
         PROFILER_PID=""
     fi
 
-    # Kill V3 collector loop
+    # Kill V1 collector loop
     if [ -n "$STAP_COLLECTOR_PID" ]; then
         kill "$STAP_COLLECTOR_PID" 2>/dev/null || true
         wait "$STAP_COLLECTOR_PID" 2>/dev/null || true
         STAP_COLLECTOR_PID=""
     fi
 
-    # Kill V3 stap itself
+    # Kill V1 stap itself
     if [ -n "$STAP_PID" ]; then
         kill "$STAP_PID" 2>/dev/null || true
         wait "$STAP_PID" 2>/dev/null || true
         STAP_PID=""
     fi
 
-    if [ "$variant" = "v3" ]; then
+    if [ "$variant" = "v1" ]; then
         stap_deep_cleanup "post-hibench-${outfile##*/}"
     fi
 
@@ -310,14 +310,14 @@ _start_v3_profiler() {
     V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
     stap_deep_cleanup "pre-hibench-run-${V3_RUN_COUNT}"
     if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-        log "[v3] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+        log "[v1] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
         [ "$DRY_RUN" -eq 0 ] && sleep 8
     fi
     start_resctrl_helper
 
     if [ "$DRY_RUN" -eq 1 ]; then
         {
-            printf '# variant=v3 hibench target=%s\n' "$STAP_TARGET"
+            printf '# variant=v1 hibench target=%s\n' "$STAP_TARGET"
             printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         } > "$outfile"
         STAP_PID=$$    # fake
@@ -342,7 +342,7 @@ _start_v3_profiler() {
     done
 
     if [ -z "$intestbench" ]; then
-        warn "[v3] intestbench did not appear after ${STAP_WAIT_MAX}s for HiBench"
+        warn "[v1] intestbench did not appear after ${STAP_WAIT_MAX}s for HiBench"
         kill "$STAP_PID" 2>/dev/null || true
         wait "$STAP_PID" 2>/dev/null || true
         STAP_PID=""
@@ -351,7 +351,7 @@ _start_v3_profiler() {
     fi
 
     {
-        printf '# variant=v3 hibench target=%s\n' "$STAP_TARGET"
+        printf '# variant=v1 hibench target=%s\n' "$STAP_TARGET"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
     } > "$outfile"
 
@@ -374,8 +374,8 @@ _start_v46_profiler() {
     local bin log args=()
 
     case "$variant" in
-        v4) bin="$V4_BIN" ;;
-        v6) bin="$V6_BIN" ;;
+        v2) bin="$V4_BIN" ;;
+        v3) bin="$V6_BIN" ;;
     esac
     log="${outfile%.tsv}.${variant}.log"
 
@@ -397,17 +397,17 @@ _start_v46_profiler() {
 
 _start_v5_profiler() {
     local outfile="$1"
-    local log="${outfile%.tsv}.v5.log"
+    local log="${outfile%.tsv}.v3.1.log"
 
     [ "$DRY_RUN" -eq 1 ] && {
-        printf '# variant=v5 hibench\n' > "$outfile"
+        printf '# variant=v3.1 hibench\n' > "$outfile"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' >> "$outfile"
         PROFILER_PID=$$
         return 0
     }
 
     {
-        printf '# variant=v5 hibench\n'
+        printf '# variant=v3.1 hibench\n'
         "$V5_RUNNER" --interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --header 2>"$log" \
             | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
     } > "$outfile" &
@@ -682,15 +682,15 @@ preflight() {
     local v
     for v in "${VARIANTS[@]}"; do
         case "$v" in
-            v3)
+            v1)
                 [ "$DRY_RUN" -eq 1 ] && continue
-                command -v stap >/dev/null 2>&1 || die "stap not found (required for v3)"
-                [ -f "$V3_STP" ] || die "V3 script not found: $V3_STP"
+                command -v stap >/dev/null 2>&1 || die "stap not found (required for v1)"
+                [ -f "$V3_STP" ] || die "V1 script not found: $V3_STP"
                 [ -x "$V3_HELPER" ] || die "resctrl helper not found: $V3_HELPER"
                 ;;
-            v4) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v4 binary not found: $V4_BIN" ;;
-            v5) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v5 runner not found: $V5_RUNNER" ;;
-            v6) [ -x "$V6_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v6 binary not found: $V6_BIN" ;;
+            v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
+            v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;
+            v3) [ -x "$V6_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3 binary not found: $V6_BIN" ;;
             *)  die "unknown variant: $v" ;;
         esac
     done
@@ -710,7 +710,7 @@ _on_exit() {
     stop_resctrl_helper
     local v
     for v in "${VARIANTS[@]}"; do
-        if [ "$v" = "v3" ]; then
+        if [ "$v" = "v1" ]; then
             stap_deep_cleanup "exit-trap"
             break
         fi

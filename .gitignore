@@ -1,0 +1,47 @@
+# Bench results (snapshots; immutable, managed separately)
+/results/
+
+# Compiled binaries (one per implementation variant)
+v1.1-stap-helper/intp-helper
+v2-c-stable-abi/intp-hybrid
+v3-ebpf-libbpf/intp-ebpf
+
+# Generic C/C++ build artifacts
+*.o
+*.a
+*.so
+*.so.*
+*.lo
+*.la
+
+# eBPF skeleton headers (generated from .bpf.o)
+v3-ebpf-libbpf/*.skel.h
+v3-ebpf-libbpf/**/*.skel.h
+v3-ebpf-libbpf/build/
+
+# Logs / dumps
+*.log
+
+# Backup files (editors, manual snapshots, our own .pre-*.bak)
+*.bak
+*.bak.*
+*.orig
+*.pre-*.bak
+*~
+
+# Editor / IDE
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local-only rename artifacts (kept around the migration window)
+/rename-preview*.diff

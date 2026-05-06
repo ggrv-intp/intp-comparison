@@ -1,7 +1,7 @@
 # IntP Experimentation Overview
 
 A self-contained explanation of the testbed, workloads, tools, and
-integration between the IntP variants (V1-V6) and the benchmark suite.
+integration between the IntP variants (V0-V3) and the benchmark suite.
 Designed to be read top-down by the research team and later restructured into slides without losing the chain of evidence.
 
 ---
@@ -15,10 +15,10 @@ Validate, on the same modern host, that:
    methodologically applicable on kernel 6.8.
 2. Each metric is excited by at least two distinct workloads, and no
    single workload dominates all metrics (representativeness criterion).
-3. The four modern variants (V3-V6) produce numerically comparable
+3. The four modern variants (V1-V3) produce numerically comparable
    measurements under identical workload pressure.
-4. Trade-offs between historical fidelity (V1/V3 lineage) and operational
-   reliability (V4/V5/V6) are made explicit with reproducible evidence.
+4. Trade-offs between historical fidelity (V0/V1 lineage) and operational
+   reliability (V2/V3.1/V3) are made explicit with reproducible evidence.
 
 Two categories of workload are used in combination:
 
@@ -48,7 +48,7 @@ Two categories of workload are used in combination:
 | bpftrace | system package |
 | HiBench | `/opt/HiBench` + Spark 3.5.1 + Hadoop 3 |
 
-The legacy V1 baseline campaign was archived from a previous host
+The legacy V0 baseline campaign was archived from a previous host
 (`intp-v1-baseline`, kernel 6.5 HWE on Ubuntu 22.04) for documenting
 **portability failure**, not performance. See
 `bench/findings/v1-baseline-failure-diagnosis.md`.
@@ -63,12 +63,13 @@ direct.
 
 | Var | Stack | Status on this host | Use in the comparison |
 |---|---|---|---|
-| V1 | SystemTap, kernel <= 6.6 | Does not compile (kernel 6.8) | Historical reference, archived evidence of ABI breakage |
-| V2 | SystemTap, kernel 6.8 minimal patch | Compiles, `llcocc=0` | Bridge step in the historical narrative |
-| V3 | SystemTap + resctrl helper | Works on 6.8 with calibrated constants | Modernized historical lineage |
-| V4 | Hybrid procfs / `perf_event` / resctrl | Stable, no kernel modules | Modern reliability baseline |
-| V5 | bpftrace + resctrl | Stable, BTF-driven | DSL-level eBPF baseline |
-| V6 | C/libbpf + CO-RE eBPF | Stable, single binary | Canonical eBPF endpoint |
+| V0 | SystemTap, kernel <= 6.6 | Does not compile on kernel 6.8 (cqm_rmid removed) | Historical reference, archived evidence of ABI breakage |
+| V0.1 | SystemTap, kernel 6.8 minimal patch | Compiles, `llcocc=0` | Bridge step in the historical narrative |
+| V1 | SystemTap, stap-native probes only | Works on 6.8; `mbw=0`, `llcocc=0` (no embedded I/O) | Reliability baseline for stap probes alone |
+| V1.1 | SystemTap + userspace helper | Works on 6.8 with full 7 metrics; helper owns RCU-unsafe ops | RCU-safe stap path with hardware metrics restored |
+| V2 | Pure C: procfs / `perf_event_open` / resctrl | Stable, no kernel modules | Modern reliability baseline |
+| V3.1 | bpftrace + Python orchestrator + resctrl | Stable, BTF-driven | DSL-level eBPF baseline |
+| V3 | C/libbpf + CO-RE eBPF | Stable, single binary | Canonical eBPF endpoint |
 
 Detailed rationale per variant: `docs/VARIANT-COMPARISON.md`. Findings
 that ground the narrative: `bench/findings/`.
@@ -154,7 +155,7 @@ plus an `index.tsv` for indexing.
 | Stage | What it does | Used for |
 |---|---|---|
 | `detect` | Probes RDT/CQM/BTF/resctrl/MSR/IMC and writes `capabilities.env` | Reproducibility envelope |
-| `build` | Compiles V4/V6 if needed; checks V3 deps; checks V5 BTF | Pre-flight |
+| `build` | Compiles V2/V3 if needed; checks V1 deps; checks V3.1 BTF | Pre-flight |
 | `solo` | One workload at a time, N reps each (1-after-1 baseline) | Per-workload metric coverage |
 | `pairwise` | Victim + antagonist concurrent, N reps each | Cross-application interference |
 | `overhead` | Short bursts to estimate instrumentation overhead | Overhead bound per variant |
@@ -182,25 +183,25 @@ Selected because:
 
 How variants observe stress-ng:
 
-- **V1/V2/V3 (SystemTap)** attach by command name (`stress-ng`). The
+- **V0/V0.1/V1 (SystemTap)** attach by command name (`stress-ng`). The
   bench launcher passes the comm of the spawned PID (resolved from
   `/proc/$pid/stat`) so the probe restricts collection to that
-  process tree. V3 additionally activates `intp-resctrl-helper.sh`,
+  process tree. V1 additionally activates `intp-resctrl-helper.sh`,
   which manages the `/sys/fs/resctrl/mon_groups/intp` lifecycle and
   exposes occupancy values to the SystemTap script via
   `/tmp/intp-resctrl-data` plus a PID enroll/unenroll channel
   (`/tmp/intp-resctrl-pids`).
-- **V4 (`intp-hybrid`)** is launched with either `--pids <PID>`,
+- **V2 (`intp-hybrid`)** is launched with either `--pids <PID>`,
   `--cgroup <path>`, or system-wide; backends are chosen by
   capabilities probing (procfs, `perf_event_open`, resctrl).
-- **V5 (bpftrace)** loads scripts that key on PID/comm; resctrl is
+- **V3.1 (bpftrace)** loads scripts that key on PID/comm; resctrl is
   mounted by the orchestrator; output is normalized to the 7-column
   TSV.
-- **V6 (libbpf/CO-RE)** loads compiled eBPF objects, optionally
+- **V3 (libbpf/CO-RE)** loads compiled eBPF objects, optionally
   filters by PID via map; ring buffer drains software metrics; LLC
   occupancy and bandwidth come from resctrl readers in user space.
 
-The launcher snippet for V3 — kept consistent across `bench/` and
+The launcher snippet for V1 — kept consistent across `bench/` and
 `shared/` after this campaign's iteration — passes the SystemTap
 overload thresholds explicitly to avoid Pass 4 format errors and to
 enable module-versioning compatibility:
@@ -211,7 +212,7 @@ stap --suppress-handler-errors -g \
      -DMAXSKIPPED=1000000 \
      -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
      -DSTP_OVERLOAD_INTERVAL=1000000000LL \
-     v3-updated-resctrl/intp-resctrl.stp <comm>
+     v1-stap-native/intp-resctrl.stp <comm>
 ```
 
 ### 6.2 HiBench (Spark)
@@ -232,19 +233,23 @@ HiBench (`terasort`, `wordcount`, `pagerank`, `kmeans`, `bayes`,
 `sql_nweight`, `idle`) so the validator can map metric coverage by
 workload.
 
-### 6.3 resctrl helper (V3 dependency)
+### 6.3 Hardware-counter helpers per variant
 
-`shared/intp-resctrl-helper.sh` is a small daemon that:
+Each variant that needs Intel RDT / resctrl carries its own integration
+rather than sharing one. Quick map:
 
-- mounts `/sys/fs/resctrl` if not mounted,
-- creates and reuses the `intp` monitoring group,
-- accepts `+PID` / `-PID` lines on a control channel and enrolls/removes
-  PIDs from that monitoring group,
-- exports a snapshot file the SystemTap script reads to populate
-  `llcocc` per process group.
+| Variant | Resctrl integration                                                                                                                |
+|---------|------------------------------------------------------------------------------------------------------------------------------------|
+| V1      | None (mbw and llcocc reported as 0)                                                                                                |
+| V1.1    | `v1.1-stap-helper/intp-helper` -- C daemon, opens uncore IMC events + creates `mon_groups/intp-<pid>/`, polls 1 s, writes `/tmp/intp-hw-data` |
+| V2      | In-process: C reader inside `intp-hybrid`                                                                                          |
+| V3.1    | In-process: Python `resctrl_reader.py` orchestrated by the bpftrace runner                                                         |
+| V3      | In-process: C code in `v3-ebpf-libbpf/resctrl/`                                                                                    |
 
-It is required by V3 only; V4-V6 read resctrl directly from their own
-process.
+`shared/intp-resctrl-helper.sh` is preserved as a legacy artifact from
+the pre-rename `v3-updated-resctrl` design. No current variant uses it
+directly; it is kept for reproducing experiments against the
+`pre-rename-2026-05-05` git tag.
 
 ### 6.4 Driver scripts
 
@@ -285,22 +290,22 @@ and feeds `validate-intp-coverage.py`.
 
 ## 8. Known limitations and operational notes
 
-### 8.1 V1 portability failure (documented in findings)
+### 8.1 V0 portability failure (documented in findings)
 
-V1 cannot compile on kernel >= 6.8 (and on the HWE 6.5 used in the
+V0 cannot compile on kernel >= 6.8 (and on the HWE 6.5 used in the
 baseline host, the field `cqm_rmid` of `struct hw_perf_event` was
 already refactored out). The failure is deterministic and is treated as
 **evidence of portability degradation**, not as missing data. See
 `bench/findings/v1-baseline-failure-diagnosis.md`.
 
-### 8.2 V3 operational fragility (documented in findings)
+### 8.2 V1 operational fragility (documented in findings)
 
-V3 works on 6.8 with calibrated constants (LLC, MBW, IMC types) and the
+V1 works on 6.8 with calibrated constants (LLC, MBW, IMC types) and the
 launcher flags above, but two effects remain:
 
 1. Probe skip pressure under load (`skipped probes` non-zero in
    realistic runs).
-2. Long batches of V3 reps eventually leave kernel state that
+2. Long batches of V1 reps eventually leave kernel state that
    destabilizes `systemd-logind` via DBus, causing `pam_systemd:
    Failed to create session` on subsequent SSH logins.
 
@@ -311,16 +316,16 @@ Mitigations applied in the launcher:
 - Helper-side cleanup of the resctrl `intp` monitoring group between
   runs.
 
-Where the mitigation is insufficient (long V3 campaigns), the campaign
+Where the mitigation is insufficient (long V1 campaigns), the campaign
 is split into:
 
-- A **V4/V5/V6 full bench** (does not perturb systemd at all).
-- A **shorter V3 campaign** focused on the apps not yet covered, with
-  reduced `DURATION` and `REPS` so it fits within the V3 stability
+- A **V2/V3.1/V3 full bench** (does not perturb systemd at all).
+- A **shorter V1 campaign** focused on the apps not yet covered, with
+  reduced `DURATION` and `REPS` so it fits within the V1 stability
   window.
 
 This split is the operational expression of the dissertation's main
-narrative point: V3 preserves historical comparability; V4-V6 are the
+narrative point: V1 preserves historical comparability; V2-V3 are the
 production-grade reliability endpoints.
 
 ### 8.3 Historical comparability note
@@ -350,7 +355,7 @@ distributed-cluster availability.
 | --- | --- | --- |
 | Hardware | 16 × Dell PowerEdge R810, 2× Xeon X-class (32 vCPUs each), 64 GB, 4× GbE, GbE switch | 1 × Hetzner bare-metal, Xeon Gold 5412U (Sapphire Rapids), 24C/48T, 256 GB, 10 GbE |
 | OS / kernel | Ubuntu 16.04 (kernel 4.x era) | Ubuntu 24.04, kernel 6.8.0-111 |
-| IntP variant runnable | V1 (single SystemTap, all modules in kernel mode) | V1 fails to compile (`cqm_rmid` removed); V2 partial; V3 modernized; V4/V5/V6 added |
+| IntP variant runnable | V0 (single SystemTap, all modules in kernel mode) | V0 fails to compile (`cqm_rmid` removed); V0.1 partial; V1 modernized; V2/V3.1/V3 added |
 | Workload catalog | 15 apps from HiBench mapped to resource intensities (Table II) | Same 15-app schema reproduced as `stress-ng` workloads (`app01_ml_llc` … `app15_query_inerge`) plus a 6-workload Spark/HiBench subset |
 | Profiling pattern | 1-after-1 individual runs | 1-after-1 (`solo` stage), plus pairwise, overhead, and timeseries stages |
 | Output schema | 6 metrics: `netp`, `nets`, `blk`, `mbw`, `llocc`, `cpu` | 7 columns: paper's 6 plus `llcmr` (LLC miss ratio) for diagnostic detail |
@@ -363,8 +368,8 @@ distributed-cluster availability.
 - **Metric definitions.** The IntP definitions in Section IV of the
   paper (block service-time delta, network back-pressure, CSW
   waiting time, IMC-based memory bandwidth, RMID-based LLC
-  occupancy) are the same definitions that V1/V2/V3 still implement
-  in SystemTap, and that V4/V5/V6 reimplement on top of stable
+  occupancy) are the same definitions that V0/V0.1/V1 still implement
+  in SystemTap, and that V2/V3.1/V3 reimplement on top of stable
   Linux interfaces (perf_event, resctrl, eBPF, procfs).
 - **Workload taxonomy.** The 15-app catalog of paper Table II is
   reproduced 1:1 in `bench/run-intp-bench.sh` (`WORKLOADS=(...)`)
@@ -380,19 +385,19 @@ distributed-cluster availability.
   default `solo` stage in this repo.
 - **PID/comm-scoped probing.** The IntP guarantee that probes attach
   per task (paper's "thread-scoped" model) is preserved across
-  variants: SystemTap by `comm`, V4 by `--pids/--cgroup`, V5/V6 by
+  variants: SystemTap by `comm`, V2 by `--pids/--cgroup`, V3.1/V3 by
   PID filter map.
 
 ### 9.3 What had to change (forced by the 2026 stack)
 
-- **Kernel ABI drift.** `struct hw_perf_event::cqm_rmid` (used by V1
+- **Kernel ABI drift.** `struct hw_perf_event::cqm_rmid` (used by V0
   paper Section IV.E for RMID-MSR mapping) was removed in the kernel
-  series shipped with Ubuntu 22.04 HWE and 24.04. V1 cannot compile
+  series shipped with Ubuntu 22.04 HWE and 24.04. V0 cannot compile
   on this host. Documented in
   `bench/findings/v1-baseline-failure-diagnosis.md`.
-- **Hardware constants.** The paper's V1 has hard-coded calibrations
+- **Hardware constants.** The paper's V0 has hard-coded calibrations
   (1 GbE NIC, 34 GB/s memory bandwidth, 34 MB LLC, IMC PMU type 14,
-  CMT scale factor 49152) tuned for the 2022 dev machine. V3
+  CMT scale factor 49152) tuned for the 2022 dev machine. V1
   recalibrates: `LLC_SIZE_KB=46080` (45 MB), MBW max 281,600 MB/s,
   IMC PMU types in 78–89 for Sapphire Rapids.
 - **Distributed cluster.** The 16-node R810 cluster is not
@@ -400,8 +405,8 @@ distributed-cluster availability.
   sections V.A, V.B, V.C cannot be re-run as-is**. The campaign
   reproduces only the **per-host instrumentation** part of the
   methodology, which is what IntP itself measures.
-- **Variant family.** Adding V4/V5/V6 is required to make the
-  comparison feasible at all (V1 does not run on the host that the
+- **Variant family.** Adding V2/V3.1/V3 is required to make the
+  comparison feasible at all (V0 does not run on the host that the
   modern Spark/HiBench/CO-RE-eBPF stack runs on).
 
 ### 9.4 What is added beyond the paper
@@ -453,9 +458,9 @@ IntP outputs is necessary but not sufficient for them.
   the input (`aggregate-means.tsv` per `env+variant`) is. Adding
   this analysis is a natural follow-up.
 - **Cross-variant comparability of the IntP signal.** This is the
-  campaign-specific question: *do V3, V4, V5, V6 measure the same
+  campaign-specific question: *do V1, V2, V3.1, V3 measure the same
   per-application interference vector for the same workload?* The
-  paper does not address it because in 2022 there was only V1.
+  paper does not address it because in 2022 there was only V0.
 - **Empirical overhead claim** for IntP: the paper says "very low
   overhead even with hundreds of running applications"; our
   `overhead` stage gives a per-variant numeric bound on this on
@@ -466,12 +471,12 @@ IntP outputs is necessary but not sufficient for them.
 | Paper section | What it does | Campaign artefact |
 | --- | --- | --- |
 | Section II | Background on contention sources (CPU, mem, LLC, blk, net) | Documented in `docs/METRICS-DEEP-DIVE.md` and reflected in IntP's metric set |
-| Section III, Fig. 2 | IntP module architecture | `v1-original/intp.stp` is the canonical implementation; V3-V6 README files describe each module's modern equivalent |
-| Section IV.A (block) | `block_rq_complete`/`block_rq_issue` delta | Same probe in V1/V3; tracepoint `block_rq_complete` in V5/V6 |
-| Section IV.B (network) | `napi_complete_done`/`napi_schedule_irqoff` and xmit deltas | Same probes in V1/V3; kprobes/tracepoints equivalent in V5/V6; `/proc/net/dev` in V4 |
-| Section IV.C (CPU/CSW) | scheduler dispatcher waiting time | `scheduler.ctxswitch` in V3; `sched:sched_switch` tracepoint in V5/V6 |
-| Section IV.D (memory) | IMC-based memory bandwidth (rejecting `LLC_MISS×64B`) | IMC PMU types recalibrated in V3 (78–89); `perf_event_open` in V4; resctrl MBM as primary in V5/V6 |
-| Section IV.E (LLC) | RMID/MSR-based occupancy via Intel CMT | Replaced by `/sys/fs/resctrl` reads in V3 (helper) and directly in V4/V5/V6 |
+| Section III, Fig. 2 | IntP module architecture | `v0-stap-classic/intp.stp` is the canonical implementation; V1-V3 README files describe each module's modern equivalent |
+| Section IV.A (block) | `block_rq_complete`/`block_rq_issue` delta | Same probe in V0/V1; tracepoint `block_rq_complete` in V3.1/V3 |
+| Section IV.B (network) | `napi_complete_done`/`napi_schedule_irqoff` and xmit deltas | Same probes in V0/V1; kprobes/tracepoints equivalent in V3.1/V3; `/proc/net/dev` in V2 |
+| Section IV.C (CPU/CSW) | scheduler dispatcher waiting time | `scheduler.ctxswitch` in V1; `sched:sched_switch` tracepoint in V3.1/V3 |
+| Section IV.D (memory) | IMC-based memory bandwidth (rejecting `LLC_MISS×64B`) | IMC PMU types recalibrated in V1 (78–89); `perf_event_open` in V2; resctrl MBM as primary in V3.1/V3 |
+| Section IV.E (LLC) | RMID/MSR-based occupancy via Intel CMT | Replaced by `/sys/fs/resctrl` reads in V1 (helper) and directly in V2/V3.1/V3 |
 | Section IV final list | 6-metric output schema | 7-column TSV with `llcmr` added; paper's 6 are unchanged |
 | Section V.A, Fig. 4 | Per-app interference bars across 15 apps | `solo` stage output + `aggregate-means.tsv` + plotting script |
 | Section V.A, Fig. 5 | PCA + K-means on per-app vectors | Reproducible from `aggregate-means.tsv`; PCA/K-means script not yet in repo (planned follow-up) |
@@ -487,7 +492,7 @@ IntP outputs is necessary but not sufficient for them.
 We integrate the campaign output with the scheduling toolchain that the
 2021 ML-driven paper and the 2022 IADA paper already published. We
 **do not** rebuild a scheduler; we feed the existing R + Java tooling
-with the metric vectors collected by V3-V6 on this host.
+with the metric vectors collected by V1-V3 on this host.
 
 ### 10.1 Forks available locally
 
@@ -544,7 +549,7 @@ Examples:
 ```bash
 # convert just one run
 python3 bench/convert-profiler-to-meyer.py \
-  results/intp-bench-<ts>/bare/v4/solo/app10_search/rep1/profiler.tsv
+  results/intp-bench-<ts>/bare/v2/solo/app10_search/rep1/profiler.tsv
 
 # convert all solo runs and write a manifest
 python3 bench/convert-profiler-to-meyer.py \
@@ -599,7 +604,7 @@ K-Means from `training_dataset/` on every run. The training dataset
 shipped with the repo is built from
 `cache100.csv`, `cache_miss.csv`, `cpu100.csv`, `memory100.csv`,
 `disk100.csv`, `net100.csv` — six canonical "stress at 100% on one
-resource" traces. We can extend this dataset later with V3-V6
+resource" traces. We can extend this dataset later with V1-V3
 ground-truth runs if we want to retrain on Sapphire Rapids data.
 
 ### 10.4 Path B: `CloudSimInterference` (full IADA simulator)
@@ -654,7 +659,7 @@ Pre-trained R model artefacts already present in `R/`:
 
 We can either reuse these models as-is to keep the comparison faithful
 to the published IADA, **or** retrain them with a labelled dataset
-collected from V3-V6 on Sapphire Rapids if we want to demonstrate
+collected from V1-V3 on Sapphire Rapids if we want to demonstrate
 that the methodology adapts to the new hardware envelope.
 
 Java entry point (informative): `src/cloudsim/interference/aaa/xxIntExample.java`.
@@ -680,7 +685,7 @@ install.packages(c("e1071","caret","stringr","dplyr","fossil","ipred","ocp","rJa
 
 | Step | Action | Output |
 | --- | --- | --- |
-| 1 | Finish current campaign (solo, pairwise, overhead, timeseries) for V3-V6 | `results/v456-big-<ts>/bench-full/` |
+| 1 | Finish current campaign (solo, pairwise, overhead, timeseries) for V1-V3 | `results/v456-big-<ts>/bench-full/` |
 | 2 | Convert TSV→CSV with `bench/convert-profiler-to-meyer.py --manifest ...` | `*.meyer.csv` files + one conversion manifest TSV |
 | 3 | Generate `source/<app>/<pattern>.csv` and `cloudsim-input.txt` with `bench/generate-iada-tree.py` from the manifest | IADA-ready tree per `(env,variant)` |
 | 4 | Run `Classifier.R` per app; archive `result.pdf` | per-app classification figure (paper Meyer 2021 Fig. 4 / Fig. 7 reproduction) |
@@ -699,14 +704,14 @@ python3 bench/convert-profiler-to-meyer.py \
 python3 bench/generate-iada-tree.py \
   --manifest results/v456-big-<ts>/bench-full/meyer-convert.tsv \
   --out-root results/v456-big-<ts>/bench-full/iada-tree \
-  --variant v4 --stage solo \
+  --variant v2 --stage solo \
   --rep-pattern-map rep1=inc,rep2=dec,rep3=osc,rep4=con
 ```
 
 What this gets us, in dissertation terms:
 
-- The per-app interference fingerprint produced by **our** V3, V4, V5,
-  V6 variants on Sapphire Rapids is fed into the **same** scheduling
+- The per-app interference fingerprint produced by **our** V1, V2, V3.1,
+  V3 variants on Sapphire Rapids is fed into the **same** scheduling
   pipeline used by the original IADA paper. If the cross-variant
   signal is consistent, all four runs of the simulator will produce
   comparable scheduling decisions; if it diverges, the divergence
@@ -715,7 +720,7 @@ What this gets us, in dissertation terms:
   ship inside the repo, so we get application-realistic dynamic
   workloads without re-implementing trace replay.
 - The result is "we reproduced IADA's scheduling evaluation with the
-  IntP front-end re-implemented on a kernel where V1 no longer runs"
+  IntP front-end re-implemented on a kernel where V0 no longer runs"
   — exactly the line the research team pointed at.
 
 What is **not** reproduced by this path:
@@ -769,7 +774,7 @@ Recommended runtime stack:
 
 | Layer | Minimal choice | Reason |
 | --- | --- | --- |
-| Node-side profiler | V4 first, V6 second | V4 is the most operationally stable on current host; V6 is the eBPF endpoint once the signal is validated |
+| Node-side profiler | V2 first, V3 second | V2 is the most operationally stable on current host; V3 is the eBPF endpoint once the signal is validated |
 | Scope key | cgroup/container ID | Matches scheduler objects better than raw PID |
 | Export protocol | HTTP/JSON or line CSV at 1 Hz | Easy to debug and replay offline |
 | Change-point detection | `ruptures` in Python or `ocp` via `rpy2` | Keeps parity with the IADA logic without forcing Java+R in the hot path |
@@ -780,7 +785,7 @@ Recommended runtime stack:
 Minimal control loop:
 
 1. Each node samples the current cgroups/containers every second with
-   V4 or V6 and emits the 7-value interference vector.
+   V2 or V3 and emits the 7-value interference vector.
 2. A central coordinator keeps a sliding window per workload and runs
    change-point detection when the vector shifts materially.
 3. The current window is classified into interference levels using the

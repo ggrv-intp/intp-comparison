@@ -4,8 +4,8 @@
 #
 # Auto-detects Ubuntu version and installs everything the bench script needs:
 #
-#   Ubuntu 22.04 (legacy / V1 baseline):
-#       * pins HWE 6.5 kernel (latest pre-6.8, still has cqm_rmid for V1,
+#   Ubuntu 22.04 (legacy / V0 baseline):
+#       * pins HWE 6.5 kernel (latest pre-6.8, still has cqm_rmid for V0,
 #         has full Sapphire Rapids uncore IMC support unlike kernel 5.10)
 #       * SystemTap 5.2 + matching debuginfo via the ddebs archive
 #       * intel-cmt-cat (RDT user-space)
@@ -13,17 +13,17 @@
 #         script and its ground-truth side-channels
 #       * docker + qemu + cloud-utils for the optional container/VM envs
 #
-#   Ubuntu 24.04 (modern / V2..V6):
-#       * SystemTap + ddebs (V2 / V3 still need it)
-#       * bpftrace (V5)
-#       * clang / llvm / libbpf-dev / libelf-dev / pahole (V6)
+#   Ubuntu 24.04 (modern / V0.1..V3):
+#       * SystemTap + ddebs (V0.1 / V1 still need it)
+#       * bpftrace (V3.1)
+#       * clang / llvm / libbpf-dev / libelf-dev / pahole (V3)
 #       * BTF availability check
 #       * everything from the common set above
 #
 # In both profiles:
 #       * mounts resctrl and persists it in /etc/fstab
 #       * sets perf_event_paranoid=-1 and kptr_restrict=0 via sysctl.d
-#       * builds v4 and (on 24.04) v6
+#       * builds v2 and (on 24.04) v3
 #       * runs a smoke test for each installed profiler
 #
 # This script is idempotent. The first pass on a fresh 22.04 install will
@@ -32,10 +32,10 @@
 #
 # Usage:
 #   sudo ./setup-host.sh                   # auto-detect profile
-#   sudo ./setup-host.sh --profile legacy  # force 22.04 / V1 path
-#   sudo ./setup-host.sh --profile modern  # force 24.04 / V2..V6 path
+#   sudo ./setup-host.sh --profile legacy  # force 22.04 / V0 path
+#   sudo ./setup-host.sh --profile modern  # force 24.04 / V0.1..V3 path
 #   sudo ./setup-host.sh --no-optional     # skip docker / qemu
-#   sudo ./setup-host.sh --no-build        # skip make of v4/v6
+#   sudo ./setup-host.sh --no-build        # skip make of v2/v3
 #   sudo ./setup-host.sh --no-debuginfo    # skip ddebs (faster, no SystemTap full-signal)
 # -----------------------------------------------------------------------------
 
@@ -147,14 +147,14 @@ pin_hwe_65() {
         warn "Check manually: 'apt list --all-versions linux-image-6.5*'"
         warn "If empty, fall back to manually downloading 6.5 .debs from"
         warn "https://launchpad.net/ubuntu/+source/linux-hwe-6.5/+publishinghistory"
-        die "cannot proceed without 6.5 kernel for V1 baseline"
+        die "cannot proceed without 6.5 kernel for V0 baseline"
     fi
     local headers="linux-headers-${latest#linux-image-}"
     log "installing $latest + $headers"
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$latest" "$headers"
 
     # Hold to prevent jammy-updates from rolling forward to 6.8+ (which would
-    # break V1).
+    # break V0).
     apt-mark hold "$latest" "$headers" >/dev/null
     apt-mark hold linux-image-generic-hwe-22.04 linux-headers-generic-hwe-22.04 >/dev/null 2>&1 || true
 
@@ -216,7 +216,7 @@ install_optional() {
 # -----------------------------------------------------------------------------
 
 install_legacy_stack() {
-    log "installing V1 stack (SystemTap 5.2 on 22.04 + HWE 6.5)"
+    log "installing V0 stack (SystemTap 5.2 on 22.04 + HWE 6.5)"
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         intel-cmt-cat python3 python3-pip
 
@@ -277,7 +277,7 @@ install_systemtap_52() {
 }
 
 install_modern_stack() {
-    log "installing V2..V6 stack (SystemTap + bpftrace + libbpf/CO-RE)"
+    log "installing V0.1..V3 stack (SystemTap + bpftrace + libbpf/CO-RE)"
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         systemtap systemtap-runtime libdw-dev gettext intel-cmt-cat \
         bpftrace python3 python3-pip python3-venv \
@@ -287,12 +287,12 @@ install_modern_stack() {
     if [ "$DO_DEBUGINFO" -eq 1 ]; then
         local krel=$(uname -r)
         DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-image-${krel}-dbgsym" \
-            || warn "kernel debuginfo unavailable -- V3 (SystemTap+resctrl) will fail probe compilation"
+            || warn "kernel debuginfo unavailable -- V1 (SystemTap+resctrl) will fail probe compilation"
         stap-prep || warn "stap-prep returned non-zero"
     fi
 
     if [ ! -f /sys/kernel/btf/vmlinux ]; then
-        warn "/sys/kernel/btf/vmlinux missing -- V5 and V6 will not load BPF programs"
+        warn "/sys/kernel/btf/vmlinux missing -- V3.1 and V3 will not load BPF programs"
     else
         log "BTF present at /sys/kernel/btf/vmlinux"
     fi
@@ -337,14 +337,14 @@ EOF
 build_variants() {
     [ "$DO_BUILD" -eq 1 ] || { log "skipping build per --no-build"; return 0; }
 
-    if [ -d "$REPO_ROOT/v4-hybrid-procfs" ]; then
-        log "building v4 (hybrid procfs)"
-        make -C "$REPO_ROOT/v4-hybrid-procfs" || warn "v4 build failed"
+    if [ -d "$REPO_ROOT/v2-c-stable-abi" ]; then
+        log "building v2 (hybrid procfs)"
+        make -C "$REPO_ROOT/v2-c-stable-abi" || warn "v2 build failed"
     fi
 
-    if [ "$PROFILE" = "modern" ] && [ -d "$REPO_ROOT/v6-ebpf-core" ]; then
-        log "building v6 (eBPF/CO-RE)"
-        make -C "$REPO_ROOT/v6-ebpf-core" || warn "v6 build failed"
+    if [ "$PROFILE" = "modern" ] && [ -d "$REPO_ROOT/v3-ebpf-libbpf" ]; then
+        log "building v3 (eBPF/CO-RE)"
+        make -C "$REPO_ROOT/v3-ebpf-libbpf" || warn "v3 build failed"
     fi
 }
 
@@ -364,11 +364,11 @@ selftest() {
         fi
     fi
 
-    if [ -x "$REPO_ROOT/v4-hybrid-procfs/intp-hybrid" ]; then
-        if "$REPO_ROOT/v4-hybrid-procfs/intp-hybrid" --list-backends >/dev/null 2>&1; then
-            log "  v4          OK ($(${REPO_ROOT}/v4-hybrid-procfs/intp-hybrid --list-backends 2>&1 | head -1))"
+    if [ -x "$REPO_ROOT/v2-c-stable-abi/intp-hybrid" ]; then
+        if "$REPO_ROOT/v2-c-stable-abi/intp-hybrid" --list-backends >/dev/null 2>&1; then
+            log "  v2          OK ($(${REPO_ROOT}/v2-c-stable-abi/intp-hybrid --list-backends 2>&1 | head -1))"
         else
-            warn "  v4          FAIL (--list-backends returned non-zero)"
+            warn "  v2          FAIL (--list-backends returned non-zero)"
         fi
     fi
 
@@ -378,11 +378,11 @@ selftest() {
         else
             warn "  bpftrace    missing"
         fi
-        if [ -x "$REPO_ROOT/v6-ebpf-core/intp-ebpf" ]; then
-            if "$REPO_ROOT/v6-ebpf-core/intp-ebpf" --list-capabilities >/dev/null 2>&1; then
-                log "  v6          OK"
+        if [ -x "$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" ]; then
+            if "$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" --list-capabilities >/dev/null 2>&1; then
+                log "  v3          OK"
             else
-                warn "  v6          FAIL"
+                warn "  v3          FAIL"
             fi
         fi
     fi
@@ -432,7 +432,7 @@ main() {
 
     log ""
     log "Setup complete. Next:"
-    log "    sudo $REPO_ROOT/bench/run-intp-bench.sh --variants $([ "$PROFILE" = "legacy" ] && echo "v1" || echo "v2,v3,v4,v5,v6")"
+    log "    sudo $REPO_ROOT/bench/run-intp-bench.sh --variants $([ "$PROFILE" = "legacy" ] && echo "v0" || echo "v0.1,v1,v2,v3.1,v3")"
 }
 
 main

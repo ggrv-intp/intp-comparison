@@ -5,7 +5,7 @@
 #   python3 bench/plot/extract-fragility.py <bench-full dir>
 #
 # Walks <env>/<variant>/<stage>/<workload>/rep<R>/, parses profiler.stap.log
-# (SystemTap variants v1/v2/v3) and run.json, and writes:
+# (SystemTap variants v0/v0.1/v1) and run.json, and writes:
 #   <bench-full>/fragility-summary.tsv      one row per (env,variant,stage,workload,rep)
 #   <bench-full>/fragility-aggregated.tsv   one row per (env,variant) with mean/std
 
@@ -123,7 +123,7 @@ def row_for(rep_dir: Path) -> dict | None:
         sample_loss_pct = 0.0
 
     stap_log = rep_dir / 'profiler.stap.log'
-    if variant in ('v1', 'v2', 'v3') and stap_log.exists():
+    if variant in ('v0', 'v0.1', 'v1') and stap_log.exists():
         stap = parse_stap_log(stap_log)
     else:
         stap = empty_stap_metrics()

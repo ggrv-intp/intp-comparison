@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Validate IntP metric representativeness")
     p.add_argument("--input", required=True, help="TSV with workload-level metric means")
     p.add_argument("--env", default=None, help="Optional env filter (e.g., bare)")
-    p.add_argument("--variant", default=None, help="Optional variant filter (e.g., v4)")
+    p.add_argument("--variant", default=None, help="Optional variant filter (e.g., v2)")
     p.add_argument("--idle-name", default="idle", help="Idle workload name")
     p.add_argument(
         "--baseline-mode",

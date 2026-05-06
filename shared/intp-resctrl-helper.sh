@@ -38,7 +38,7 @@ check_rdt_support() {
         echo "Your CPU flags:"
         grep flags /proc/cpuinfo | head -1 | tr ' ' '\n' | grep -E "cqm|cat|mba|rdt" || echo "  (none found)"
         echo ""
-        echo "LLC occupancy monitoring requires Intel Xeon E5 v3+ or Xeon Scalable CPUs."
+        echo "LLC occupancy monitoring requires Intel Xeon E5 v1+ or Xeon Scalable CPUs."
         echo "Consumer CPUs (i5/i7/i9 laptop/desktop) typically do NOT support this."
         return 1
     fi

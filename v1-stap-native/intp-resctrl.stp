@@ -1,0 +1,432 @@
+#!/usr/bin/stap
+#
+# IntP v1 -- stap-only modern build (no userspace helper, no embedded I/O)
+#
+# This is the restored stap-only build after the kernel 6.8 RCU regime
+# began enforcing "voluntary context switch within RCU read-side critical
+# section". The previous build under the legacy naming (`v3-updated-resctrl`,
+# preserved at git tag `pre-rename-2026-05-05`) called
+# perf_event_create_kernel_counter() from stap embedded C, which is unsafe
+# under modern RCU and triggered RCU stalls / system hangs.
+#
+# This build:
+#   - Uses ONLY stap-native probes (no embedded C creating perf events,
+#     no embedded C touching /sys or /proc)
+#   - LLC miss ratio comes from `probe perf.type(3).config(...).process(@1)`
+#     (same approach as v0, the legacy `v1-original` SystemTap script)
+#   - mbw  (memory bandwidth)   --> reported as 0 (requires uncore IMC,
+#                                    deferred to v1.1 helper userspace)
+#   - llcocc (LLC occupancy)    --> reported as 0 (requires resctrl helper,
+#                                    deferred to v1.1)
+#
+# Output columns are preserved (7 metrics) so downstream tools work unchanged.
+#
+# ============================================================================
+# REQUIREMENTS
+# ============================================================================
+#   - Linux kernel 6.8 (tested) or compatible
+#   - SystemTap 5.x with kernel debuginfo
+#   - Run as root: sudo stap -g -B CONFIG_MODVERSIONS=y intp-resctrl.stp <name>
+
+global interval = 1
+
+probe begin
+{
+	printf("IntP v1 (stap-native, no helper)\n")
+	printf("Tracing processes named \"%s\"\n", @1)
+	printf("Note: mbw and llcocc are reported as 0 in this build (see v1.1).\n\n")
+}
+
+####
+#	Process tracking
+####
+
+global runtime_procfs = 0
+global initial_time = 0, runtime = 0
+global started = 0, exited = 0
+global exitcounter = 0
+
+global mpids
+global nprocs = 0
+
+probe process(@1).begin, process(@1).thread.begin {
+	if (initial_time == 0) {
+		initial_time = gettimeofday_ns();
+	}
+
+	_pid = pid()
+
+	if (tid() > 0 && tid() != pid()) {
+		_pid = tid()
+	}
+
+	if(!([_pid] in mpids)) {
+		printf(" Begin Create monitoring process: (%4d) %s %s\n", _pid, execname(), cmdline_str())
+		mpids[_pid] = 0
+		nprocs++
+		started = 1
+		exitcounter = 0
+		exited = 0
+	}
+}
+
+probe process(@1).end, process(@1).thread.end {
+	_pid = pid()
+	if (tid() > 0 && tid() != pid()) {
+		_pid = tid()
+	}
+
+	if([_pid] in mpids) {
+		printf(" End monitoring process: (%4d) %s\n", _pid, execname())
+		delete mpids[_pid]
+
+		if (nprocs > 0) {
+			nprocs--
+		}
+
+		if (nprocs <= 0) {
+			nprocs = 0
+			exited = 1
+			exitcounter = 0
+		}
+	}
+}
+
+####
+#	Block IO call statistics
+####
+
+global block_op_dep
+global block_tput, block_cput
+
+global block_srv_time
+
+probe kernel.trace("block_rq_complete")?, kernel.trace("block:block_rq_complete")? {
+	data_len = $rq->__data_len
+	block_tput <<< data_len
+	block_cput <<< data_len
+
+	if (data_len > 0) {
+		time = local_clock_ns()
+		io_start_time_ns = $rq->io_start_time_ns
+
+		# On newer kernels/CPUs, rq timestamps can occasionally be in a
+		# different domain than local_clock_ns(), producing huge/negative deltas.
+		# Keep only sane service-time samples (0 < delta < 10s).
+		if (io_start_time_ns > 0) {
+			delta = time - io_start_time_ns
+			if (delta > 0 && delta < 10000000000) {
+				block_srv_time <<< delta
+			}
+		}
+		block_op_dep += 1
+	}
+}
+
+function print_block_report()
+{
+    if (runtime_procfs <= 0) {
+		delete block_op_dep
+		delete block_srv_time
+		return 0
+	}
+
+    if (@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
+
+    block_op_dep = block_op_dep / runtime_procfs
+    svctm = svctm / runtime_procfs
+
+    if (block_op_dep < 0) { block_op_dep = 0 }
+    if (svctm < 0) { svctm = 0 }
+
+	# Equivalent to ((svctm_ms) * iops) / 100, but divide first to avoid
+	# occasional overflow on noisy kernels.
+	util = (svctm / 100000000) * block_op_dep
+    if (util < 0) { util = 0 }
+    if (util >= 100) { util = 99 }
+
+	delete block_op_dep
+	delete block_srv_time
+	return util
+}
+
+####
+#	Network statistics
+####
+
+global net_tput
+global flows
+
+probe netfilter.ip.local_out {
+	if(([pid()] in mpids) && length > 0) {
+		net_tput <<< length
+		if(!([saddr,daddr,dport] in flows))
+			flows[saddr,daddr,dport] = pid()
+	}
+}
+
+probe netfilter.ip.local_in {
+	if(([daddr,saddr,sport] in flows) && length > 0) {
+		net_tput <<< length
+	}
+}
+
+global net_sent_req
+global net_sent_lat
+global skb_queue_start_t
+
+probe kernel.function("__dev_queue_xmit")
+{
+	if (nprocs > 0 && $skb->truesize>0) {
+		skb_queue_start_t[$skb] = gettimeofday_ns();
+	}
+}
+
+probe kernel.trace("net_dev_xmit")?, kernel.trace("net:net_dev_xmit")?
+{
+	if (nprocs > 0 && $skb->len>0) {
+		t = gettimeofday_ns();
+		st = skb_queue_start_t[$skb]
+		if (st) {
+			net_sent_lat <<< t - st
+			net_sent_req += 1
+			delete skb_queue_start_t[$skb]
+		}
+	}
+}
+
+global net_rcv_req
+global net_rcv_lat
+global skb_rcv_queue_start_t
+
+probe kernel.function("__napi_schedule_irqoff")
+{
+	if (nprocs > 0)
+		skb_rcv_queue_start_t[$n] = gettimeofday_ns();
+}
+
+probe kernel.function("napi_complete_done")
+{
+	if (nprocs > 0) {
+		t = gettimeofday_ns();
+		st = skb_rcv_queue_start_t[$n]
+		if (st) {
+			net_rcv_lat <<< t - st
+			net_rcv_req += 1
+			delete skb_rcv_queue_start_t[$n]
+		}
+	}
+}
+
+function print_netstack_report()
+{
+	if(@count(net_sent_lat)) {_net_sent_lat = @avg(net_sent_lat)} else { _net_sent_lat = 0}
+	if(@count(net_rcv_lat)) {_net_rcv_lat = @avg(net_rcv_lat)} else { _net_rcv_lat = 0}
+
+    rcv_util = (_net_rcv_lat * net_rcv_req)/1000/1000/1000
+    rcv_util_abs = ((_net_rcv_lat * net_rcv_req)/1000/1000/1000)%1000
+    sent_util = (_net_sent_lat * net_sent_req)/1000/1000/1000
+    sent_util_abs = ((_net_sent_lat * net_sent_req)/1000/1000/1000)%1000
+    util = rcv_util + sent_util + ((rcv_util_abs+sent_util_abs)/100)
+    util_abs = ((rcv_util_abs+sent_util_abs)%100)
+
+    if(util > 100) {util = 100;	util_abs = 0}
+	if(util_abs >= 100) {util_abs=util_abs/10}
+
+	if(util>=100){
+		util=99
+	}
+
+	delete net_sent_lat
+	delete net_sent_req
+	delete net_rcv_lat
+	delete net_rcv_req
+	return util
+}
+
+function print_netphy_report()
+{
+	tput_eq = @sum(net_tput)/runtime_procfs
+	util = (tput_eq*10000/125000000)/100
+
+	if(util>=100){
+		util=99
+	}
+
+	delete net_tput
+	return util
+}
+
+####
+#	CPU statistics
+####
+
+global cpu_sched_in_ns, cpu_run_ns
+global cpu_sched_in_update
+global CPU_TOTAL_CORES = 48
+
+probe scheduler.ctxswitch
+{
+	if (nprocs > 0) {
+		now = gettimeofday_ns()
+
+		if ([prev_pid] in cpu_sched_in_ns) {
+			st = cpu_sched_in_ns[prev_pid]
+			if (st > 0 && now > st) {
+				cpu_run_ns[prev_pid] += now - st
+			}
+			delete cpu_sched_in_ns[prev_pid]
+		}
+
+		if ([next_pid] in mpids) {
+			cpu_sched_in_ns[next_pid] = now
+		}
+	}
+}
+
+function print_cpu_report()
+{
+	if (runtime_procfs <= 0) {
+		delete cpu_run_ns
+		return 0
+	}
+
+	window_ns = runtime_procfs * 1000000000
+	run_ns = 0
+	now = gettimeofday_ns()
+
+	foreach ([p] in cpu_run_ns)
+		run_ns += cpu_run_ns[p]
+
+	# If a tracked thread is currently running, account partial time until now.
+	foreach ([p] in cpu_sched_in_ns) {
+		st = cpu_sched_in_ns[p]
+		if (st > 0 && now > st) {
+			run_ns += now - st
+			cpu_sched_in_update[p] = now
+		}
+	}
+
+	# Two-phase update: SystemTap forbids modifying the same map during foreach.
+	foreach ([p] in cpu_sched_in_update) {
+		cpu_sched_in_ns[p] = cpu_sched_in_update[p]
+	}
+	delete cpu_sched_in_update
+
+	delete cpu_run_ns
+
+	cap_ns = window_ns * CPU_TOTAL_CORES
+	if (cap_ns <= 0) {
+		return 0
+	}
+
+	util = (run_ns * 100) / cap_ns
+	if (util < 0) { util = 0 }
+	if (util >= 100) { util = 99 }
+	return util
+}
+
+####
+#	Memory bandwidth -- disabled in v1 (requires uncore IMC, see v1.1)
+####
+
+function print_mem_report()
+{
+	return 0
+}
+
+####
+#	LLC miss ratio (stap-native, faithful to legacy v1-original / current v0)
+####
+
+global llc_load, llc_load_misses
+global llc_load_t = 0, llc_load_misses_t = 0
+
+probe perf.type(3).config(0x000002).process(@1) { llc_load <<< 1; llc_load_t += 1 }
+probe perf.type(3).config(0x010002).process(@1) { llc_load_misses <<< 1; llc_load_misses_t += 1 }
+
+function print_cache_report()
+{
+	if (@count(llc_load))         { _llc_load = @sum(llc_load) }                 else { _llc_load = 0 }
+	if (@count(llc_load_misses))  { _llc_load_misses = @sum(llc_load_misses) }   else { _llc_load_misses = 0 }
+
+	llc_miss_ratio = 0
+	if (_llc_load > 0) {
+		llc_miss_ratio = ((_llc_load_misses * 10000) / _llc_load) / 100
+	}
+
+	if (llc_miss_ratio >= 100) {
+		llc_miss_ratio = 99
+	}
+
+	delete llc_load
+	delete llc_load_misses
+	llc_load_t = 0
+	llc_load_misses_t = 0
+
+	return llc_miss_ratio
+}
+
+####
+#	LLC occupancy -- disabled in v1 (requires resctrl helper, see v1.1)
+####
+
+function print_llc_report()
+{
+	return 0
+}
+
+####
+#	procfs output
+####
+
+probe procfs("intestbench").read
+{
+	if(runtime_procfs > 0) {
+
+		netphy_util = print_netphy_report()
+		block_util = print_block_report()
+		netstak_util = print_netstack_report()
+		mem_util = print_mem_report()
+		cpu_util = print_cpu_report()
+		cache_ratio = print_cache_report()
+		cache_occ = print_llc_report()
+
+		buff = sprintf("time_ms\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n%d\t%02d\t%02d\t%02d\t%02d\t%02d\t%02d\t%02d\n",
+						(gettimeofday_ns() - initial_time) / 1000000,
+						netphy_util,
+						netstak_util,
+						block_util,
+						mem_util,
+						cache_ratio,
+						cache_occ,
+						cpu_util);
+
+		runtime_procfs = 0
+
+		$value = buff
+	}
+}
+
+probe timer.s(1) {
+
+	if(exited == 0) {
+		runtime = gettimeofday_ns() - initial_time
+		runtime_procfs = runtime_procfs + interval
+	}
+
+	if(exited == 1) {
+		exitcounter++
+		printf("Waiting %d seconds to exit \n", exitcounter);
+
+		if(exitcounter == 30) {
+			exit()
+		}
+	}
+}
+
+probe end
+{
+	printf("\n\nruntime: %d ns\n", runtime)
+	printf("\nExiting IntP on %s\n", ctime(gettimeofday_s()))
+}

@@ -31,14 +31,14 @@ cd "$ROOT"
 
 run_step "detect host capabilities" bash shared/intp-detect.sh
 
-run_step "v4 build" make -C v4-hybrid-procfs clean all
-run_step "v4 unit tests" make -C v4-hybrid-procfs run-tests
+run_step "v2 build" make -C v2-c-stable-abi clean all
+run_step "v2 unit tests" make -C v2-c-stable-abi run-tests
 
-run_step "v5 deps" make -C v5-bpftrace deps
-run_step "v5 tests" make -C v5-bpftrace test
+run_step "v3.1 deps" make -C v3.1-bpftrace deps
+run_step "v3.1 tests" make -C v3.1-bpftrace test
 
-run_step "v6 build" make -C v6-ebpf-core clean all
-run_step "v6 load/attach test" make -C v6-ebpf-core test
+run_step "v3 build" make -C v3-ebpf-libbpf clean all
+run_step "v3 load/attach test" make -C v3-ebpf-libbpf test
 
 run_step "cross-variant modern quick" \
   bash shared/validate-cross-variant.sh \
@@ -48,10 +48,10 @@ run_step "cross-variant modern quick" \
     --tolerance 20 \
     --output-dir "$OUT/cross-variant"
 
-run_step "bench quick detect+build+solo+report (v4,v5,v6)" \
+run_step "bench quick detect+build+solo+report (v2,v3.1,v3)" \
   bash bench/run-intp-bench.sh \
     --stage detect,build,solo,report \
-    --variants v4,v5,v6 \
+    --variants v2,v3.1,v3 \
     --env bare \
     --duration 20 \
     --reps 1 \

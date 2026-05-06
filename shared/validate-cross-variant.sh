@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # validate-cross-variant.sh
 #
-# Cross-variant byte-equivalence test for IntP V1/V3/V4/V5/V6.
+# Cross-variant byte-equivalence test for IntP V0/V1/V2/V3.1/V3.
 #
 # Runs each available variant under identical conditions (same target PID,
 # same interval, same duration), captures TSV output, then compares the
@@ -23,9 +23,9 @@
 #   --duration SECONDS    Collection duration (default: 10)
 #   --tolerance PCT       Max allowed column divergence in % points (default: 15)
 #   --output-dir DIR      Directory for captured outputs (default: /tmp/intp-xval-*)
-#   --v4-bin PATH         Path to V4 binary (default: ../v4-hybrid-procfs/intp-hybrid)
-#   --v5-script PATH      Path to V5 launcher (default: ../v5-bpftrace/run-intp-bpftrace.sh)
-#   --v6-bin PATH         Path to V6 binary (default: ../v6-ebpf-core/intp-ebpf)
+#   --v2-bin PATH         Path to V0.1 binary (default: ../v2-c-stable-abi/intp-hybrid)
+#   --v3.1-script PATH    Path to V3.1 launcher (default: ../v3.1-bpftrace/run-intp-bpftrace.sh)
+#   --v3-bin PATH         Path to V1 binary (default: ../v3-ebpf-libbpf/intp-ebpf)
 #   --nic-speed-bps N    Force NIC speed (bytes/sec) for all variants
 #   --mem-bw-max-bps N   Force memory bandwidth ceiling (bytes/sec) for all variants
 #   --llc-size-bytes N   Force LLC size (bytes) for all variants
@@ -51,9 +51,9 @@ NIC_SPEED_BPS=""
 MEM_BW_MAX_BPS=""
 LLC_SIZE_BYTES=""
 
-V4_BIN="${REPO_ROOT}/v4-hybrid-procfs/intp-hybrid"
-V5_SCRIPT="${REPO_ROOT}/v5-bpftrace/run-intp-bpftrace.sh"
-V6_BIN="${REPO_ROOT}/v6-ebpf-core/intp-ebpf"
+V2_BIN="${REPO_ROOT}/v2-c-stable-abi/intp-hybrid"
+V3_1_SCRIPT="${REPO_ROOT}/v3.1-bpftrace/run-intp-bpftrace.sh"
+V3_BIN="${REPO_ROOT}/v3-ebpf-libbpf/intp-ebpf"
 
 METRICS=("netp" "nets" "blk" "mbw" "llcmr" "llcocc" "cpu")
 
@@ -72,9 +72,9 @@ parse_args() {
             --duration)       DURATION="$2"; shift 2 ;;
             --tolerance)      TOLERANCE="$2"; shift 2 ;;
             --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
-            --v4-bin)         V4_BIN="$2"; shift 2 ;;
-            --v5-script)      V5_SCRIPT="$2"; shift 2 ;;
-            --v6-bin)         V6_BIN="$2"; shift 2 ;;
+            --v2-bin)         V2_BIN="$2"; shift 2 ;;
+            --v3.1-script)    V3_1_SCRIPT="$2"; shift 2 ;;
+            --v3-bin)         V3_BIN="$2"; shift 2 ;;
             --nic-speed-bps)  NIC_SPEED_BPS="$2"; shift 2 ;;
             --mem-bw-max-bps) MEM_BW_MAX_BPS="$2"; shift 2 ;;
             --llc-size-bytes) LLC_SIZE_BYTES="$2"; shift 2 ;;
@@ -103,14 +103,14 @@ cleanup() {
 variant_available() {
     local name="$1"
     case "$name" in
-        v4)
-            [[ -x "$V4_BIN" ]]
+        v2)
+            [[ -x "$V2_BIN" ]]
             ;;
-        v5)
-            [[ -x "$V5_SCRIPT" ]] && command -v bpftrace >/dev/null 2>&1
+        v3.1)
+            [[ -x "$V3_1_SCRIPT" ]] && command -v bpftrace >/dev/null 2>&1
             ;;
-        v6)
-            [[ -x "$V6_BIN" ]]
+        v3)
+            [[ -x "$V3_BIN" ]]
             ;;
         *)
             return 1
@@ -128,8 +128,8 @@ run_variant() {
     local pid_args=()
     if [[ "$TARGET_PID" -gt 0 ]]; then
         pid_args=(--pid "$TARGET_PID")
-        # V4 uses --pids (plural)
-        [[ "$name" == "v4" ]] && pid_args=(--pids "$TARGET_PID")
+        # V2 uses --pids (plural)
+        [[ "$name" == "v2" ]] && pid_args=(--pids "$TARGET_PID")
     fi
 
     # Hardware overrides ensure all variants normalise against the same
@@ -140,8 +140,8 @@ run_variant() {
     [[ -n "$LLC_SIZE_BYTES" ]] && hw_args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
 
     case "$name" in
-        v4)
-            timeout "$((DURATION + 5))" "$V4_BIN" \
+        v2)
+            timeout "$((DURATION + 5))" "$V2_BIN" \
                 "${pid_args[@]}" \
                 "${hw_args[@]}" \
                 --interval "$INTERVAL" \
@@ -150,16 +150,16 @@ run_variant() {
                 --no-header \
                 > "$outfile" 2>"${outfile}.err" || true
             ;;
-        v5)
-            timeout "$((DURATION + 5))" "$V5_SCRIPT" \
+        v3.1)
+            timeout "$((DURATION + 5))" "$V3_1_SCRIPT" \
                 "${pid_args[@]}" \
                 "${hw_args[@]}" \
                 --interval "$INTERVAL" \
                 --duration "$DURATION" \
                 > "$outfile" 2>"${outfile}.err" || true
             ;;
-        v6)
-            timeout "$((DURATION + 5))" "$V6_BIN" \
+        v3)
+            timeout "$((DURATION + 5))" "$V3_BIN" \
                 "${pid_args[@]}" \
                 "${hw_args[@]}" \
                 --interval "$INTERVAL" \
@@ -266,7 +266,7 @@ main() {
 
     # Discover available variants
     local available=()
-    for v in v4 v5 v6; do
+    for v in v2 v3.1 v3; do
         if variant_available "$v"; then
             available+=("$v")
             log "Variant $v: available"

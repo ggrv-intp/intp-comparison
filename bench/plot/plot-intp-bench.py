@@ -61,7 +61,7 @@ METRIC_COLORS = {
     "llcocc": "#e377c2",  # pink
     "cpu":    "#8c564b",  # brown
 }
-VARIANT_ORDER = ["v1", "v2", "v3", "v4", "v5", "v6"]
+VARIANT_ORDER = ["v0", "v0.1", "v1", "v2", "v3.1", "v3"]
 ENV_ORDER = ["bare", "container", "vm"]
 
 
@@ -465,7 +465,7 @@ def fig_pairwise_heatmap(means: pd.DataFrame, outdir: Path) -> None:
 
 def fig_metric_availability(means: pd.DataFrame, outdir: Path) -> None:
     """Binary heatmap: did each (variant, metric) ever produce a non-NaN,
-    non-zero reading? Documents the V2-llcocc=0 case and similar gaps."""
+    non-zero reading? Documents the V0.1-llcocc=0 case and similar gaps."""
     if means.empty: return
     avail_rows = []
     for variant in [v for v in VARIANT_ORDER if v in means["variant"].values]:

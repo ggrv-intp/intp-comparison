@@ -1,0 +1,58 @@
+#!/usr/bin/env bpftrace
+/*
+ * V3.1 nets -- Network Stack Utilization (service-time model)
+ *
+ * Approximates V0 print_netstack_report(). bpftrace cannot attach to
+ * __dev_queue_xmit / napi_complete_done as stable tracepoints across
+ * kernels, so we use the closest available tracepoints.
+ *
+ * TX: net:net_dev_start_xmit -> net:net_dev_xmit service time.
+ * RX: napi:napi_poll -> args->work as proxy for RX stack time.
+ *
+ * Output format:
+ *   {"metric":"nets","ts":<ns>,"tx_lat_ns":<N>,"tx_count":<N>,
+ *    "rx_lat_ns":<N>,"rx_count":<N>}
+ *
+ * Orchestrator computes: util = (avg_lat * count) / interval_ns * 100.
+ */
+
+BEGIN
+{
+    printf("{\"metric\":\"nets\",\"ready\":true}\n");
+}
+
+tracepoint:net:net_dev_start_xmit
+{
+    @tx_start[args->skbaddr] = nsecs;
+}
+
+tracepoint:net:net_dev_xmit
+{
+    $start = @tx_start[args->skbaddr];
+    if ($start != 0) {
+        @tx_lat = @tx_lat + (nsecs - $start);
+        @tx_count = @tx_count + 1;
+        delete(@tx_start[args->skbaddr]);
+    }
+}
+
+tracepoint:napi:napi_poll
+{
+    @rx_lat = @rx_lat + args->work;
+    @rx_count = @rx_count + 1;
+}
+
+interval:s:1
+{
+    printf("{\"metric\":\"nets\",\"ts\":%lld,\"tx_lat_ns\":%llu,\"tx_count\":%llu,\"rx_lat_ns\":%llu,\"rx_count\":%llu}\n",
+           nsecs, @tx_lat, @tx_count, @rx_lat, @rx_count);
+    clear(@tx_lat); clear(@tx_count);
+    clear(@rx_lat); clear(@rx_count);
+}
+
+END
+{
+    clear(@tx_lat); clear(@tx_count);
+    clear(@rx_lat); clear(@rx_count);
+    clear(@tx_start);
+}

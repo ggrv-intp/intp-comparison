@@ -65,13 +65,13 @@ validation.
 
 ## Representativeness validation
 
-Validation example for `env=bare`, `variant=v4`:
+Validation example for `env=bare`, `variant=v2`:
 
 ```bash
 python3 bench/hibench/validate-intp-coverage.py \
   --input results/intp-bench-<ts>/aggregate-means.tsv \
   --env bare \
-  --variant v4 \
+  --variant v2 \
   --idle-name idle \
   --min-delta-pct 20
 ```
@@ -88,4 +88,4 @@ Expected output:
   Use `netp-extreme` to force more aggressive local shuffle pressure.
 - On very fast NVMe hosts, `blk` may show reduced variability.
   Increase dataset size with `--size large` if needed.
-- The scripts are designed to avoid changes to V1 probes.
+- The scripts are designed to avoid changes to V0 probes.
