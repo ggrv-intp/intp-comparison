@@ -150,6 +150,37 @@ configure_hadoop_for_localmode() {
 </configuration>
 EOF
 
+    # mapred-site.xml — run MapReduce in-process via LocalJobRunner.
+    # Without this, Hadoop defaults to mapreduce.framework.name=yarn and any
+    # MR-based prepare (HiBench's randomtextwriter / teragen) will spend
+    # ~20 minutes retrying a non-existent ResourceManager at localhost:8032
+    # before giving up.
+    cat > "$etc/mapred-site.xml" <<EOF
+<?xml version="1.0"?>
+<configuration>
+  <property>
+    <name>mapreduce.framework.name</name>
+    <value>local</value>
+  </property>
+  <property>
+    <name>mapreduce.jobtracker.address</name>
+    <value>local</value>
+  </property>
+</configuration>
+EOF
+
+    # yarn-site.xml — point at localhost so the few HiBench paths that still
+    # read yarn.* configs don't fall back to a network probe of 0.0.0.0.
+    cat > "$etc/yarn-site.xml" <<EOF
+<?xml version="1.0"?>
+<configuration>
+  <property>
+    <name>yarn.resourcemanager.hostname</name>
+    <value>localhost</value>
+  </property>
+</configuration>
+EOF
+
     # hadoop-env.sh — set JAVA_HOME explicitly
     if [ -f "$etc/hadoop-env.sh" ]; then
         sed -i "s|^# export JAVA_HOME=.*|export JAVA_HOME=$JAVA_HOME|" "$etc/hadoop-env.sh"
@@ -157,7 +188,7 @@ EOF
             || echo "export JAVA_HOME=$JAVA_HOME" >> "$etc/hadoop-env.sh"
     fi
 
-    log "Hadoop configured for local-mode (fs.defaultFS=file:///)"
+    log "Hadoop configured for local-mode (fs.defaultFS=file:///, mapreduce.framework.name=local)"
 }
 
 patch_hibench_for_hadoop_local() {

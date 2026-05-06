@@ -325,6 +325,10 @@ prepare_datasets() {
     )
     mkdir -p "$JOBS_DIR/input" "$JOBS_DIR/output" "$JOBS_DIR/report"
 
+    local prep_log_dir="$JOBS_DIR/report/_setup-prepare"
+    mkdir -p "$prep_log_dir"
+    local prep_timeout="${PREPARE_TIMEOUT:-1800}"  # seconds — kill before HiBench's 20-min YARN-retry storm
+
     for wl in "${workloads[@]}"; do
         local prep="$HIBENCH_HOME/bin/workloads/$wl/prepare/prepare.sh"
         if [ -x "$prep" ]; then
@@ -340,7 +344,15 @@ prepare_datasets() {
             export INPUT_HDFS="file://$JOBS_DIR/input"
             export OUTPUT_HDFS="file://$JOBS_DIR/output"
             export REPORT_DIR="$JOBS_DIR/report"
-            bash "$prep" 2>&1 | tail -3 || warn "  $wl prepare failed (non-fatal)"
+            local safe_name; safe_name="$(echo "$wl" | tr '/' '_')"
+            local plog="$prep_log_dir/$safe_name.log"
+            if timeout "$prep_timeout" bash "$prep" >"$plog" 2>&1; then
+                log "    OK ($(wc -l <"$plog") lines, log: $plog)"
+            else
+                local rc=$?
+                warn "  $wl prepare failed (rc=$rc, log: $plog)"
+                tail -20 "$plog" | sed 's/^/      /'
+            fi
         else
             log "  SKIP $wl (prepare script not found)"
         fi
