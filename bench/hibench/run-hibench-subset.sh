@@ -72,9 +72,9 @@ ACTIVE_RESCTRL_HELPER=0
 # in a single-socket / local[*] setup where Spark itself can't generate
 # enough pressure to exercise mbw / llcocc / etc. backends.
 PROFILE_STRESSNG_standard=""
-PROFILE_STRESSNG_mem_extreme="--vm 4 --vm-bytes 70% --vm-keep --aggressive"
-PROFILE_STRESSNG_cache_extreme="--cache 8 --cache-no-affinity"
-PROFILE_STRESSNG_disk_extreme="--hdd 4 --hdd-bytes 8G --hdd-ops 100000 --temp-path /var/tmp"
+PROFILE_STRESSNG_mem_extreme="--vm 2 --vm-bytes 30% --vm-method all"
+PROFILE_STRESSNG_cache_extreme="--cache 4 --cache-no-affinity"
+PROFILE_STRESSNG_disk_extreme="--hdd 2 --hdd-bytes 4G --temp-path /var/tmp"
 PROFILE_STRESSNG_netp_extreme="--netdev 4"
 VALID_PROFILES="standard mem-extreme cache-extreme disk-extreme netp-extreme all-stress both"
 
@@ -322,34 +322,21 @@ start_profiler() {
 stop_profiler() {
     local variant="$1" outfile="$2"
 
-    # Kill V2/V3.1/V3 background tree (subshell wrapper + binary + awk pipeline)
+    # Kill V2/V3.1/V3 background tree. Skip SIGTERM grace — under heavy
+    # stressor load, signal delivery is throttled and waiting on bash forks
+    # for `pgrep` cycles makes the script hang for minutes. SIGKILL is fast,
+    # immune to mask state, and we don't need clean shutdown of the binary
+    # (profiler.tsv is already flushed line-by-line).
     if [ -n "$PROFILER_PID" ]; then
         local pre_kids
         pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ')
         log "  [stop_profiler] PROFILER_PID=$PROFILER_PID children='${pre_kids}'"
-        _kill_tree TERM "$PROFILER_PID"
-        local i=0
-        while [ $i -lt 6 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
-            sleep 0.5; i=$((i+1))
-        done
-        log "  [stop_profiler] after TERM grace=${i}/6 wrapper_alive=$(kill -0 "$PROFILER_PID" 2>/dev/null && echo yes || echo no)"
         _kill_tree KILL "$PROFILER_PID"
-        # Belt-and-suspenders: nuke anything still pointing to the outfile or
-        # matching profiler binary names. With heavy concurrent stressor load
-        # signal delivery can lag; this guarantees no orphan keeps writing.
-        local survivors
-        survivors=$(pgrep -f "intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py" 2>/dev/null | grep -v "^$$\$" | tr '\n' ' ')
-        if [ -n "$survivors" ]; then
-            log "  [stop_profiler] survivors after KILL: '${survivors}' — nuking"
-            # shellcheck disable=SC2086
-            kill -KILL $survivors 2>/dev/null || true
-        fi
-        # Don't `wait` the wrapper PID — if it never properly reparented the
-        # children, wait can block. Use timed kill -0 polling instead.
-        local j=0
-        while [ $j -lt 4 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
-            sleep 0.25; j=$((j+1))
-        done
+        # Belt-and-suspenders: catch any binary that escaped the descendant
+        # tree (e.g. if pgrep -P missed it due to timing).
+        pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null || true
+        pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
+        # No `wait` — could block on a non-direct-child PID under load.
         PROFILER_PID=""
     fi
 
@@ -561,10 +548,14 @@ start_stressor() {
 
 stop_stressor() {
     [ -n "$STRESSOR_PID" ] || return 0
-    _kill_tree TERM "$STRESSOR_PID"
-    sleep 0.5
+    # SIGKILL directly: stress-ng workers have many short-lived children that
+    # ignore SIGTERM during heavy memory-pressure cycles, and waiting for the
+    # tree to settle gracefully blocks signal delivery for the rest of the
+    # cleanup. Just nuke the whole tree.
     _kill_tree KILL "$STRESSOR_PID"
-    wait "$STRESSOR_PID" 2>/dev/null || true
+    # Belt-and-suspenders: catch any sibling stress-ng instance that escaped
+    # the tree (e.g. if stress-ng forked workers into a new session).
+    pkill -KILL -f 'stress-ng' 2>/dev/null || true
     log "  [stressor] stopped"
     STRESSOR_PID=""
 }
@@ -820,22 +811,20 @@ run_subset_for_profile() {
 # -----------------------------------------------------------------------------
 
 cleanup_stale_orphans() {
-    # Defensive: nuke any IntP-related orphan from a previous run that crashed
-    # before stop_profiler completed. These typically have PPID=1 and would
-    # otherwise contaminate the next run's profiler.tsv (writing via inherited
-    # FDs) or hold resctrl/perf resources.
+    # Defensive: nuke anything left over from a previous crashed run.
+    # Without this, leaked stress-ng workers from a failed cycle keep
+    # eating RAM and signals get throttled, causing the next run to hang.
     [ "$DRY_RUN" -eq 1 ] && return 0
     local victims
-    victims=$(pgrep -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py|bench/hibench/run-hibench-subset' 2>/dev/null \
+    victims=$(pgrep -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py|bench/hibench/run-hibench-subset|stress-ng' 2>/dev/null \
               | grep -v "^$$\$" || true)
     if [ -n "$victims" ]; then
-        warn "[preflight] killing stale IntP processes: $(echo $victims | tr '\n' ' ')"
+        warn "[preflight] killing stale processes: $(echo $victims | tr '\n' ' ')"
         # shellcheck disable=SC2086
         kill -KILL $victims 2>/dev/null || true
         sleep 1
     fi
     pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-    # Drop stale resctrl mon group from a prior aborted run
     [ -d /sys/fs/resctrl/mon_groups/intp-v5 ] && rmdir /sys/fs/resctrl/mon_groups/intp-v5 2>/dev/null || true
 }
 
@@ -871,8 +860,8 @@ preflight() {
 # -----------------------------------------------------------------------------
 
 _on_exit() {
-    # Make sure no stress-ng or profiler tree survives the script
-    stop_stressor
+    # Profiler tree FIRST — it's the data integrity boundary. If this hangs,
+    # next run inherits orphan binaries that contaminate fresh tsv files.
     if [ -n "$PROFILER_PID" ]; then
         _kill_tree KILL "$PROFILER_PID" 2>/dev/null || true
     fi
@@ -882,6 +871,11 @@ _on_exit() {
     if [ -n "$STAP_PID" ]; then
         _kill_tree KILL "$STAP_PID" 2>/dev/null || true
     fi
+    # Belt-and-suspenders for any profiler binary that escaped tracking
+    pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null || true
+    pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
+    # Stressor last (lower data-integrity priority; clean up RAM)
+    stop_stressor
     restore_cpu_env
     stop_resctrl_helper
     local v
