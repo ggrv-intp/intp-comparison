@@ -228,6 +228,13 @@ spark.driver.port                  $DRIVER_PORT
 spark.driver.blockManager.port     $DRIVER_BLOCKMGR_PORT
 spark.network.timeout              300s
 spark.executor.heartbeatInterval   30s
+
+# Disable SparkUI/Jetty in the Driver. Two reasons:
+#   1. The Driver runs inside netns "$NETNS" which has minimal /etc/hosts;
+#      Jetty's hostname resolution chain fails there.
+#   2. The UI itself emits heartbeat/refresh traffic that would pollute the
+#      netp/nets signal we are trying to measure precisely.
+spark.ui.enabled                   false
 EOF
 
     log "wrote Spark distributed configs to $SPARK_DIST_CONF"
@@ -260,6 +267,22 @@ format_namenode() {
     log "NameNode formatted (clusterId intp-pseudo)"
 }
 
+write_netns_hosts() {
+    # Some Java/Spark code paths resolve hostnames via JNI/getaddrinfo and
+    # blow up inside a minimal netns. Provide a /etc/hosts override visible
+    # only inside the netns (via bind mount) so localhost + the host/guest
+    # IPs always resolve.
+    local netns_hosts="/etc/netns/$NETNS/hosts"
+    mkdir -p "$(dirname "$netns_hosts")"
+    cat > "$netns_hosts" <<EOF
+127.0.0.1   localhost
+::1         localhost ip6-localhost ip6-loopback
+$HOST_IP    intp-host
+$GUEST_IP   intp-app
+EOF
+    log "wrote $netns_hosts (visible only inside netns $NETNS)"
+}
+
 cmd_init() {
     require_root
     require_veth
@@ -267,6 +290,7 @@ cmd_init() {
     write_hadoop_configs
     write_spark_configs
     write_hibench_overlay
+    write_netns_hosts
     format_namenode
     log "init complete. Next: '$0 start'"
 }
@@ -431,6 +455,7 @@ cmd_smoke() {
            --conf "spark.driver.host=$GUEST_IP" \
            --conf "spark.driver.port=$DRIVER_PORT" \
            --conf "spark.driver.blockManager.port=$DRIVER_BLOCKMGR_PORT" \
+           --conf "spark.ui.enabled=false" \
            --class org.apache.spark.examples.SparkPi \
            "$examples_jar" 100 \
            >"$pi_log" 2>&1
