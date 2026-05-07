@@ -601,7 +601,26 @@ cmd_switch_distributed() {
             printf '\n# IntP distributed-mode override (added by setup-distributed-mode.sh).\nhibench.hadoop.configure.dir   %s\n' "$HADOOP_DIST_CONF" >> "$hadoopconf"
         fi
     fi
-    log "HiBench switched to distributed (hdfs://$HOST_IP:$NN_PORT, spark://$HOST_IP:$SPARK_MASTER_PORT, hadoop.conf=$HADOOP_DIST_CONF)"
+    # HiBench builds spark-submit with --properties-file from spark.conf (which
+    # MAKES Spark IGNORE $SPARK_CONF_DIR/spark-defaults.conf). So the
+    # spark.driver.bindAddress / .host / .port settings we wrote to
+    # conf-distributed/spark-defaults.conf get bypassed → driver tries to bind
+    # on the host's hostname IP, fails inside the netns. Fix: write the bind
+    # config into HiBench's spark.conf (hibench.spark.X.Y → spark.X.Y).
+    _patch_or_append_kv() {
+        local key="$1" val="$2" file="$3"
+        if grep -qE "^${key}[[:space:]]" "$file"; then
+            sed -i -E "s|^(${key}[[:space:]]+).*|\1${val}|" "$file"
+        else
+            printf '%s    %s\n' "$key" "$val" >> "$file"
+        fi
+    }
+    _patch_or_append_kv 'hibench.spark.driver.bindAddress'      "$GUEST_IP"  "$sconf"
+    _patch_or_append_kv 'hibench.spark.driver.host'             "$GUEST_IP"  "$sconf"
+    _patch_or_append_kv 'hibench.spark.driver.port'             "$DRIVER_PORT" "$sconf"
+    _patch_or_append_kv 'hibench.spark.driver.blockManager.port' "$DRIVER_BLOCKMGR_PORT" "$sconf"
+    _patch_or_append_kv 'hibench.spark.ui.enabled'              "false"      "$sconf"
+    log "HiBench switched to distributed (hdfs://$HOST_IP:$NN_PORT, spark://$HOST_IP:$SPARK_MASTER_PORT, driver.bind=$GUEST_IP:$DRIVER_PORT, hadoop.conf=$HADOOP_DIST_CONF)"
 }
 
 cmd_switch_localmode() {

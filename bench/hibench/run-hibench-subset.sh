@@ -775,11 +775,17 @@ run_workload_with_profiler() {
                 export HIBENCH_HOME
                 export SPARK_CONF_DIR="$spark_conf_dist"
                 export HADOOP_CONF_DIR="$hadoop_conf_dist"
+                # SPARK_LOCAL_IP — Spark uses this as the default bindAddress
+                # when spark.driver.bindAddress isn't set in the properties file.
+                # HiBench uses --properties-file (which makes Spark IGNORE
+                # spark-defaults.conf), so this env var is the failsafe.
+                local guest_ip="${INTP_NETNS_GUEST_IP:-10.42.0.2}"
                 ip netns exec "$netns" env \
                     SPARK_HOME="$SPARK_HOME" \
                     HIBENCH_HOME="$HIBENCH_HOME" \
                     SPARK_CONF_DIR="$spark_conf_dist" \
                     HADOOP_CONF_DIR="$hadoop_conf_dist" \
+                    SPARK_LOCAL_IP="$guest_ip" \
                     JAVA_HOME="${JAVA_HOME:-}" \
                     PATH="$PATH" \
                     bash "$spark_script"
