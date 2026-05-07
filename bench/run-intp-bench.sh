@@ -197,6 +197,15 @@ WORKLOADS=(
     "app13_query_scan|disk|--hdd 8 --hdd-bytes 4G --hdd-write-size 1M"
     "app14_query_join|disk|--hdd 8 --hdd-bytes 2G --hdd-write-size 4K"
     "app15_query_inerge|disk|--iomix 8 --iomix-bytes 2G"
+
+    # ── veth-routed network workloads (require setup-netns-pair.sh active) ──
+    # Args format: VETH:<proto>:<port>:<extra iperf3 client args>
+    # The launcher starts iperf3 server inside netns intp-net (10.42.0.2:<port>,
+    # -1 = auto-exit on first client disconnect), then runs iperf3 client on
+    # the host targeting 10.42.0.2. Traffic crosses intp-veth-h, generating
+    # nonzero netp/nets in V2/V3/V3.1 (which filter `lo` but not `intp-veth-h`).
+    "app11b_tcp_veth|network|VETH:tcp:23420:-P 16"
+    "app12b_udp_veth|network|VETH:udp:23430:-P 16 -b 0"
 )
 
 # Pairwise victim+antagonist pairs (id|victim_args|antagonist_args|expected_pressure)
@@ -208,6 +217,11 @@ PAIRWISE=(
     "disk_v_disk|--hdd 4 --hdd-bytes 2G --hdd-write-size 4K|--hdd 12 --hdd-bytes 4G --hdd-write-size 1M|blk"
     "net_v_net|--sock 8 --sock-port 23440|--sock 16 --sock-port 23441|netp"
     "cpu_v_mixed|--cpu 4 --cpu-method matrixprod|--cpu 8 --vm 4 --vm-bytes 16G --hdd 4 --hdd-bytes 2G|mixed"
+
+    # Veth-routed pairwise: victim and antagonist hit different ports so they
+    # coexist on the same veth without colliding. Both produce real NIC-side
+    # traffic the V2+ probes can observe.
+    "tcp_v_tcp_veth|VETH:tcp:23440:-P 8|VETH:tcp:23441:-P 16|netp"
 )
 
 # Reference workloads for overhead measurement. These are deterministic, time-
@@ -823,9 +837,86 @@ stop_groundtruth() {
 # SystemTap and eBPF can see the workload). For VM env, it is the qemu PID.
 # -----------------------------------------------------------------------------
 
+launch_veth_workload() {
+    # VETH:<proto>:<port>:<extra_iperf3_client_args>
+    # Starts iperf3 server in netns intp-net (10.42.0.2:<port>, -1 = auto-exit
+    # on first client disconnect), then runs the iperf3 client on the host
+    # bound to 10.42.0.1, targeting 10.42.0.2. All traffic crosses intp-veth-h
+    # so V3/V3.1 (filter `lo` only) and V2 (softirq counts veth) observe it.
+    #
+    # Returns the iperf3 client wrapper PID (cgroup-targeted when enabled).
+    local logfile="$1" duration="$2" veth_spec="$3" name="$4"
+    local netns="${INTP_NETNS_NAME:-intp-net}"
+    local guest_ip="${INTP_NETNS_GUEST_IP:-10.42.0.2}"
+    local host_ip="${INTP_NETNS_HOST_IP:-10.42.0.1}"
+
+    # Parse VETH:<proto>:<port>:<extra>
+    local proto port extra
+    IFS=':' read -r _ proto port extra <<< "$veth_spec"
+    local proto_flag=""
+    case "$proto" in
+        tcp) proto_flag="" ;;
+        udp) proto_flag="-u" ;;
+        *) die "launch_veth_workload: unknown proto '$proto' (use tcp or udp)" ;;
+    esac
+    [[ "$port" =~ ^[0-9]+$ ]] || die "launch_veth_workload: bad port '$port'"
+
+    # Verify netns is up before we waste a duration window on it.
+    if ! ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$netns"; then
+        warn "launch_veth_workload: netns '$netns' missing; run bench/setup/setup-netns-pair.sh"
+        echo 0; return 1
+    fi
+
+    # Server in netns, auto-exits after first client done.
+    ip netns exec "$netns" iperf3 -s -B "$guest_ip" -p "$port" -1 \
+        > "${logfile%.log}.server.log" 2>&1 &
+    local srv_pid=$!
+
+    # Brief settle for bind. iperf3 binds in <100ms typically.
+    sleep 0.5
+    if ! kill -0 "$srv_pid" 2>/dev/null; then
+        warn "launch_veth_workload: iperf3 server in netns failed to start (see ${logfile%.log}.server.log)"
+        echo 0; return 1
+    fi
+
+    # Client args: -c target, -p port, -t duration, -B host_ip to bind, $proto_flag, $extra
+    local cli_args=( -c "$guest_ip" -p "$port" -t "$duration" -B "$host_ip" -i 0 --connect-timeout 2000 )
+    [ -n "$proto_flag" ] && cli_args+=( "$proto_flag" )
+    # Append user extras (e.g. "-P 16", "-b 100M")
+    # shellcheck disable=SC2206
+    local extra_arr=( $extra )
+    cli_args+=( "${extra_arr[@]}" )
+
+    # Wrap in cgroup so the profiler tracks the whole client subtree.
+    if [ "$USE_CGROUP_TARGETING" = "1" ] && [ -d /sys/fs/cgroup ] && [ -w /sys/fs/cgroup ]; then
+        local cg="/sys/fs/cgroup/intp-bench-$name"
+        mkdir -p "$cg"
+        CURRENT_WORKLOAD_CGROUP="$cg"
+        bash -c "echo \$\$ > '$cg/cgroup.procs'; exec iperf3 ${cli_args[*]}" \
+            > "$logfile" 2>&1 &
+        echo $!
+        return 0
+    fi
+    iperf3 "${cli_args[@]}" > "$logfile" 2>&1 &
+    echo $!
+}
+
 launch_workload_bare() {
     local logfile="$1" duration="$2" args="$3" name="$4"
     CURRENT_WORKLOAD_CGROUP=""
+
+    # Veth-routed network workload (args starts with VETH:<proto>:<port>:...)
+    if [[ "$args" == VETH:* ]]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "DRY: veth workload $name spec=$args duration=${duration}s -> $logfile"
+            [ "$USE_CGROUP_TARGETING" = "1" ] && CURRENT_WORKLOAD_CGROUP="/sys/fs/cgroup/intp-bench-$name"
+            echo $$
+            return 0
+        fi
+        launch_veth_workload "$logfile" "$duration" "$args" "$name"
+        return $?
+    fi
+
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ "$USE_CGROUP_TARGETING" = "1" ]; then
             CURRENT_WORKLOAD_CGROUP="/sys/fs/cgroup/intp-bench-$name"

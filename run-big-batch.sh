@@ -56,6 +56,17 @@
 #   V1 SystemTap module-accumulation guard
 #     INTP_BENCH_V3_DEEP_CLEANUP_EVERY=5
 #
+#   Distributed mode (HDFS pseudo + Spark Standalone bound to veth pair)
+#     INTP_DISTRIBUTED_MODE=0   set to 1 to run HiBench Spark Driver inside
+#                                netns intp-app (10.42.0.2) so RPC to
+#                                Master/NameNode at 10.42.0.1 traverses
+#                                intp-veth-h and is observable by V2/V3/V3.1.
+#                                Requires:
+#                                  bench/setup/setup-netns-pair.sh (veth UP)
+#                                  bench/setup/setup-distributed-mode.sh init+start
+#                                Workloads must be re-prepared into HDFS pseudo
+#                                (one-shot; survives until /var/lib/hadoop wiped).
+#
 # Usage examples:
 #   sudo bash run-big-batch.sh
 #   sudo BENCH_ENVS=bare,container bash run-big-batch.sh
@@ -131,6 +142,12 @@ LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
 # ── V1 guard ───────────────────────────────────────────────────────────────────
 export INTP_BENCH_V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
 
+# ── Distributed mode toggle (forwarded to bench/hibench/run-hibench-subset.sh) ──
+export INTP_DISTRIBUTED_MODE="${INTP_DISTRIBUTED_MODE:-0}"
+export INTP_NETNS_NAME="${INTP_NETNS_NAME:-intp-net}"
+export INTP_NETNS_HOST_IP="${INTP_NETNS_HOST_IP:-10.42.0.1}"
+export INTP_NETNS_GUEST_IP="${INTP_NETNS_GUEST_IP:-10.42.0.2}"
+
 # ── Container / VM env vars forwarded to run-intp-bench.sh via env ─────────────
 export INTP_BENCH_CONTAINER="$CONTAINER_IMAGE"
 export INTP_BENCH_VM_IMAGE="$VM_IMAGE"
@@ -174,6 +191,7 @@ echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$H
 echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v1_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
+echo "  distributed_mode=$INTP_DISTRIBUTED_MODE  netns=$INTP_NETNS_NAME  host_ip=$INTP_NETNS_HOST_IP  guest_ip=$INTP_NETNS_GUEST_IP"
 echo "  calibration: mem_bw_max_bps=${MEM_BW_MAX_BPS:-auto}  nic_speed_bps=${NIC_SPEED_BPS:-auto}  llc_size_bytes=${LLC_SIZE_BYTES:-auto}"
 
 # ── Preflight ──────────────────────────────────────────────────────────────────

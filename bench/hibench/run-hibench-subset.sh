@@ -754,8 +754,39 @@ run_workload_with_profiler() {
         local t0 run_elapsed
         t0=$(date +%s)
         if [ "$DRY_RUN" -eq 1 ]; then
-            log "  DRY: (spark_env) && bash $spark_script >> $workload_log 2>&1"
+            if [ "${INTP_DISTRIBUTED_MODE:-0}" = "1" ]; then
+                log "  DRY: ip netns exec ${INTP_NETNS_NAME:-intp-net} bash $spark_script >> $workload_log 2>&1"
+            else
+                log "  DRY: (spark_env) && bash $spark_script >> $workload_log 2>&1"
+            fi
             sleep 2
+        elif [ "${INTP_DISTRIBUTED_MODE:-0}" = "1" ]; then
+            # Distributed mode: run Spark Driver inside netns intp-app so that
+            # Driver↔Master/Worker RPC traverses intp-veth-h. SPARK_CONF_DIR +
+            # HADOOP_CONF_DIR point at the parallel distributed configs from
+            # bench/setup/setup-distributed-mode.sh.
+            local netns="${INTP_NETNS_NAME:-intp-net}"
+            local spark_conf_dist="${SPARK_HOME:-/opt/spark}/conf-distributed"
+            local hadoop_conf_dist="${HADOOP_HOME:-/opt/hadoop}/etc/hadoop-distributed"
+            (
+                printf '===== rep %s start %s (distributed: netns=%s) =====\n' "$r" "$(date -Iseconds)" "$netns"
+                eval "$spark_env"
+                [ -n "$SPARK_HOME" ] && export SPARK_HOME
+                export HIBENCH_HOME
+                export SPARK_CONF_DIR="$spark_conf_dist"
+                export HADOOP_CONF_DIR="$hadoop_conf_dist"
+                ip netns exec "$netns" env \
+                    SPARK_HOME="$SPARK_HOME" \
+                    HIBENCH_HOME="$HIBENCH_HOME" \
+                    SPARK_CONF_DIR="$spark_conf_dist" \
+                    HADOOP_CONF_DIR="$hadoop_conf_dist" \
+                    JAVA_HOME="${JAVA_HOME:-}" \
+                    PATH="$PATH" \
+                    bash "$spark_script"
+                rc=$?
+                printf '===== rep %s end rc=%s %s =====\n' "$r" "$rc" "$(date -Iseconds)"
+                exit "$rc"
+            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${r} — Spark job failed (see $workload_log)"
         else
             (
                 printf '===== rep %s start %s =====\n' "$r" "$(date -Iseconds)"

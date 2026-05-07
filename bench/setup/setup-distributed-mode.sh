@@ -31,12 +31,15 @@
 #     +=====================================+    +============================+
 #
 # Usage:
-#   sudo ./setup-distributed-mode.sh init     # one-time: write configs + format NameNode
-#   sudo ./setup-distributed-mode.sh start    # bring daemons up
-#   sudo ./setup-distributed-mode.sh stop     # bring daemons down
-#   sudo ./setup-distributed-mode.sh status   # show what's running
-#   sudo ./setup-distributed-mode.sh smoke    # verify Driver-in-netns can reach Master
-#   sudo ./setup-distributed-mode.sh teardown # remove distributed configs (keep dataset)
+#   sudo ./setup-distributed-mode.sh init                # one-time: write configs + format NameNode
+#   sudo ./setup-distributed-mode.sh start               # bring daemons up
+#   sudo ./setup-distributed-mode.sh stop                # bring daemons down
+#   sudo ./setup-distributed-mode.sh status              # show what's running
+#   sudo ./setup-distributed-mode.sh smoke               # verify Driver-in-netns can reach Master
+#   sudo ./setup-distributed-mode.sh switch-distributed  # patch HiBench conf for hdfs:// + spark://
+#   sudo ./setup-distributed-mode.sh switch-localmode    # restore HiBench conf to file:/// + local[*]
+#   sudo ./setup-distributed-mode.sh prepare-hdfs        # one-shot: populate HDFS pseudo with HiBench datasets
+#   sudo ./setup-distributed-mode.sh teardown            # remove distributed configs (keep dataset)
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -481,6 +484,97 @@ cmd_smoke() {
 }
 
 # ---------------------------------------------------------------------------
+# switch-mode: flip HiBench's hibench.conf + spark.conf between localmode
+#              (file:/// + local[*]) and distributed (hdfs:// + spark://).
+#              Required because HiBench reads conf/hibench.conf directly,
+#              not the .distributed.conf overlay.
+# ---------------------------------------------------------------------------
+
+cmd_switch_distributed() {
+    require_root
+    require_paths
+    [ -d "$HADOOP_DIST_CONF" ] || die "distributed configs missing — run '$0 init' first"
+    local hbench="$HIBENCH_HOME/conf/hibench.conf"
+    local sconf="$HIBENCH_HOME/conf/spark.conf"
+    [ -f "$hbench" ] || die "$hbench not found"
+
+    # One-time backup of localmode versions.
+    [ -f "${hbench}.localmode" ] || cp "$hbench" "${hbench}.localmode"
+    [ -f "${sconf}.localmode" ]  || cp "$sconf"  "${sconf}.localmode"
+
+    sed -i -E "s|^(hibench\.hdfs\.master[[:space:]]+).*|\1hdfs://$HOST_IP:$NN_PORT|" "$hbench"
+    sed -i -E "s|^(hibench\.spark\.master[[:space:]]+).*|\1spark://$HOST_IP:$SPARK_MASTER_PORT|" "$sconf"
+    log "HiBench switched to distributed (hdfs://$HOST_IP:$NN_PORT, spark://$HOST_IP:$SPARK_MASTER_PORT)"
+}
+
+cmd_switch_localmode() {
+    require_root
+    require_paths
+    local hbench="$HIBENCH_HOME/conf/hibench.conf"
+    local sconf="$HIBENCH_HOME/conf/spark.conf"
+    if [ -f "${hbench}.localmode" ]; then
+        cp "${hbench}.localmode" "$hbench"
+    fi
+    if [ -f "${sconf}.localmode" ]; then
+        cp "${sconf}.localmode" "$sconf"
+    fi
+    log "HiBench switched to localmode (file:/// + local[*])"
+}
+
+# ---------------------------------------------------------------------------
+# prepare-hdfs: run HiBench prepare/prepare.sh for each workload so the
+#               HDFS pseudo gets populated with terasort/wordcount/...
+#               datasets. Run once after 'init + start'; data persists
+#               until /var/lib/hadoop is wiped.
+# ---------------------------------------------------------------------------
+
+cmd_prepare_hdfs() {
+    require_root
+    require_paths
+    [ -d "$HADOOP_DIST_CONF" ] || die "distributed configs missing — run '$0 init' first"
+    if ! is_running 'NameNode' || ! is_running 'DataNode'; then
+        die "HDFS daemons not running — run '$0 start' first"
+    fi
+
+    cmd_switch_distributed
+
+    local default_workloads="micro/terasort micro/wordcount websearch/pagerank ml/kmeans ml/bayes micro/dfsioe"
+    local workloads="${INTP_DIST_WORKLOADS:-$default_workloads}"
+
+    log "preparing HDFS datasets for: $workloads"
+    log "(prepare runs from host root netns; NameNode at $HOST_IP:$NN_PORT is reachable directly)"
+
+    local failed=0
+    for wkl in $workloads; do
+        local prep="$HIBENCH_HOME/bin/workloads/$wkl/prepare/prepare.sh"
+        if [ ! -x "$prep" ]; then
+            warn "  $wkl prepare script missing or not executable: $prep"
+            failed=$((failed + 1))
+            continue
+        fi
+        log "  $wkl prepare..."
+        if env HIBENCH_HOME="$HIBENCH_HOME" \
+               SPARK_HOME="$SPARK_HOME" \
+               HADOOP_HOME="$HADOOP_HOME" \
+               HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+               SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+               JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}" \
+               PATH="$HADOOP_HOME/bin:$SPARK_HOME/bin:$PATH" \
+               bash "$prep" >/tmp/prep-"${wkl##*/}".log 2>&1
+        then
+            log "    OK ($(grep -cE 'INFO|copyFromLocal' /tmp/prep-"${wkl##*/}".log 2>/dev/null) ops)"
+        else
+            warn "    FAIL — see /tmp/prep-${wkl##*/}.log"
+            failed=$((failed + 1))
+        fi
+    done
+
+    log "prepare-hdfs done. failures=$failed"
+    log "Check HDFS contents:"
+    log "  HADOOP_CONF_DIR=$HADOOP_DIST_CONF $HADOOP_HOME/bin/hdfs dfs -ls /HiBench"
+}
+
+# ---------------------------------------------------------------------------
 # teardown: remove distributed configs (does not delete HDFS data dir)
 # ---------------------------------------------------------------------------
 
@@ -498,17 +592,20 @@ cmd_teardown() {
 # ---------------------------------------------------------------------------
 
 usage() {
-    sed -n '3,40p' "$0"
+    sed -n '3,42p' "$0"
 }
 
 case "${1:-help}" in
-    init)     cmd_init ;;
-    start)    cmd_start ;;
-    stop)     cmd_stop ;;
-    restart)  cmd_stop; cmd_start ;;
-    status)   cmd_status ;;
-    smoke)    cmd_smoke ;;
-    teardown) cmd_teardown ;;
-    help|-h|--help) usage ;;
+    init)              cmd_init ;;
+    start)             cmd_start ;;
+    stop)              cmd_stop ;;
+    restart)           cmd_stop; cmd_start ;;
+    status)            cmd_status ;;
+    smoke)             cmd_smoke ;;
+    switch-distributed) cmd_switch_distributed ;;
+    switch-localmode)  cmd_switch_localmode ;;
+    prepare-hdfs)      cmd_prepare_hdfs ;;
+    teardown)          cmd_teardown ;;
+    help|-h|--help)    usage ;;
     *) usage; exit 2 ;;
 esac
