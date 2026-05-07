@@ -133,8 +133,16 @@ static int softirq_read(metric_sample_t *out, double interval_sec)
 
     double net_fraction = (d_total > 0)
         ? (double)d_net / (double)d_total : 0.0;
+    /* /proc/stat aggregates jiffies across all CPUs (line "cpu " is the sum),
+     * so d_sj/d_tj is already system-wide-normalized to [0..1] regardless of
+     * core count. To align the metric with V0 (which sums per-event service
+     * time across all CPUs without dividing by num_cores), multiply by the
+     * core count — recovering total CPU-seconds-in-softirq comparable to V0's
+     * cumulative latency model. */
+    int num_cores = detect_cached()->num_cores;
+    if (num_cores <= 0) num_cores = 1;
     double softirq_pct  = (d_tj > 0)
-        ? (double)d_sj / (double)d_tj * 100.0 : 0.0;
+        ? (double)d_sj / (double)d_tj * 100.0 * (double)num_cores : 0.0;
 
     double v = net_fraction * softirq_pct;
     if (v < 0.0)  v = 0.0;
@@ -211,12 +219,13 @@ static int throughput_read(metric_sample_t *out, double interval_sec)
     tp.prev_packets_sum = pkts;
     if (delta < 0) delta = 0;
 
-    /* Assume 1 microsecond of CPU service time per packet. The utilization of
-     * one CPU is (pps * 1e-6). Divide by num_cores to express as a system-wide
-     * percentage in the same units as the softirq backend. */
+    /* Assume 1 microsecond of CPU service time per packet. Total CPU-seconds
+     * spent processing packets in 1s = pps * 1e-6. Express as percent of one
+     * second-of-CPU-time = pps * 1e-6 * 100. Aligned with V0: do NOT divide
+     * by num_cores — the metric represents cumulative wall-clock spent in
+     * the network stack summed across all CPUs (matches V0 net stack util). */
     double pps          = (double)delta / interval_sec;
-    double busy_per_cpu = pps * 1.0e-6 * 100.0;
-    double v            = busy_per_cpu / (double)tp.num_cores;
+    double v            = pps * 1.0e-6 * 100.0;
     if (v < 0.0)  v = 0.0;
     if (v > 99.0) v = 99.0;
     out->value      = v;

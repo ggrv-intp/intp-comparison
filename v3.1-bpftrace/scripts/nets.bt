@@ -1,30 +1,38 @@
 #!/usr/bin/env bpftrace
 /*
- * V3.1 nets -- Network Stack Utilization (softirq service-time model)
+ * V3.1 nets -- Network Stack Utilization (per-packet service-time model)
  *
- * Captures cumulative time spent in NET_TX (vec=2) and NET_RX (vec=3)
- * softirqs via the stable irq:softirq_entry / irq:softirq_exit tracepoints.
+ * Aligned with V0 (v0-stap-classic/intp.stp print_netstack_report). V0
+ * measures total time spent in the network stack as:
  *
- * Why softirqs (and not napi:napi_poll like the previous version):
- *   napi_poll fires only for explicit NAPI instances. veth uses the
- *   per-CPU backlog NAPI (process_backlog) which the napi tracepoint
- *   misses on recent kernels, leaving rx_count == 0 for any veth /
- *   loopback / forwarded traffic. softirq:NET_RX/NET_TX fires regardless
- *   of the underlying device class (physical NIC, lo, veth, bridge),
- *   matching V2's /proc/softirqs accounting and giving consistent nets
- *   measurements across all transports.
+ *     util = SUM_TX(per_packet_lat) + SUM_RX(per_napi_poll_lat)
+ *
+ * where:
+ *   TX per_packet_lat = nsec(net:net_dev_xmit)
+ *                     - nsec(__dev_queue_xmit entry)   [V0 kprobe]
+ *   RX per_poll_lat   = nsec(napi_complete_done)
+ *                     - nsec(__napi_schedule_irqoff)   [V0 kprobe]
+ *
+ * The orchestrator divides the cumulative ns by the interval (in ns, NOT
+ * scaled by num_cpus — V0 doesn't scale either). Fraction → percent → cap 99.
+ *
+ * bpftrace probe choice:
+ *   - TX: net:net_dev_start_xmit + net:net_dev_xmit are stable tracepoints
+ *         on every kernel >=3.x, equivalent to V0's __dev_queue_xmit pair
+ *         (start_xmit fires inside dev_hard_start_xmit, just before the
+ *         driver xmit). Service time differs by ~µs vs V0 but principle is
+ *         identical.
+ *   - RX: kprobe:__napi_schedule_irqoff + kprobe:napi_complete_done match
+ *         V0 byte-for-byte. These are the canonical NAPI poll boundaries.
+ *
+ * Limitation (inherited from V0): backlog NAPI on veth/loopback registers
+ * via process_backlog and may not always trigger __napi_schedule_irqoff
+ * (recent kernels schedule directly via netif_rx_internal). Veth-routed
+ * RX therefore inherits V0's blindspot. Document explicitly in the paper.
  *
  * Output format (unchanged for orchestrator compatibility):
  *   {"metric":"nets","ts":<ns>,"tx_lat_ns":<N>,"tx_count":<N>,
  *    "rx_lat_ns":<N>,"rx_count":<N>}
- *
- * Orchestrator computes: util = tx_lat_ns / interval_ns * 100 (per resource),
- * which now equals "% wall-clock of NET_TX softirq" — the same definition
- * V2 derives from /proc/softirqs deltas.
- *
- * vec values from include/linux/interrupt.h:
- *   HI=0, TIMER=1, NET_TX=2, NET_RX=3, BLOCK=4, IRQ_POLL=5, TASKLET=6,
- *   SCHED=7, HRTIMER=8, RCU=9
  */
 
 BEGIN
@@ -32,37 +40,37 @@ BEGIN
     printf("{\"metric\":\"nets\",\"ready\":true}\n");
 }
 
-tracepoint:irq:softirq_entry
-/ args->vec == 2 /
+/* ---- TX: net_dev_start_xmit -> net_dev_xmit per-skb service time ------- */
+
+tracepoint:net:net_dev_start_xmit
 {
-    @tx_start[tid] = nsecs;
+    @tx_start[args->skbaddr] = nsecs;
 }
 
-tracepoint:irq:softirq_exit
-/ args->vec == 2 /
+tracepoint:net:net_dev_xmit
 {
-    $start = @tx_start[tid];
+    $start = @tx_start[args->skbaddr];
     if ($start != 0) {
         @tx_lat = @tx_lat + (nsecs - $start);
         @tx_count = @tx_count + 1;
-        delete(@tx_start[tid]);
+        delete(@tx_start[args->skbaddr]);
     }
 }
 
-tracepoint:irq:softirq_entry
-/ args->vec == 3 /
+/* ---- RX: __napi_schedule_irqoff -> napi_complete_done per-poll svc time */
+
+kprobe:__napi_schedule_irqoff
 {
-    @rx_start[tid] = nsecs;
+    @rx_start[arg0] = nsecs;
 }
 
-tracepoint:irq:softirq_exit
-/ args->vec == 3 /
+kprobe:napi_complete_done
 {
-    $start = @rx_start[tid];
+    $start = @rx_start[arg0];
     if ($start != 0) {
         @rx_lat = @rx_lat + (nsecs - $start);
         @rx_count = @rx_count + 1;
-        delete(@rx_start[tid]);
+        delete(@rx_start[arg0]);
     }
 }
 

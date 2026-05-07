@@ -108,10 +108,16 @@ def compute_netp(payload: dict | None, nic_speed_bps: int, interval: float) -> i
 
 
 def compute_nets(payload: dict | None, interval: float, cpus: int) -> int:
-    if not payload or interval <= 0 or cpus <= 0:
+    # Aligned with V0: util = total_stack_lat_seconds, capped at 99. V0 does
+    # NOT divide by num_cores (the metric represents cumulative wall-clock
+    # spent in network stack code paths summed across all CPUs / events).
+    # The `cpus` argument is kept in the signature for call-site symmetry
+    # with compute_cpu but is intentionally unused.
+    del cpus  # unused, see comment above
+    if not payload or interval <= 0:
         return 0
     lat_ns = payload.get("tx_lat_ns", 0) + payload.get("rx_lat_ns", 0)
-    interval_ns = interval * 1_000_000_000 * cpus
+    interval_ns = interval * 1_000_000_000
     if interval_ns <= 0:
         return 0
     return _clamp(lat_ns / interval_ns * 100)
