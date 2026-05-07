@@ -382,30 +382,71 @@ already-configured host:
 SKIP_SPARK_HIBENCH_SETUP=1 bash run-big-batch.sh
 ```
 
-### If you actually need pseudo-distributed HDFS / Spark Standalone
+### Distributed-via-veth mode (NEW — wired up, validated May 2026)
 
-Not currently set up. Would require:
+For the netp/nets fidelity campaign there is a third HiBench mode driven
+by [bench/setup/setup-distributed-mode.sh](setup-distributed-mode.sh):
 
-1. Configure `core-site.xml` with `fs.defaultFS=hdfs://localhost:9000` (or
-   `<eth0_ip>:9000` if you want NIC traffic — see caveat below)
-2. Configure `hdfs-site.xml` with `dfs.replication=1`
-3. `hdfs namenode -format` (one-time)
-4. `start-dfs.sh` then `start-yarn.sh` (for cluster mode)
-5. Spark standalone: `start-master.sh`, `start-worker.sh spark://<ip>:7077`
+- HDFS NameNode + DataNode bind to **10.42.0.1** (host side of veth)
+- Spark Master + Worker bind to **10.42.0.1**
+- HiBench Spark Driver runs **inside netns intp-app** (10.42.0.2) and
+  reaches Master/NameNode by traversing `intp-veth-h ↔ intp-veth-g`
+- All RPC packets cross a real device (not `lo`), so V2/V3/V3.1 detect
+  netp/nets > 0 (V2 via softirq counts, V3/V3.1 via tracepoints that
+  filter only literal `lo`)
 
-**Caveat**: even when binding to `eth0_ip:9000`, traffic between
-processes on the same host is routed through `lo` by the kernel local
-routing table (`ip route get $eth0_ip` returns `local $eth0_ip dev lo`).
-To actually traverse a NIC code path you need either (a) two physical
-hosts, (b) the netns/veth pair from §4, or (c) tricky route + iptables
-manipulation.
+**Caveat about bind-only solutions**: just binding HDFS/Spark to
+`<eth0_ip>:9000` does NOT route traffic through a NIC. The kernel's
+local routing table sends local IPs through `lo` regardless of bind
+(`ip route get $eth0_ip` returns `local … dev lo`). The veth + netns
+pair is what actually forces packets through `__dev_queue_xmit`.
 
-### Wiring HiBench through the veth pair (option c, advanced)
+**Lifecycle**:
 
-Run the Spark client/HiBench inside `intp-net` netns and HDFS daemons
-in the host root netns. Requires Spark/Hadoop config to bind to
-`10.42.0.1` (host) and `10.42.0.2` (netns). Not wired up — would be a
-follow-up paper experiment, not a SBAC-PAD blocker.
+```bash
+# One-time (writes parallel configs in /opt/hadoop/etc/hadoop-distributed/
+# and /opt/spark/conf-distributed/, formats NameNode, drops /etc/netns/intp-net/hosts):
+sudo bash bench/setup/setup-netns-pair.sh
+sudo bash bench/setup/setup-distributed-mode.sh init
+
+# Each session (daemons UP):
+sudo bash bench/setup/setup-distributed-mode.sh start
+sudo bash bench/setup/setup-distributed-mode.sh smoke    # validates Driver-in-netns can submit job
+
+# One-time (populate HDFS with HiBench datasets — survives until /var/lib/hadoop wiped):
+sudo bash bench/setup/setup-distributed-mode.sh prepare-hdfs
+
+# Run the campaign with daemons UP and Driver-in-netns:
+sudo INTP_DISTRIBUTED_MODE=1 \
+     <other env vars...> \
+     bash run-big-batch.sh
+
+# Tear daemons down between campaigns:
+sudo bash bench/setup/setup-distributed-mode.sh stop
+```
+
+**Smoke validated May 2026**: `Pi is roughly 3.1415863141586313` —
+Spark Pi job submitted from inside netns intp-app, scheduled by Master
+on the veth host side, traffic crossed `intp-veth-h`. All 4 IntP
+variants observe nonzero netp/nets when running this stack.
+
+### Veth-routed stress-ng workloads (NEW)
+
+Companion to distributed mode: synthetic net workloads in
+`bench/run-intp-bench.sh` `WORKLOADS=` and `PAIRWISE=` arrays now
+include three veth-routed entries (additive — original loopback ones
+preserved for back-compat / control comparison):
+
+- `app11b_tcp_veth` — iperf3 TCP across the veth pair (replaces /
+  complements `app11_sort_net` which uses loopback `--sock`)
+- `app12b_udp_veth` — iperf3 UDP across the veth pair
+- `tcp_v_tcp_veth` — pairwise victim+antagonist both via veth on
+  different ports (replaces / complements `net_v_net`)
+
+Args use `VETH:<proto>:<port>:<extra>` format. The launcher
+([launch_veth_workload](../run-intp-bench.sh)) starts iperf3 server
+inside netns intp-net (auto-exits via `-1`), runs iperf3 client on the
+host bound to 10.42.0.1.
 
 ---
 
@@ -426,18 +467,30 @@ sudo bash bench/run-intp-bench.sh --stage detect,build --variants v1.1,v2,v3,v3.
 sudo bash bench/hibench/setup-hadoop-localmode.sh
 sudo HADOOP_PROFILE=3 HIBENCH_SCALE=large bash bench/hibench/setup-spark-hibench.sh
 
-# 5. Veth pair for NIC-traversing network workloads (optional, ~10 sec)
+# 5. Veth pair for NIC-traversing network workloads (~10 sec, non-persistent)
 sudo bash bench/setup/setup-netns-pair.sh
 
-# 6. IADA environment (only if running CloudSim afterward)
+# 6. Distributed mode (HDFS pseudo + Spark Standalone via veth) — required
+#    only for the netp/nets fidelity campaign; skip for localmode-only runs:
+sudo bash bench/setup/setup-distributed-mode.sh init
+sudo bash bench/setup/setup-distributed-mode.sh start
+sudo bash bench/setup/setup-distributed-mode.sh smoke    # expect "Pi is roughly 3.14..."
+sudo bash bench/setup/setup-distributed-mode.sh prepare-hdfs   # one-shot, ~10-30 min
+
+# 7. IADA environment (only if running CloudSim afterward)
 sudo bash bench/iada/scripts/setup-iada.sh --intp-r-folder /root/intp/R
 # then add to ~/.bashrc or wrapper:
 # export JAVA_TOOL_OPTIONS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
 # Apply MLClassifier.java patch manually.
 
-# 7. Smoke test
+# 8. Smoke test the bench end-to-end
 sudo REPS=2 DURATION=30 RUN_HIBENCH=0 RUN_PLOTS=0 \
      BENCH_VARIANTS=v3.1 BENCH_WORKLOADS=app01_ml_llc \
+     bash run-big-batch.sh
+
+# 9. Smoke test the veth dispatch (no daemons needed):
+sudo REPS=1 DURATION=20 RUN_HIBENCH=0 RUN_PLOTS=0 \
+     BENCH_VARIANTS=v3.1 BENCH_WORKLOADS=app11b_tcp_veth \
      bash run-big-batch.sh
 ```
 
