@@ -38,6 +38,7 @@
 #   sudo ./setup-distributed-mode.sh smoke               # verify Driver-in-netns can reach Master
 #   sudo ./setup-distributed-mode.sh switch-distributed  # patch HiBench conf for hdfs:// + spark://
 #   sudo ./setup-distributed-mode.sh switch-localmode    # restore HiBench conf to file:/// + local[*]
+#   sudo ./setup-distributed-mode.sh ssh-setup           # idempotent: known_hosts + authorized_keys for intp-host/intp-app
 #   sudo ./setup-distributed-mode.sh prepare-hdfs        # one-shot: populate HDFS pseudo with HiBench datasets
 #   sudo ./setup-distributed-mode.sh teardown            # remove distributed configs (keep dataset)
 # -----------------------------------------------------------------------------
@@ -255,6 +256,10 @@ hibench.hdfs.master              hdfs://$HOST_IP:$NN_PORT
 hibench.spark.master             spark://$HOST_IP:$SPARK_MASTER_PORT
 hibench.hadoop.configure.dir     $HADOOP_DIST_CONF
 hibench.spark.confdir            $SPARK_DIST_CONF
+# Disable HiBench's built-in monitor (start_monitor.sh) — it SSHes to master/
+# slaves to start dstat/etc, which prompts for known_hosts confirmation inside
+# our netns and hangs the run. We use IntP profilers instead.
+hibench.monitor.enable           false
 EOF
     log "wrote HiBench overlay $overlay"
 }
@@ -289,6 +294,69 @@ EOF
     log "wrote $netns_hosts (visible only inside netns $NETNS)"
 }
 
+write_ssh_setup() {
+    # HiBench's start_monitor.sh + Spark Standalone's start-all.sh do SSH calls
+    # to "master/slave" hostnames. Inside the netns, intp-host (10.42.0.1)
+    # resolves but isn't in known_hosts → prompts interactively → hangs. Pre-
+    # populate known_hosts under all 4 aliases (intp-host, intp-app, host IP,
+    # guest IP) using the local sshd's host key. Also set up passwordless root
+    # SSH so any wrapper that spawns "ssh root@..." just works.
+    local ssh_dir=/root/.ssh
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+
+    # 1) Generate root key if missing (used for self-SSH inside the netns).
+    if [ ! -f "$ssh_dir/id_ed25519" ]; then
+        ssh-keygen -q -t ed25519 -N "" -f "$ssh_dir/id_ed25519" -C "intp-distributed-self"
+    fi
+    # 2) Trust the root key for self-SSH.
+    if [ -f "$ssh_dir/id_ed25519.pub" ]; then
+        local pub
+        pub="$(cat "$ssh_dir/id_ed25519.pub")"
+        touch "$ssh_dir/authorized_keys"
+        chmod 600 "$ssh_dir/authorized_keys"
+        if ! grep -qF "$pub" "$ssh_dir/authorized_keys"; then
+            echo "$pub" >> "$ssh_dir/authorized_keys"
+        fi
+    fi
+    # 3) Pre-populate known_hosts with the host's sshd key under each alias.
+    local host_key_pub=/etc/ssh/ssh_host_ed25519_key.pub
+    if [ -r "$host_key_pub" ]; then
+        local host_key
+        host_key="$(awk '{print $1, $2}' "$host_key_pub")"
+        local kh="$ssh_dir/known_hosts"
+        touch "$kh"
+        chmod 600 "$kh"
+        local alias
+        for alias in intp-host intp-app "$HOST_IP" "$GUEST_IP" localhost 127.0.0.1; do
+            # ssh-keygen -F returns 0 if the alias already has a key entry; only
+            # append when missing to avoid duplicates.
+            if ! ssh-keygen -F "$alias" -f "$kh" >/dev/null 2>&1; then
+                echo "$alias $host_key" >> "$kh"
+            fi
+        done
+        log "populated $kh for: intp-host intp-app $HOST_IP $GUEST_IP localhost 127.0.0.1"
+    else
+        warn "$host_key_pub not readable — skipping known_hosts pre-population"
+    fi
+    # 4) Belt-and-suspenders: SSH config disables strict checking for these
+    #    aliases (only — does not affect other hosts).
+    local sshcfg="$ssh_dir/config"
+    touch "$sshcfg"
+    chmod 600 "$sshcfg"
+    if ! grep -q '^# IntP distributed-mode block' "$sshcfg" 2>/dev/null; then
+        cat >> "$sshcfg" <<EOF
+
+# IntP distributed-mode block (added by setup-distributed-mode.sh)
+Host intp-host intp-app $HOST_IP $GUEST_IP
+    StrictHostKeyChecking accept-new
+    LogLevel ERROR
+    BatchMode yes
+EOF
+        log "appended SSH client block for intp-host/intp-app/$HOST_IP/$GUEST_IP to $sshcfg"
+    fi
+}
+
 cmd_init() {
     require_root
     require_veth
@@ -297,8 +365,14 @@ cmd_init() {
     write_spark_configs
     write_hibench_overlay
     write_netns_hosts
+    write_ssh_setup
     format_namenode
     log "init complete. Next: '$0 start'"
+}
+
+cmd_ssh_setup() {
+    require_root
+    write_ssh_setup
 }
 
 # ---------------------------------------------------------------------------
@@ -507,6 +581,14 @@ cmd_switch_distributed() {
 
     sed -i -E "s|^(hibench\.hdfs\.master[[:space:]]+).*|\1hdfs://$HOST_IP:$NN_PORT|" "$hbench"
     sed -i -E "s|^(hibench\.spark\.master[[:space:]]+).*|\1spark://$HOST_IP:$SPARK_MASTER_PORT|" "$sconf"
+    # Disable HiBench's start_monitor.sh (it SSHes to master/slaves and hangs
+    # in our minimal netns). Patch hibench.conf so the setting persists even
+    # if the overlay isn't read.
+    if grep -qE '^hibench\.monitor\.enable' "$hbench"; then
+        sed -i -E "s|^(hibench\.monitor\.enable[[:space:]]+).*|\1false|" "$hbench"
+    else
+        printf '\n# IntP distributed-mode override (added by setup-distributed-mode.sh).\nhibench.monitor.enable           false\n' >> "$hbench"
+    fi
     # HiBench derives `hadoop --config <DIR>` from hibench.hadoop.configure.dir
     # (if absent, falls back to ${hibench.hadoop.home}/etc/hadoop = localmode).
     # Patch hadoop.conf so prepare.sh and TestDFSIOEnh see the distributed dir.
@@ -556,6 +638,24 @@ cmd_prepare_hdfs() {
     fi
 
     cmd_switch_distributed
+
+    # Honor HIBENCH_SCALE env so the operator can prepare different scales
+    # without manually editing hibench.conf each time. Valid: tiny|small|large|huge|gigantic.
+    if [ -n "${HIBENCH_SCALE:-}" ]; then
+        local hbench="$HIBENCH_HOME/conf/hibench.conf"
+        if [ -f "$hbench" ]; then
+            if grep -qE '^hibench\.scale\.profile' "$hbench"; then
+                sed -i -E "s|^(hibench\.scale\.profile[[:space:]]+).*|\1$HIBENCH_SCALE|" "$hbench"
+            else
+                printf '\nhibench.scale.profile          %s\n' "$HIBENCH_SCALE" >> "$hbench"
+            fi
+            log "patched hibench.scale.profile=$HIBENCH_SCALE"
+        fi
+    fi
+    local current_scale
+    current_scale=$(grep -E '^hibench\.scale\.profile' "$HIBENCH_HOME/conf/hibench.conf" 2>/dev/null \
+                    | awk '{print $2}' || echo unknown)
+    log "preparing at hibench.scale.profile=$current_scale"
 
     local default_workloads="micro/terasort micro/wordcount websearch/pagerank ml/kmeans ml/bayes micro/dfsioe"
     local workloads="${INTP_DIST_WORKLOADS:-$default_workloads}"
@@ -621,6 +721,7 @@ case "${1:-help}" in
     restart)           cmd_stop; cmd_start ;;
     status)            cmd_status ;;
     smoke)             cmd_smoke ;;
+    ssh-setup)         cmd_ssh_setup ;;
     switch-distributed) cmd_switch_distributed ;;
     switch-localmode)  cmd_switch_localmode ;;
     prepare-hdfs)      cmd_prepare_hdfs ;;

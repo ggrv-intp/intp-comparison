@@ -289,6 +289,23 @@ if [ "$RUN_HIBENCH" = "1" ]; then
         bash bench/setup/setup-distributed-mode.sh switch-distributed
     fi
   fi
+
+  # Distributed-mode path skips setup-spark-hibench.sh entirely, which is what
+  # normally writes hibench.scale.profile. Patch it ourselves so HiBench reads
+  # the right scale (must match whatever was prepared into HDFS via
+  # setup-distributed-mode.sh prepare-hdfs).
+  if [ "$INTP_DISTRIBUTED_MODE" = "1" ]; then
+    HIBENCH_CONF_FILE="${HIBENCH_HOME:-/opt/HiBench}/conf/hibench.conf"
+    if [ -f "$HIBENCH_CONF_FILE" ]; then
+      if grep -qE '^hibench\.scale\.profile' "$HIBENCH_CONF_FILE"; then
+        sed -i -E "s|^(hibench\.scale\.profile[[:space:]]+).*|\1$HIBENCH_SCALE_MAPPED|" "$HIBENCH_CONF_FILE"
+      else
+        printf '\nhibench.scale.profile          %s\n' "$HIBENCH_SCALE_MAPPED" >> "$HIBENCH_CONF_FILE"
+      fi
+      echo "[distributed] patched hibench.scale.profile=$HIBENCH_SCALE_MAPPED in $HIBENCH_CONF_FILE"
+      echo "[distributed] (datasets in HDFS must match this scale — re-run prepare-hdfs if scale changed)"
+    fi
+  fi
 fi
 
 # ── Segment 1: Full bench — all stages, all variants, selected envs ────────────
