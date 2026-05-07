@@ -994,6 +994,7 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
                              figsize=_clamp_figsize(4.5 * cols, 0.32 * sub["workload"].nunique() + 1.4),
                              squeeze=False)
     last = -1
+    im = None
     for idx, variant in enumerate(variants):
         last = idx
         ax = axes[idx // cols][idx % cols]
@@ -1015,6 +1016,10 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
         ax.grid(False)
     for j in range(last + 1, rows * cols):
         axes[j // cols][j % cols].axis("off")
+    if im is None:
+        print("[fig10] no variant had ≥2 workloads — skip clustermap")
+        plt.close(fig)
+        return
     fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.7, label="interference (%)")
     fig.suptitle(f"Hierarchical workload clustermap — env={env}", y=1.02, fontsize=11)
     _save(fig, outdir / "fig10_workload_clustermap.png", "fig10")

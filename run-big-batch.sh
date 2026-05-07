@@ -209,6 +209,27 @@ run_step "python benchmark deps" bash -c '
   || pip3 install --quiet numpy matplotlib pandas scipy
 '
 
+# Distributed-mode preflight: fail fast if netns/daemons/HDFS aren't ready.
+if [ "$INTP_DISTRIBUTED_MODE" = "1" ]; then
+  run_step "distributed mode preflight (netns + daemons + HDFS)" bash -c '
+    set -e
+    ip netns list | grep -qE "^'"$INTP_NETNS_NAME"'( |$)" \
+      || { echo "netns '"$INTP_NETNS_NAME"' missing — run bench/setup/setup-netns-pair.sh"; exit 1; }
+    pgrep -f "NameNode" >/dev/null \
+      || { echo "NameNode not running — run bench/setup/setup-distributed-mode.sh start"; exit 1; }
+    pgrep -f "DataNode" >/dev/null \
+      || { echo "DataNode not running — run bench/setup/setup-distributed-mode.sh start"; exit 1; }
+    pgrep -f "org.apache.spark.deploy.master.Master" >/dev/null \
+      || { echo "Spark Master not running — run bench/setup/setup-distributed-mode.sh start"; exit 1; }
+    pgrep -f "org.apache.spark.deploy.worker.Worker" >/dev/null \
+      || { echo "Spark Worker not running — run bench/setup/setup-distributed-mode.sh start"; exit 1; }
+    HADOOP_CONF_DIR="${HADOOP_HOME:-/opt/hadoop}/etc/hadoop-distributed" \
+      "${HADOOP_HOME:-/opt/hadoop}/bin/hdfs" dfs -ls /HiBench >/dev/null 2>&1 \
+      || { echo "HDFS /HiBench missing or NameNode unreachable — run setup-distributed-mode.sh prepare-hdfs"; exit 1; }
+    echo "distributed mode OK: netns up, daemons running, HDFS populated"
+  '
+fi
+
 # Container preflight (only when container or container-guest in BENCH_ENVS)
 case ",$BENCH_ENVS," in
   *,container,*|*,container-guest,*)
@@ -245,12 +266,28 @@ if [ "$RUN_HIBENCH" = "1" ]; then
     large)  HIBENCH_SCALE_MAPPED=large ;;
     *)      HIBENCH_SCALE_MAPPED="$HIBENCH_SIZE" ;;
   esac
+  # In distributed mode, setup-spark-hibench.sh would clobber hibench.conf /
+  # spark.conf / hadoop.conf back to localmode (file:/// + local[*]). Auto-skip
+  # unless the user explicitly opted in. Distributed mode assumes the operator
+  # already ran setup-distributed-mode.sh init + start + prepare-hdfs.
+  if [ "$INTP_DISTRIBUTED_MODE" = "1" ] && [ -z "${SKIP_SPARK_HIBENCH_SETUP+x}" ]; then
+    echo "[distributed] auto-setting SKIP_SPARK_HIBENCH_SETUP=1 (preserves distributed HiBench config)"
+    SKIP_SPARK_HIBENCH_SETUP=1
+  fi
   if [ "${SKIP_SPARK_HIBENCH_SETUP:-0}" = "1" ]; then
     echo "Skipping spark+hibench setup (SKIP_SPARK_HIBENCH_SETUP=1)"
   else
     run_step "spark + hibench setup (scale=$HIBENCH_SCALE_MAPPED)" \
       env HADOOP_PROFILE="$HADOOP_PROFILE" HIBENCH_SCALE="$HIBENCH_SCALE_MAPPED" \
       bash bench/hibench/setup-spark-hibench.sh
+    # Defense-in-depth: if user explicitly re-ran setup in distributed mode,
+    # restore distributed HiBench config (so spark.master + hibench.hdfs.master
+    # point at our daemons rather than local[*] / file:///).
+    if [ "$INTP_DISTRIBUTED_MODE" = "1" ]; then
+      echo "[distributed] restoring distributed HiBench config after setup-spark-hibench"
+      run_step "switch HiBench to distributed (post-setup)" \
+        bash bench/setup/setup-distributed-mode.sh switch-distributed
+    fi
   fi
 fi
 
