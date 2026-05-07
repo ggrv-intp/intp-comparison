@@ -92,6 +92,24 @@ safety boundary and the toolchain weight.
   can be added via `if (pid == $1) { ... }` when needed; they are
   omitted by default to keep overhead low.
 
+### Pre-existing fork tree (resctrl mon_group setup)
+
+Resctrl auto-inherits the mon_group across `fork(2)`, but only for forks
+that happen *after* the task has been written into the group's `tasks`
+file. Workloads that pre-spawn (stress-ng `--cache 24` forks 24
+stressors immediately on launch; HDFS DataNode forks worker threads at
+startup) finish their fork tree before the profiler attaches, so writing
+only the parent PID into `tasks` leaves every stressor untracked and
+both `mbw` and `llcocc` read zero.
+
+`ResctrlReader.setup()` walks `/proc/<pid>/task/<tid>/children` for each
+target PID and assigns the entire transitive fork tree to the mon_group
+in one pass. New forks after this point inherit the group through the
+normal kernel path; the only window where a child can escape is one that
+forks *and* exits between profiler attach and the descendant walk
+completing -- a race we accept since by the time we sample, the
+short-lived child's metrics are already gone.
+
 ## Comparison with V2 (hybrid-procfs)
 
 - V2 polls kernel counters; V3.1 captures events.

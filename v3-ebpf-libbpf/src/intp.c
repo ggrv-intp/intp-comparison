@@ -20,6 +20,7 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <dirent.h>
 #include <errno.h>
 #include <linux/perf_event.h>
 #include <math.h>
@@ -64,6 +65,66 @@ static int kernel_has_symbol(const char *sym)
 
     fclose(f);
     return 0;
+}
+
+/* Populate the descendant_tgids BPF map with every transitive descendant
+ * of root_pid currently visible in /proc. Mirror of v3.1's
+ * ResctrlReader._collect_descendants -- workloads such as stress-ng
+ * --cache 24 fork their stressor children before the profiler attaches,
+ * and without this seed the in-kernel PID filter rejects all child
+ * activity. dir_fd-based traversal keeps the open-file count bounded.
+ *
+ * Returns the number of descendants successfully written into the map
+ * (excluding root_pid itself, which is already in target_pids). */
+static int seed_descendants_from_proc(int map_fd, pid_t root_pid, int verbose)
+{
+    if (map_fd < 0 || root_pid <= 0) return 0;
+
+    /* BFS queue stays small since stress-ng-class workloads top out at
+     * ~32 stressors and HiBench peaks ~few hundred Spark executor
+     * threads (which share TGID anyway, so they collapse to one entry). */
+    enum { QMAX = 4096 };
+    pid_t queue[QMAX];
+    int head = 0, tail = 0;
+    queue[tail++] = root_pid;
+
+    int written = 0;
+    while (head < tail) {
+        pid_t pid = queue[head++];
+
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)pid);
+        DIR *td = opendir(taskdir);
+        if (!td) continue;
+
+        struct dirent *e;
+        while ((e = readdir(td)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            char children_path[128];
+            snprintf(children_path, sizeof(children_path),
+                     "/proc/%d/task/%s/children", (int)pid, e->d_name);
+            FILE *cf = fopen(children_path, "r");
+            if (!cf) continue;
+            int child;
+            while (fscanf(cf, "%d", &child) == 1) {
+                if (child <= 0) continue;
+                if (tail < QMAX) queue[tail++] = (pid_t)child;
+                if (child == (int)root_pid) continue;
+                __u32 key = (__u32)child;
+                __u8  one = 1;
+                if (bpf_map_update_elem(map_fd, &key, &one, BPF_ANY) == 0) {
+                    written++;
+                } else if (verbose) {
+                    fprintf(stderr,
+                            "warn: descendant_tgids update failed for tgid=%u: %s\n",
+                            key, strerror(errno));
+                }
+            }
+            fclose(cf);
+        }
+        closedir(td);
+    }
+    return written;
 }
 
 /* ------------------------------------------------------------------ state */
@@ -489,6 +550,25 @@ int main(int argc, char **argv)
         fprintf(stderr, "failed to attach BPF programs: %s\n", strerror(errno));
         intp_bpf__destroy(skel);
         return 1;
+    }
+
+    /* ------- seed descendant_tgids from /proc -------
+     * Pre-existing fork tree: children spawned before attach won't fire
+     * the sched_process_fork tracepoint, so we walk /proc once here to
+     * capture them. Skipped in system_wide mode where the filter is a
+     * no-op anyway. */
+    if (!cfg.system_wide && cfg.num_target_pids > 0) {
+        int desc_fd = bpf_map__fd(skel->maps.descendant_tgids);
+        int total = 0;
+        for (__u32 i = 0; i < cfg.num_target_pids; i++) {
+            total += seed_descendants_from_proc(
+                desc_fd, (pid_t)cfg.target_pids[i], args.verbose);
+        }
+        if (args.verbose) {
+            fprintf(stderr,
+                    "info: descendant_tgids seeded with %d pre-existing tgid(s)\n",
+                    total);
+        }
     }
 
     /* ------- perf_event programs for llcmr ------- */

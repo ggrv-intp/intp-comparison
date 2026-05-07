@@ -116,17 +116,32 @@ at UCC Companion 2024. V3 looks at it for architectural ideas only --
 it is **not** a PUCRS predecessor of IntP, and V3 does not inherit
 code from it. Differences:
 
-| Aspect                  | iprof                             | V3 IntP                    |
-|-------------------------|-----------------------------------|----------------------------|
-| Metrics covered         | 5 of IntP's 7                     | all 7                      |
-| Hardware via resctrl    | no (perf approximations only)     | yes (MBM + CMT + MPAM)     |
-| LLC metric              | stalled-backend-cycles proxy      | direct RDT llc_occupancy   |
-| Memory BW metric        | stalled-cycles backend proxy      | direct MBM counter         |
-| Per-PID attribution     | limited / best-effort             | in-kernel filter in config |
-| Skeleton pattern        | raw bpf() syscalls                | libbpf skeleton            |
-| Ring buffer             | perf event array                  | BPF_MAP_TYPE_RINGBUF       |
-| CO-RE                   | partial                           | full                       |
-| Output format           | custom                            | V0-compatible TSV          |
+| Aspect                  | iprof                                          | V3 IntP                    |
+|-------------------------|------------------------------------------------|----------------------------|
+| Metrics covered         | 5 categories (cpu, blk, netI/O, llc, mem)      | all 7 (netp/nets split, mbw + llcocc + llcmr split) |
+| Hardware via resctrl    | no                                             | yes (MBM + CMT + MPAM)     |
+| LLC miss ratio          | direct PERF_TYPE_HW_CACHE refs/misses, sample_period=1000 | identical encoding |
+| LLC occupancy           | not measured                                   | direct RDT `llc_occupancy` |
+| Memory BW metric        | stalled-backend-cycles ratio (Kim 2020 [15])   | direct MBM `mbm_total_bytes` |
+| CPU metric              | run-queue occupancy at `finish_task_switch()`  | on-CPU time at `sched_switch` |
+| Per-PID attribution     | limited / best-effort (single-app eval)        | in-kernel filter + fork tracking |
+| Skeleton pattern        | raw bpf() syscalls + perf event arrays         | libbpf skeleton            |
+| Ring buffer             | perf event array                               | BPF_MAP_TYPE_RINGBUF       |
+| CO-RE                   | partial                                        | full                       |
+| Output format           | custom                                         | V0-compatible TSV          |
+
+The earlier characterisation of iprof's LLC metric as a
+"stalled-backend-cycles proxy" was incorrect; iprof computes LLC miss
+ratio directly via `perf_events` (paper §III.A "Last Level Cache":
+"two eBPF programs, one ... for the reference count and another for
+the miss count, to every generated `perf_event`"). What iprof
+**does** approximate is `mem` -- following Kim et al. (IEEE Access
+2020 [15]) it measures the ratio between total cycles and stalled
+backend cycles, with no resctrl involvement. IntP V3 sidesteps that
+proxy by using MBM directly when resctrl is available; the
+stalled-cycles ratio remains a useful fallback when resctrl is fenced
+off (e.g. unprivileged containers without `--cap-add=SYS_ADMIN`) and
+is recorded here so it can be wired in if needed.
 
 ## 6. Comparison with PRISM (Landau et al. 2025)
 
@@ -153,7 +168,8 @@ Filtering happens **in-kernel**:
 2. Every probe calls `should_monitor_current()`, which looks up the
    config and (if not system-wide) compares `bpf_get_current_pid_tgid()`
    against the target PIDs in a bounded loop (verifier-friendly because
-   `INTP_MAX_PIDS = 64`).
+   `INTP_MAX_PIDS = 64`), then falls back to a lookup in
+   `descendant_tgids` (a `BPF_MAP_TYPE_HASH`).
 3. Events for non-target PIDs are never reserved in the ring buffer,
    keeping userspace cost proportional to the monitored workload, not
    to system activity.
@@ -162,6 +178,62 @@ Soft-IRQ-context probes (e.g. `netif_receive_skb`) have less reliable
 PID context because the current task is whoever was interrupted rather
 than the socket owner; V3 documents this as an approximation in those
 paths.
+
+### 7.1 Tracking the fork tree
+
+The static `target_pids` array gets seeded with the PIDs the user
+passed via `--pids`. Real workloads almost never stay as a single TGID:
+stress-ng `--cache 24` forks 24 stressor children, HiBench's Spark
+launches one driver process plus per-task executor processes,
+HDFS DataNode forks worker processes at startup. Each child has a
+**new TGID** (not just a new TID), so a filter that knows only the
+parent rejects every child event and the per-PID profile collapses to
+zero on `llcmr`, `nets`, `blk`, and `cpu`.
+
+iprof's evaluation (Becker/Goegge/Kao 2024) doesn't trip this because
+its setup runs on a "mostly idle" dedicated machine where system-wide
+observation is fine; the paper explicitly states "either the
+application provider must handle interference profiling and supply the
+values, or profiling must be conducted on a dedicated machine"
+(§II.B). IntP V3 is intended for cross-application interference
+attribution, where per-PID is the whole point, so the fork tree must
+be tracked.
+
+V3 maintains the fork tree in two passes:
+
+1. **Static seed at attach time** -- userspace walks
+   `/proc/<pid>/task/<tid>/children` recursively for every PID in
+   `cfg.target_pids` and writes each descendant TGID into the
+   `descendant_tgids` BPF hash map via `bpf_map_update_elem`. This
+   captures pre-existing forks that completed before profiler attach.
+   See `seed_descendants_from_proc()` in `src/intp.c`.
+
+2. **Dynamic tracking via tracepoint** -- a
+   `tracepoint:sched:sched_process_fork` BPF program runs on every
+   fork. It checks whether the parent's TGID is in either filter and,
+   if so, adds the child's TGID. A paired
+   `tracepoint:sched:sched_process_exit` removes thread-leader TGIDs
+   on process exit so the map doesn't grow unbounded (the gate is
+   `pid == tgid`, which only fires when the leader exits, i.e. at
+   true process exit). See `tp_sched_process_fork` /
+   `tp_sched_process_exit` in `src/intp.bpf.c`.
+
+The order is deliberate: the BPF tracepoints attach first, so any
+fork that races with the userspace seed is captured by the dynamic
+path even if the userspace walk missed it (e.g. if the workload
+forked between `intp_bpf__attach()` returning and the
+`/proc` traversal starting).
+
+The map is sized at 8192 entries -- sufficient for stress-ng
+(≤ 32 stressors), HiBench (≤ a few hundred Spark executor TGIDs after
+collapsing per-thread duplicates), and reasonable container densities.
+Threads of the parent share its TGID, so they don't consume map slots.
+
+This shortcoming is shared with iprof per its DESIGN comparison
+(§5 below): iprof's PID filter is "limited / best-effort" because it
+ships raw `bpf()` syscalls plus per-CPU perf event arrays rather than
+a libbpf skeleton with an in-kernel PID-filter map; the paper
+sidesteps it by single-application evaluation. V3 closes the gap.
 
 ## 8. Hybrid with resctrl
 

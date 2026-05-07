@@ -26,6 +26,38 @@ from pathlib import Path
 RESCTRL_ROOT = Path("/sys/fs/resctrl")
 
 
+def _collect_descendants(root_pid: int) -> set[int]:
+    """Return ``root_pid`` plus every transitive descendant currently visible
+    in /proc. Each task's children list lives at
+    ``/proc/<pid>/task/<tid>/children``; we BFS through that. Tasks that exit
+    between iterations are skipped silently."""
+    seen: set[int] = set()
+    queue: list[int] = [root_pid]
+    while queue:
+        pid = queue.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        task_dir = Path(f"/proc/{pid}/task")
+        if not task_dir.is_dir():
+            continue
+        try:
+            tids = list(task_dir.iterdir())
+        except OSError:
+            continue
+        for tid_dir in tids:
+            try:
+                raw = (tid_dir / "children").read_text().split()
+            except OSError:
+                continue
+            for child_str in raw:
+                try:
+                    queue.append(int(child_str))
+                except ValueError:
+                    continue
+    return seen
+
+
 class ResctrlReader:
     def __init__(self, mon_group_name: str = "intp-v3.1", pids: list[int] | None = None):
         self.mon_group = mon_group_name
@@ -66,8 +98,18 @@ class ResctrlReader:
             self.available = False
             return False
 
-        tasks_file = self.base_path / "tasks"
+        # Resctrl auto-inherits the mon_group on fork only for forks that
+        # happen AFTER the task is in the group. Workloads like stress-ng
+        # spawn their stressor children before the profiler attaches, so
+        # writing only the parent PID misses the entire pre-existing fork
+        # tree. Walk /proc once here to enumerate descendants and add
+        # everything we can see in one pass.
+        all_pids: set[int] = set()
         for pid in self.pids:
+            all_pids.update(_collect_descendants(pid))
+
+        tasks_file = self.base_path / "tasks"
+        for pid in sorted(all_pids):
             try:
                 with tasks_file.open("w") as fh:
                     fh.write(f"{pid}\n")

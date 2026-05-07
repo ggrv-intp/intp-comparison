@@ -66,6 +66,28 @@ struct {
     __type(value, __u64);
 } task_oncpu_start SEC(".maps");
 
+/* Dynamically-tracked TGIDs of processes descended from any of the
+ * configured target PIDs. Populated from two places:
+ *
+ *   1. Userspace seeds it at attach time by walking /proc to enumerate
+ *      pre-existing descendants. Workloads like stress-ng spawn their
+ *      stressor children before the profiler attaches; without the seed
+ *      those children are invisible to the PID filter even though their
+ *      parent is in target_pids.
+ *
+ *   2. The sched_process_fork tracepoint adds child TGIDs whenever a
+ *      task already in the filter (config or this map) forks. New forks
+ *      after attach therefore stay tracked without requiring polling.
+ *
+ * sched_process_exit removes thread-leader TGIDs on process exit so the
+ * map doesn't grow unbounded. value is just a presence flag. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key, __u32);
+    __type(value, __u8);
+} descendant_tgids SEC(".maps");
+
 /* -------------------------------------------------------------- Helpers */
 
 static __always_inline struct intp_config *intp_cfg(void)
@@ -74,7 +96,14 @@ static __always_inline struct intp_config *intp_cfg(void)
     return bpf_map_lookup_elem(&intp_cfg_map, &key);
 }
 
-/* Returns 1 if pid is to be observed under the current config. */
+/* Returns 1 if pid is to be observed under the current config.
+ *
+ * Lookup order: (a) system_wide short-circuit, (b) static target_pids
+ * array from the config map, (c) dynamic descendant_tgids hash map.
+ * The descendant map is checked last because (b) is the common case for
+ * the workload's parent and the array scan finishes in <= INTP_MAX_PIDS
+ * iterations, which is cheaper than a hash lookup when the parent itself
+ * is what fired the probe. */
 static __always_inline int pid_in_filter(struct intp_config *cfg, __u32 pid)
 {
     if (!cfg)              return 1;
@@ -87,6 +116,9 @@ static __always_inline int pid_in_filter(struct intp_config *cfg, __u32 pid)
         if (i >= n) break;
         if (cfg->target_pids[i] == pid) return 1;
     }
+
+    __u8 *p = bpf_map_lookup_elem(&descendant_tgids, &pid);
+    if (p) return 1;
     return 0;
 }
 
@@ -406,5 +438,60 @@ int perf_llc_misses(struct bpf_perf_event_data *ctx)
     e->perf_type = 1;       /* misses */
     e->_pad      = 0;
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+/* =====================================================================
+ * fork tracking -- keep descendant_tgids in sync with the workload tree
+ *
+ * Without this, a workload that forks N stressor children (e.g.
+ * stress-ng --cache 24) gets only its parent PID into target_pids, and
+ * every probe rejects events from the children because their TGIDs
+ * aren't in the filter. iprof's evaluation didn't trigger this because
+ * it ran on a "mostly idle" dedicated machine; under cross-application
+ * interference profiling that's the entire point.
+ *
+ * The matching pre-existing-tree problem (children that forked before
+ * we attached) is handled by userspace seeding descendant_tgids at
+ * load time -- see intp.c:seed_descendants_from_proc().
+ * ===================================================================== */
+
+SEC("tracepoint/sched/sched_process_fork")
+int tp_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
+{
+    struct intp_config *cfg = intp_cfg();
+    if (!cfg || cfg->system_wide) return 0;
+
+    /* sched_process_fork runs in the parent's context, so
+     * bpf_get_current_pid_tgid() gives us the parent's TGID directly --
+     * no need to go through ctx->parent_pid (which is a TID). */
+    __u32 parent_tgid = bpf_get_current_pid_tgid() >> 32;
+    if (!pid_in_filter(cfg, parent_tgid)) return 0;
+
+    /* For fork(2)/clone() without CLONE_THREAD, child_pid in the
+     * tracepoint == child task->pid, and for a thread-group leader pid
+     * == tgid -- so child_pid is the child's TGID. For CLONE_THREAD,
+     * child_pid is the new TID and child shares the parent TGID; adding
+     * the TID to a TGID-keyed map is harmless (no probe will look it up
+     * via bpf_get_current_pid_tgid()>>32) but slightly wastes a slot.
+     * We accept the waste rather than reading task_struct->tgid here. */
+    __u32 child_tgid = (__u32)ctx->child_pid;
+    __u8  one        = 1;
+    bpf_map_update_elem(&descendant_tgids, &child_tgid, &one, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/sched/sched_process_exit")
+int tp_sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+    /* Process exit (vs. thread exit) is signalled by the leader exiting
+     * last: leader has pid == tgid. Threads exiting earlier have
+     * pid != tgid; ignore those so we keep the entry alive while
+     * sibling threads are still running. */
+    __u64 pt = bpf_get_current_pid_tgid();
+    __u32 tgid = pt >> 32;
+    __u32 pid  = (__u32)pt;
+    if (pid != tgid) return 0;
+    bpf_map_delete_elem(&descendant_tgids, &tgid);
     return 0;
 }
