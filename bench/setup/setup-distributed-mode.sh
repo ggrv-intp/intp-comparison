@@ -380,8 +380,10 @@ cmd_status() {
     fi
     echo
     log "listening on veth IP $HOST_IP:"
-    ss -tlnp 2>/dev/null | awk -v IP="$HOST_IP" '$4 ~ IP':$NN_PORT'|^.*'$DN_PORT'|^.*'$SPARK_MASTER_PORT'|^.*'$SPARK_WORKER_PORT'/{print "  " $0}' \
-        || ss -tlnp 2>/dev/null | grep -E ":(${NN_PORT}|${DN_PORT}|${SPARK_MASTER_PORT}|${SPARK_WORKER_PORT})\b" || echo "  (none)"
+    ss -tlnp 2>/dev/null \
+        | grep -E ":(${NN_PORT}|${DN_PORT}|${SPARK_MASTER_PORT}|${SPARK_WORKER_PORT})\b" \
+        | sed 's/^/  /' \
+        || echo "  (none)"
 }
 
 # ---------------------------------------------------------------------------
@@ -405,18 +407,52 @@ cmd_smoke() {
         || die "netns cannot connect to Spark Master at $HOST_IP:$SPARK_MASTER_PORT"
 
     log "submitting Spark Pi job from netns Driver..."
-    SPARK_CONF_DIR="$SPARK_DIST_CONF" \
-    HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
-    ip netns exec "$NETNS" \
-        "$SPARK_HOME/bin/spark-submit" \
-        --master "spark://$HOST_IP:$SPARK_MASTER_PORT" \
-        --conf "spark.driver.bindAddress=$GUEST_IP" \
-        --conf "spark.driver.host=$GUEST_IP" \
-        --class org.apache.spark.examples.SparkPi \
-        "$SPARK_HOME/examples/jars/spark-examples_"*.jar 100 \
-        2>&1 | tail -8
 
-    log "smoke OK. Pi computed across veth, traffic visible to all 4 IntP variants."
+    # Resolve the examples jar defensively: glob may match nothing, multiple
+    # files, or be in a non-default path on some Spark builds.
+    local examples_jar
+    examples_jar=$(ls "$SPARK_HOME/examples/jars/"spark-examples_*.jar 2>/dev/null | head -1)
+    if [ -z "$examples_jar" ]; then
+        log "WARN: spark-examples_*.jar not found under $SPARK_HOME/examples/jars/"
+        log "      TCP reach to Master :$SPARK_MASTER_PORT and NN :$NN_PORT was already confirmed above."
+        log "      Skipping Pi job submission. Network plumbing is OK; HiBench can run."
+        return 0
+    fi
+    log "  using jar: $examples_jar"
+
+    local pi_log
+    pi_log=$(mktemp)
+    if SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+       HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+       ip netns exec "$NETNS" \
+           "$SPARK_HOME/bin/spark-submit" \
+           --master "spark://$HOST_IP:$SPARK_MASTER_PORT" \
+           --conf "spark.driver.bindAddress=$GUEST_IP" \
+           --conf "spark.driver.host=$GUEST_IP" \
+           --conf "spark.driver.port=$DRIVER_PORT" \
+           --conf "spark.driver.blockManager.port=$DRIVER_BLOCKMGR_PORT" \
+           --class org.apache.spark.examples.SparkPi \
+           "$examples_jar" 100 \
+           >"$pi_log" 2>&1
+    then
+        # Pi line looks like: "Pi is roughly 3.14159..."
+        local pi_line
+        pi_line=$(grep -i 'Pi is roughly' "$pi_log" | tail -1)
+        if [ -n "$pi_line" ]; then
+            log "smoke OK: $pi_line"
+            log "Traffic crossed veth, all 4 IntP variants will observe it."
+        else
+            log "WARN: spark-submit returned 0 but no Pi line found. Last 20 lines:"
+            tail -20 "$pi_log" | sed 's/^/  /'
+        fi
+    else
+        log "FAIL: spark-submit exited non-zero. Full log at $pi_log"
+        log "Last 30 lines:"
+        tail -30 "$pi_log" | sed 's/^/  /'
+        rm -f "$pi_log"
+        return 3
+    fi
+    rm -f "$pi_log"
 }
 
 # ---------------------------------------------------------------------------
