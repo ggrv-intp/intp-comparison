@@ -32,7 +32,7 @@ tracepoint:net:net_dev_xmit
 }
 
 tracepoint:net:netif_receive_skb
-/str(((struct sk_buff *)args->skbaddr)->dev->name) != "lo"/
+/((struct sk_buff *)args->skbaddr)->dev->name != "lo"/
 {
     @rx_bytes = @rx_bytes + args->len;
 }

@@ -100,7 +100,12 @@ static int seed_descendants_from_proc(int map_fd, pid_t root_pid, int verbose)
         struct dirent *e;
         while ((e = readdir(td)) != NULL) {
             if (e->d_name[0] == '.') continue;
-            char children_path[128];
+            /* Worst case: "/proc/" + INT_MIN (11 chars w/ sign) + "/task/"
+             * + NAME_MAX (255) + "/children" + NUL = 288. Round up to
+             * 320 to satisfy -Wformat-truncation under -Werror without
+             * relying on the runtime fact that /proc/<pid>/task/<tid>
+             * names are short numeric strings. */
+            char children_path[320];
             snprintf(children_path, sizeof(children_path),
                      "/proc/%d/task/%s/children", (int)pid, e->d_name);
             FILE *cf = fopen(children_path, "r");
