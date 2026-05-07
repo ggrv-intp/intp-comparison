@@ -99,7 +99,7 @@ write_hadoop_configs() {
     if [ -d "$HADOOP_HOME/etc/hadoop" ]; then
         find "$HADOOP_HOME/etc/hadoop" -maxdepth 1 -type f \
             ! -name 'core-site.xml' ! -name 'hdfs-site.xml' \
-            -exec cp -n {} "$HADOOP_DIST_CONF/" \;
+            -exec cp --no-clobber {} "$HADOOP_DIST_CONF/" \;
     fi
 
     cat > "$HADOOP_DIST_CONF/core-site.xml" <<EOF
@@ -199,7 +199,7 @@ write_spark_configs() {
     if [ -d "$SPARK_HOME/conf" ]; then
         find "$SPARK_HOME/conf" -maxdepth 1 -type f \
             ! -name 'spark-defaults.conf' ! -name 'spark-env.sh' \
-            -exec cp -n {} "$SPARK_DIST_CONF/" \;
+            -exec cp --no-clobber {} "$SPARK_DIST_CONF/" \;
     fi
 
     cat > "$SPARK_DIST_CONF/spark-env.sh" <<EOF
