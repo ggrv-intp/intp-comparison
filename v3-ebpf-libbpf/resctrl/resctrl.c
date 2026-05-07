@@ -98,6 +98,50 @@ int resctrl_assign_pids(resctrl_group_t *g,
     return accepted > 0 ? 0 : -1;
 }
 
+/* Walk /proc/<pid>/task/<tid>/children breadth-first, collecting every
+ * transitive descendant TGID of root. Mirror of the v2 helper and of the
+ * v3.1 ResctrlReader._collect_descendants Python helper. Required because
+ * resctrl auto-inherits the mon_group across fork only after a task is
+ * written into tasks; pre-existing forks (stress-ng stressor children)
+ * are otherwise invisible. */
+static size_t collect_descendants_via_proc(pid_t root, pid_t *out, size_t cap)
+{
+    if (!out || cap == 0 || root <= 0) return 0;
+    enum { QMAX = 4096 };
+    pid_t queue[QMAX];
+    size_t qhead = 0, qtail = 0;
+    queue[qtail++] = root;
+
+    size_t n = 0;
+    while (qhead < qtail && n < cap) {
+        pid_t pid = queue[qhead++];
+        out[n++] = pid;
+
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)pid);
+        DIR *td = opendir(taskdir);
+        if (!td) continue;
+
+        struct dirent *e;
+        while ((e = readdir(td)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            char children_path[320];
+            snprintf(children_path, sizeof(children_path),
+                     "/proc/%d/task/%s/children", (int)pid, e->d_name);
+            FILE *cf = fopen(children_path, "r");
+            if (!cf) continue;
+            int child;
+            while (fscanf(cf, "%d", &child) == 1) {
+                if (child > 0 && qtail < QMAX)
+                    queue[qtail++] = (pid_t)child;
+            }
+            fclose(cf);
+        }
+        closedir(td);
+    }
+    return n;
+}
+
 int resctrl_assign_pid_threads(resctrl_group_t *g,
                                const pid_t *pids, size_t n_pids)
 {
@@ -106,16 +150,30 @@ int resctrl_assign_pid_threads(resctrl_group_t *g,
     char tasks[RESCTRL_PATH_MAX + 16];
     snprintf(tasks, sizeof(tasks), "%s/tasks", g->dir);
 
+    /* Expand input PID list with every descendant currently visible.
+     * Threads of each process are still walked explicitly below because
+     * resctrl is per-TID. */
+    enum { ALL_CAP = 8192 };
+    pid_t *all = calloc(ALL_CAP, sizeof(pid_t));
+    if (!all) return -1;
+    size_t total = 0;
+    for (size_t i = 0; i < n_pids && total < ALL_CAP; i++) {
+        total += collect_descendants_via_proc(pids[i],
+                                              all + total,
+                                              ALL_CAP - total);
+    }
+
     int accepted = 0;
-    for (size_t i = 0; i < n_pids; i++) {
+    for (size_t i = 0; i < total; i++) {
         char taskdir[RESCTRL_PATH_MAX];
-        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)pids[i]);
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)all[i]);
         DIR *td = opendir(taskdir);
         if (!td) {
-            /* fall back to just the pid itself */
+            /* Process exited mid-walk: write the bare TGID, accept what
+             * the kernel returns. */
             FILE *f = fopen(tasks, "w");
             if (f) {
-                if (fprintf(f, "%d\n", (int)pids[i]) > 0) accepted++;
+                if (fprintf(f, "%d\n", (int)all[i]) > 0) accepted++;
                 fclose(f);
             }
             continue;
@@ -132,6 +190,7 @@ int resctrl_assign_pid_threads(resctrl_group_t *g,
         }
         closedir(td);
     }
+    free(all);
     return accepted > 0 ? 0 : -1;
 }
 

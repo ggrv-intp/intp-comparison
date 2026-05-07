@@ -82,6 +82,54 @@ int resctrl_create_mongroup(const char *name)
     return -1;
 }
 
+/* Collect every transitive descendant TGID of root_pid currently visible
+ * in /proc, breadth-first via /proc/<pid>/task/<tid>/children. Returns
+ * the count written into out[] (capped at out_cap).
+ *
+ * Why this exists: resctrl auto-inherits the mon_group on fork only AFTER
+ * a task is in the group. Workloads such as stress-ng --cache 24 fork
+ * their stressor children before the profiler attaches, so writing only
+ * the parent PID into tasks misses every child and mbw/llcocc read 0.
+ * Walking the pre-existing tree closes that gap. New forks after this
+ * point still inherit through the kernel's normal path. */
+static size_t collect_descendants_via_proc(pid_t root, pid_t *out, size_t cap)
+{
+    if (!out || cap == 0 || root <= 0) return 0;
+    enum { QMAX = 4096 };
+    pid_t queue[QMAX];
+    size_t qhead = 0, qtail = 0;
+    queue[qtail++] = root;
+
+    size_t n = 0;
+    while (qhead < qtail && n < cap) {
+        pid_t pid = queue[qhead++];
+        out[n++] = pid;
+
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)pid);
+        DIR *td = opendir(taskdir);
+        if (!td) continue;
+
+        struct dirent *e;
+        while ((e = readdir(td)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            char children_path[320];
+            snprintf(children_path, sizeof(children_path),
+                     "/proc/%d/task/%s/children", (int)pid, e->d_name);
+            FILE *cf = fopen(children_path, "r");
+            if (!cf) continue;
+            int child;
+            while (fscanf(cf, "%d", &child) == 1) {
+                if (child > 0 && qtail < QMAX)
+                    queue[qtail++] = (pid_t)child;
+            }
+            fclose(cf);
+        }
+        closedir(td);
+    }
+    return n;
+}
+
 int resctrl_assign_pids(const char *name,
                         const pid_t *pids,
                         size_t n_pids)
@@ -94,14 +142,48 @@ int resctrl_assign_pids(const char *name,
     snprintf(tasks, sizeof(tasks),
              "%s/mon_groups/%s/tasks", RESCTRL_ROOT, name);
 
-    int  accepted = 0;
-    for (size_t i = 0; i < n_pids; i++) {
-        FILE *f = fopen(tasks, "w");
-        if (!f) return -1;
-        if (fprintf(f, "%d\n", (int)pids[i]) > 0)
-            accepted++;
-        fclose(f);
+    /* Expand each input PID to its transitive descendant tree, then write
+     * every thread of every process. Threads aren't auto-tracked when only
+     * the leader's TID is written (resctrl is per-TID), so we iterate
+     * /proc/<pid>/task/* for each process leader. */
+    enum { ALL_CAP = 8192 };
+    pid_t *all = calloc(ALL_CAP, sizeof(pid_t));
+    if (!all) return -1;
+    size_t total = 0;
+    for (size_t i = 0; i < n_pids && total < ALL_CAP; i++) {
+        total += collect_descendants_via_proc(pids[i],
+                                              all + total,
+                                              ALL_CAP - total);
     }
+
+    int accepted = 0;
+    for (size_t i = 0; i < total; i++) {
+        char taskdir[64];
+        snprintf(taskdir, sizeof(taskdir), "/proc/%d/task", (int)all[i]);
+        DIR *td = opendir(taskdir);
+        if (!td) {
+            /* Process exited mid-walk: just write the bare TGID and
+             * accept whatever the kernel reports back. */
+            FILE *f = fopen(tasks, "w");
+            if (f) {
+                if (fprintf(f, "%d\n", (int)all[i]) > 0) accepted++;
+                fclose(f);
+            }
+            continue;
+        }
+        struct dirent *e;
+        while ((e = readdir(td)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            int tid = atoi(e->d_name);
+            if (tid <= 0) continue;
+            FILE *f = fopen(tasks, "w");
+            if (!f) continue;
+            if (fprintf(f, "%d\n", tid) > 0) accepted++;
+            fclose(f);
+        }
+        closedir(td);
+    }
+    free(all);
     return accepted > 0 ? 0 : -1;
 }
 
