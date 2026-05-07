@@ -775,17 +775,27 @@ run_workload_with_profiler() {
                 export HIBENCH_HOME
                 export SPARK_CONF_DIR="$spark_conf_dist"
                 export HADOOP_CONF_DIR="$hadoop_conf_dist"
-                # SPARK_LOCAL_IP — Spark uses this as the default bindAddress
-                # when spark.driver.bindAddress isn't set in the properties file.
-                # HiBench uses --properties-file (which makes Spark IGNORE
-                # spark-defaults.conf), so this env var is the failsafe.
+                # HiBench's load_config.py only whitelists 4 spark keys
+                # (executor.memory, driver.memory, parallelism, shuffle.partitions)
+                # for translation into the generated --properties-file. So
+                # spark.driver.bindAddress etc. cannot be propagated via
+                # /opt/HiBench/conf/spark.conf. Inject them via SPARK_SUBMIT_OPTS
+                # as JVM -D system properties — spark-submit reads them and
+                # the Driver JVM (which runs in the spark-submit process for
+                # deploy-mode=client) picks them up as Spark configs.
                 local guest_ip="${INTP_NETNS_GUEST_IP:-10.42.0.2}"
+                local spark_submit_opts="-Dspark.driver.bindAddress=$guest_ip"
+                spark_submit_opts="$spark_submit_opts -Dspark.driver.host=$guest_ip"
+                spark_submit_opts="$spark_submit_opts -Dspark.driver.port=30000"
+                spark_submit_opts="$spark_submit_opts -Dspark.driver.blockManager.port=30001"
+                spark_submit_opts="$spark_submit_opts -Dspark.ui.enabled=false"
                 ip netns exec "$netns" env \
                     SPARK_HOME="$SPARK_HOME" \
                     HIBENCH_HOME="$HIBENCH_HOME" \
                     SPARK_CONF_DIR="$spark_conf_dist" \
                     HADOOP_CONF_DIR="$hadoop_conf_dist" \
                     SPARK_LOCAL_IP="$guest_ip" \
+                    SPARK_SUBMIT_OPTS="$spark_submit_opts" \
                     JAVA_HOME="${JAVA_HOME:-}" \
                     PATH="$PATH" \
                     bash "$spark_script"
