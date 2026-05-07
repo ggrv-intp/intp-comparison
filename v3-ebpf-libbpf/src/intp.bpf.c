@@ -409,6 +409,20 @@ int krp_napi_poll_alt_exit(struct pt_regs *ctx)
  * BPF side simply pushes a sampling-rate-scaled record per overflow.
  * ===================================================================== */
 
+/* NOTE on reading sample_period from the context:
+ *
+ * struct bpf_perf_event_data is a *context* type, not a real kernel
+ * struct -- the verifier rewrites direct field accesses (`ctx->sample_period`)
+ * into proper accessors that pull from the real kernel-side
+ * struct bpf_perf_event_data_kern + perf_sample_data->period.
+ * BPF_CORE_READ() bypasses that rewrite and does a raw probe_read at
+ * the offset described by vmlinux.h, which on this kernel reads off
+ * the wrong struct entirely -- it returns 0 unconditionally and the
+ * userspace llc_refs/llc_misses accumulators never grow. Use direct
+ * field access here. (Confirmed empirically on Sapphire Rapids /
+ * kernel 6.8 by tracing every perf event arriving in userspace and
+ * observing value=0 across 15k samples.) */
+
 SEC("perf_event")
 int perf_llc_refs(struct bpf_perf_event_data *ctx)
 {
@@ -418,7 +432,7 @@ int perf_llc_refs(struct bpf_perf_event_data *ctx)
     if (!e) return 0;
 
     fill_header(&e->hdr, INTP_EVENT_PERF_SAMPLE);
-    e->value     = BPF_CORE_READ(ctx, sample_period);
+    e->value     = ctx->sample_period;
     e->perf_type = 0;       /* refs */
     e->_pad      = 0;
     bpf_ringbuf_submit(e, 0);
@@ -434,7 +448,7 @@ int perf_llc_misses(struct bpf_perf_event_data *ctx)
     if (!e) return 0;
 
     fill_header(&e->hdr, INTP_EVENT_PERF_SAMPLE);
-    e->value     = BPF_CORE_READ(ctx, sample_period);
+    e->value     = ctx->sample_period;
     e->perf_type = 1;       /* misses */
     e->_pad      = 0;
     bpf_ringbuf_submit(e, 0);

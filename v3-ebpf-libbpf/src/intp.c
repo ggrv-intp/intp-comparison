@@ -192,9 +192,19 @@ static int handle_event(void *ctx, void *data, size_t size)
     struct intp_event_header *hdr = data;
 
     if (g_trace) {
-        fprintf(stderr, "[trace] %s pid=%u tid=%u cpu=%u ts=%llu\n",
-                evt_name(hdr->type), hdr->pid, hdr->tid, hdr->cpu,
-                (unsigned long long)hdr->ts_ns);
+        if (hdr->type == INTP_EVENT_PERF_SAMPLE
+            && size >= sizeof(struct intp_perf_event)) {
+            struct intp_perf_event *p = data;
+            fprintf(stderr,
+                    "[trace] %s pid=%u tid=%u cpu=%u ts=%llu value=%llu type=%u\n",
+                    evt_name(hdr->type), hdr->pid, hdr->tid, hdr->cpu,
+                    (unsigned long long)hdr->ts_ns,
+                    (unsigned long long)p->value, p->perf_type);
+        } else {
+            fprintf(stderr, "[trace] %s pid=%u tid=%u cpu=%u ts=%llu\n",
+                    evt_name(hdr->type), hdr->pid, hdr->tid, hdr->cpu,
+                    (unsigned long long)hdr->ts_ns);
+        }
     }
 
     switch (hdr->type) {
