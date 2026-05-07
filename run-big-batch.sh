@@ -25,6 +25,11 @@
 #                               container-guest needs Docker; vm-guest needs cloud-localds + a qcow2
 #                               with sshd + cloud-init, ideally with IntP build deps preinstalled.
 #     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench/hibench
+#     BENCH_WORKLOADS=             comma-separated stress-ng workload IDs to keep
+#                                  (default: empty = all 15 apps from the catalog).
+#                                  Useful to skip workloads that misbehaved in a
+#                                  prior campaign — e.g. drop app15_query_inerge
+#                                  if V1 stap captured <15% of expected samples.
 #     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container/container-guest envs
 #     VM_IMAGE=                 path to .qcow2 for vm/vm-guest envs (required when set)
 #     VM_MEM=32G                memory for QEMU guest
@@ -95,6 +100,7 @@ COOLDOWN="${COOLDOWN:-10}"
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
 BENCH_VARIANTS="${BENCH_VARIANTS:-v1,v2,v3.1,v3}"
+BENCH_WORKLOADS="${BENCH_WORKLOADS:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"
 VM_MEM="${VM_MEM:-32G}"
@@ -160,6 +166,7 @@ echo "  warmup=$WARMUP  cooldown=$COOLDOWN"
 echo "  timeseries_duration=$TIMESERIES_DURATION  overhead_duration=$OVERHEAD_DURATION  overhead_warmup=$OVERHEAD_WARMUP  overhead_volpert=$OVERHEAD_VOLPERT  run_seed=${RUN_SEED:-<auto>}"
 echo "  bench_envs=$BENCH_ENVS"
 echo "  bench_variants=$BENCH_VARIANTS"
+echo "  bench_workloads=${BENCH_WORKLOADS:-<all>}"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
 echo "  run_stress_bench=$RUN_STRESS_BENCH"
@@ -235,6 +242,7 @@ if [ "$RUN_STRESS_BENCH" = "1" ]; then
   BENCH_EXTRA_ARGS=()
   [ "$OVERHEAD_VOLPERT" = "1" ] && BENCH_EXTRA_ARGS+=(--overhead-volpert)
   [ -n "$RUN_SEED" ]            && BENCH_EXTRA_ARGS+=(--seed "$RUN_SEED")
+  [ -n "$BENCH_WORKLOADS" ]     && BENCH_EXTRA_ARGS+=(--workloads "$BENCH_WORKLOADS")
   run_step "full bench all stages variants=$BENCH_VARIANTS (envs=$BENCH_ENVS)" \
     bash bench/run-intp-bench.sh \
       --stage detect,build,solo,pairwise,overhead,timeseries,report \

@@ -239,7 +239,7 @@ parse_args() {
     local w
     for w in "${WORKLOADS[@]}"; do
         case "$w" in
-            all|terasort|wordcount|pagerank|kmeans|bayes|sql_nweight) ;;
+            all|terasort|wordcount|pagerank|kmeans|bayes|sql_nweight|dfsioe) ;;
             *) die "invalid --workloads entry: $w" ;;
         esac
     done
