@@ -13,13 +13,18 @@
 #   sudo bash bench/hibench/run-hibench-subset.sh \
 #     --variants v1,v2,v3.1,v3 --size medium --profile standard
 #
-# Output layout (mirrors run-intp-bench.sh):
+# Output layout (mirrors run-intp-bench.sh: env/variant/stage/workload/rep):
 #   out_root/<profile>-<size>-<ts>/
-#     bare/<variant>/<workload>/rep1/
-#       profiler.tsv        -- 7 IntP metrics + ts column
-#       workload.log        -- Spark job stdout/stderr
-#       run.json            -- timing, samples, status
-#     aggregate-means.tsv   -- one row per (variant, workload) with metric means
+#     bare/<variant>/hibench/<workload>/
+#       run.json            -- workload-level aggregate (per-rep series)
+#       repN/
+#         profiler.tsv      -- 7 IntP metrics + ts column for this rep
+#         workload.log      -- Spark job stdout/stderr for this rep
+#         run.json          -- per-rep timing, samples, status
+#     aggregate-means.tsv   -- env, variant, stage, workload, rep, metrics
+#                              (one row per profiler.tsv, schema-compatible
+#                              with run-intp-bench.sh aggregate-means; stage
+#                              column is 'hibench')
 #     metadata.env
 
 set -euo pipefail
@@ -685,81 +690,109 @@ run_workload_full_deploy() {
 }
 
 run_workload_with_profiler() {
-    local variant="$1" workload_name="$2" spark_script="$3" spark_env="$4" outdir="$5" profile_mode="${6:-standard}"
+    # Args: variant, workload_name, spark_script, spark_env, workload_outdir, profile_mode
+    # workload_outdir is the per-(variant, workload) directory; per-rep
+    # subdirectories repN/ are created here. Each rep gets its own profiler
+    # lifecycle (start → warmup → Spark → stop), which exercises stap deep
+    # cleanup between reps for V1 and produces independent profiler.tsv files
+    # consumable by convert-profiler-to-meyer.py + generate-iada-tree.py.
+    local variant="$1" workload_name="$2" spark_script="$3" spark_env="$4" workload_outdir="$5" profile_mode="${6:-standard}"
 
-    # Delegate to full-deployment handler when ENV_DEPLOY != bare.
+    # Delegate to full-deployment handler when ENV_DEPLOY != bare. Single-rep
+    # only (multi-rep across containers/VMs needs separate orchestration).
     case "$ENV_DEPLOY" in
         bare) ;;  # fall through
         container-full|vm-full)
-            run_workload_full_deploy "$ENV_DEPLOY" "$variant" "$workload_name" "$outdir" "$profile_mode"
+            mkdir -p "$workload_outdir/rep1"
+            run_workload_full_deploy "$ENV_DEPLOY" "$variant" "$workload_name" "$workload_outdir/rep1" "$profile_mode"
             return $?
             ;;
         *) die "ENV_DEPLOY='$ENV_DEPLOY' not supported (use bare, container-full, vm-full)" ;;
     esac
 
-    local profiler_tsv="$outdir/profiler.tsv"
-    local workload_log="$outdir/workload.log"
-    mkdir -p "$outdir"
+    mkdir -p "$workload_outdir"
 
-    # Stressor first (must be steady before profiler measures), then profiler,
-    # then warmup, then Spark reps.
-    start_stressor "$profile_mode" "$outdir"
+    # Stressor stays steady across all reps so interference signal is constant.
+    start_stressor "$profile_mode" "$workload_outdir"
 
-    log "  [$variant] $workload_name — starting profiler"
-    start_profiler "$variant" "$profiler_tsv" || {
-        warn "  [$variant] $workload_name — profiler failed to start; skipping"
-        stop_stressor
-        printf '{"variant":"%s","workload":"%s","status":"profiler_start_failed"}\n' \
-            "$variant" "$workload_name" > "$outdir/run.json"
-        return 0
-    }
+    local rep_total="$WORKLOAD_REPS"
+    [ "$rep_total" -ge 1 ] || rep_total=1
 
-    # Warmup: let Spark JVM appear before recording
-    [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
-
-    local elapsed=0
-    local reps=0
-    local run_elapsed t0
+    local r=0
+    local successful_reps=0
+    local total_elapsed=0
+    local total_samples=0
     local -a REP_ELAPSED=()
-    local rep_elapsed_csv elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s
-    local high_variation elapsed_series_json
-    : > "$workload_log"
+    local -a REP_SAMPLES=()
+    local -a REP_STATUS=()
 
-    while true; do
-        reps=$((reps + 1))
-        log "  [$variant] $workload_name — running Spark job (rep=${reps})"
+    while [ "$r" -lt "$rep_total" ]; do
+        r=$((r + 1))
+        local rep_outdir="$workload_outdir/rep${r}"
+        local profiler_tsv="$rep_outdir/profiler.tsv"
+        local workload_log="$rep_outdir/workload.log"
+        mkdir -p "$rep_outdir"
+        : > "$workload_log"
+
+        log "  [$variant] $workload_name rep=${r}/${rep_total} — starting profiler"
+        if ! start_profiler "$variant" "$profiler_tsv"; then
+            warn "  [$variant] $workload_name rep=${r} — profiler failed to start; skipping rep"
+            REP_ELAPSED+=("0")
+            REP_SAMPLES+=("0")
+            REP_STATUS+=("\"profiler_start_failed\"")
+            printf '{"variant":"%s","workload":"%s","rep":%d,"status":"profiler_start_failed"}\n' \
+                "$variant" "$workload_name" "$r" > "$rep_outdir/run.json"
+            continue
+        fi
+
+        # Warmup: let Spark JVM/dataset come back online before recording.
+        # Each rep needs its own warmup because Spark setup may have torn down
+        # JVMs between reps (especially for short workloads).
+        [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
+
+        log "  [$variant] $workload_name rep=${r}/${rep_total} — running Spark job"
+        local t0 run_elapsed
         t0=$(date +%s)
         if [ "$DRY_RUN" -eq 1 ]; then
             log "  DRY: (spark_env) && bash $spark_script >> $workload_log 2>&1"
             sleep 2
         else
             (
-                printf '\n===== rep %s start %s =====\n' "$reps" "$(date -Iseconds)"
+                printf '===== rep %s start %s =====\n' "$r" "$(date -Iseconds)"
                 eval "$spark_env"
                 [ -n "$SPARK_HOME" ] && export SPARK_HOME
                 export HIBENCH_HOME
                 bash "$spark_script"
                 rc=$?
-                printf '===== rep %s end rc=%s %s =====\n' "$reps" "$rc" "$(date -Iseconds)"
+                printf '===== rep %s end rc=%s %s =====\n' "$r" "$rc" "$(date -Iseconds)"
                 exit "$rc"
-            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${reps} failed (see $workload_log)"
+            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${r} — Spark job failed (see $workload_log)"
         fi
-
         run_elapsed=$(( $(date +%s) - t0 ))
-        elapsed=$((elapsed + run_elapsed))
-        REP_ELAPSED+=("$run_elapsed")
 
-        if [ "$reps" -ge "$WORKLOAD_REPS" ] && { [ "$MIN_WORKLOAD_ELAPSED" -le 0 ] || [ "$elapsed" -ge "$MIN_WORKLOAD_ELAPSED" ]; }; then
-            break
-        fi
-        log "  [$variant] $workload_name — progress reps=${reps}/${WORKLOAD_REPS} elapsed=${elapsed}s min=${MIN_WORKLOAD_ELAPSED}s, rerunning"
+        log "  [$variant] $workload_name rep=${r}/${rep_total} — stopping profiler (elapsed=${run_elapsed}s)"
+        stop_profiler "$variant" "$profiler_tsv"
+
+        local rep_samples=0
+        [ -f "$profiler_tsv" ] && rep_samples=$(awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" 2>/dev/null)
+
+        REP_ELAPSED+=("$run_elapsed")
+        REP_SAMPLES+=("$rep_samples")
+        REP_STATUS+=("\"ok\"")
+        total_elapsed=$((total_elapsed + run_elapsed))
+        total_samples=$((total_samples + rep_samples))
+        successful_reps=$((successful_reps + 1))
+
+        cat > "$rep_outdir/run.json" <<EOF
+{"variant":"$variant","workload":"$workload_name","rep":$r,"elapsed_s":$run_elapsed,"samples":$rep_samples,"status":"ok"}
+EOF
     done
 
-    log "  [$variant] $workload_name — stopping profiler (cumulative job ran ${elapsed}s across ${reps} rep(s))"
-    stop_profiler "$variant" "$profiler_tsv"
     stop_stressor
 
+    local rep_elapsed_csv
     rep_elapsed_csv=$(IFS=,; echo "${REP_ELAPSED[*]}")
+    local elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s
     read -r elapsed_mean_s elapsed_stddev_s elapsed_cv_pct elapsed_min_s elapsed_max_s <<EOF
 $(awk -F',' '
     {
@@ -772,7 +805,7 @@ $(awk -F',' '
             if(x>max) max=x
             a[i]=x
         }
-        mean=sum/n
+        mean=(n>0)?sum/n:0
         var=0
         for(i=1;i<=n;i++) {
             d=a[i]-mean
@@ -785,18 +818,28 @@ $(awk -F',' '
 ' <<< "$rep_elapsed_csv")
 EOF
 
+    local high_variation
     high_variation=$(awk -v cv="$elapsed_cv_pct" -v th="$ELAPSED_CV_WARN_PCT" 'BEGIN{print (cv>=th)?"true":"false"}')
-    elapsed_series_json="[$rep_elapsed_csv]"
+    local elapsed_series_json="[$rep_elapsed_csv]"
+    local samples_series_json
+    samples_series_json="[$(IFS=,; echo "${REP_SAMPLES[*]}")]"
+    local status_series_json
+    status_series_json="[$(IFS=,; echo "${REP_STATUS[*]}")]"
 
-    local samples=0
-    [ -f "$profiler_tsv" ] && samples=$(awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" 2>/dev/null)
+    local agg_status="ok"
+    [ "$successful_reps" -eq 0 ] && agg_status="all_reps_failed"
 
-    cat > "$outdir/run.json" <<EOF
-{"variant":"$variant","workload":"$workload_name","elapsed_s":$elapsed,"repetitions":$reps,"elapsed_series_s":$elapsed_series_json,"elapsed_mean_s":$elapsed_mean_s,"elapsed_stddev_s":$elapsed_stddev_s,"elapsed_cv_pct":$elapsed_cv_pct,"elapsed_min_s":$elapsed_min_s,"elapsed_max_s":$elapsed_max_s,"high_variation":$high_variation,"samples":$samples,"status":"ok"}
+    cat > "$workload_outdir/run.json" <<EOF
+{"variant":"$variant","workload":"$workload_name","elapsed_s":$total_elapsed,"repetitions":$r,"successful_repetitions":$successful_reps,"elapsed_series_s":$elapsed_series_json,"samples_series":$samples_series_json,"status_series":$status_series_json,"elapsed_mean_s":$elapsed_mean_s,"elapsed_stddev_s":$elapsed_stddev_s,"elapsed_cv_pct":$elapsed_cv_pct,"elapsed_min_s":$elapsed_min_s,"elapsed_max_s":$elapsed_max_s,"high_variation":$high_variation,"samples":$total_samples,"status":"$agg_status"}
 EOF
-    log "  [$variant] $workload_name — done (elapsed=${elapsed}s reps=${reps} mean=${elapsed_mean_s}s std=${elapsed_stddev_s}s cv=${elapsed_cv_pct}% samples=${samples})"
+    log "  [$variant] $workload_name — done (reps=${r} ok=${successful_reps} elapsed=${total_elapsed}s mean=${elapsed_mean_s}s std=${elapsed_stddev_s}s cv=${elapsed_cv_pct}% samples=${total_samples})"
     if [ "$high_variation" = "true" ]; then
         warn "  [$variant] $workload_name — high duration variation across reps (cv=${elapsed_cv_pct}% >= ${ELAPSED_CV_WARN_PCT}%)"
+    fi
+    if [ "$successful_reps" -eq 0 ]; then
+        warn "  [$variant] $workload_name — all ${r} reps failed (see per-rep run.json)"
+    elif [ "$successful_reps" -lt "$r" ]; then
+        warn "  [$variant] $workload_name — only ${successful_reps}/${r} reps succeeded"
     fi
 }
 
@@ -805,22 +848,30 @@ EOF
 # -----------------------------------------------------------------------------
 
 build_aggregate_means() {
+    # Per-rep aggregate matching the schema produced by run-intp-bench.sh
+    # (env, variant, stage, workload, rep, 7 metrics). HiBench writes stage
+    # ='hibench' so downstream tooling (plot, convert-profiler-to-meyer,
+    # generate-iada-tree) can filter or merge with stress-ng 'solo' rows.
     local outdir="$1"
     local agg="$outdir/aggregate-means.tsv"
     {
-        printf 'variant\tworkload\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
+        printf 'env\tvariant\tstage\tworkload\trep\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         find "$outdir" -name profiler.tsv | while read -r f; do
-            local variant workload
-            variant=$(echo "$f" | awk -F/ '{print $(NF-3)}')
+            # Path layout: .../<env>/<variant>/<stage>/<workload>/repN/profiler.tsv
+            local env variant stage workload rep
+            env=$(echo "$f" | awk -F/ '{print $(NF-5)}')
+            variant=$(echo "$f" | awk -F/ '{print $(NF-4)}')
+            stage=$(echo "$f" | awk -F/ '{print $(NF-3)}')
             workload=$(echo "$f" | awk -F/ '{print $(NF-2)}')
-            awk -v V="$variant" -v W="$workload" '
+            rep=$(echo "$f" | awk -F/ '{print $(NF-1)}' | sed 's/rep//')
+            awk -v E="$env" -v V="$variant" -v S="$stage" -v W="$workload" -v R="$rep" '
                 /^#/||/^ts/||/^netp/||NF==0 { next }
                 /^[0-9]/ {
                     n=NF; off=(n>=8)?1:0
                     for(i=1;i<=7;i++){ if($(i+off)!="--"){s[i]+=$(i+off);c[i]++} }
                 }
                 END {
-                    printf "%s\t%s",V,W
+                    printf "%s\t%s\t%s\t%s\t%s",E,V,S,W,R
                     for(i=1;i<=7;i++){ if(c[i]>0) printf "\t%.3f",s[i]/c[i]; else printf "\t--" }
                     printf "\n"
                 }
@@ -907,16 +958,20 @@ run_subset_for_profile() {
     } > "$outdir/metadata.env"
 
     # Main loop: for each workload, run all variants back-to-back so measurements
-    # are taken under the same system state (same Spark dataset just run).
+    # are taken under the same system state (same Spark dataset just run). Each
+    # call writes per-rep dirs (rep1/, rep2/, ..., repN/) under the workload dir.
+    # Path layout matches run-intp-bench.sh: <env>/<variant>/<stage>/<workload>/<rep>
+    # so convert-profiler-to-meyer.py and generate-iada-tree.py treat HiBench
+    # rows the same way as stress-ng solo rows.
     local item workload_name script variant
     for item in "${RUNNERS[@]}"; do
         workload_name="${item%%:*}"
         script="${item#*:}"
-        log "workload=$workload_name"
+        log "workload=$workload_name reps=$WORKLOAD_REPS"
         for variant in "${VARIANTS[@]}"; do
             run_workload_with_profiler \
                 "$variant" "$workload_name" "$script" "$spark_env" \
-                "$outdir/bare/$variant/$workload_name/rep1" "$mode"
+                "$outdir/bare/$variant/hibench/$workload_name" "$mode"
         done
     done
 
