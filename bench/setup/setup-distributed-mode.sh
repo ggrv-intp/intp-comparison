@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# setup-distributed-mode.sh -- HDFS pseudo-distributed + Spark Standalone
+# bound to the veth pair set up by setup-netns-pair.sh.
+#
+# Why this exists:
+#   By default the IntP campaign runs HiBench in `local[*]` (in-process Spark)
+#   + `file:///` (no HDFS daemons). That gives ZERO network traffic, so V2/V3/
+#   V3.1 net probes (which look at NIC code paths) report netp/nets = 0.
+#
+#   This script provisions a side-by-side "distributed" config that:
+#     - HDFS NameNode + DataNode bind to 10.42.0.1 (host side of veth)
+#     - Spark Master + Worker bind to 10.42.0.1 (host side of veth)
+#     - HiBench Driver runs INSIDE netns intp-app (10.42.0.2), connects to
+#       Master/NameNode at 10.42.0.1 via veth pair → real TCP RPC traffic
+#       crosses intp-veth-h, all 4 IntP variants observe netp/nets > 0.
+#
+#   Localmode configs are NOT overwritten. We use parallel config dirs
+#   (etc/hadoop-distributed/, conf-distributed/) and switch via env vars.
+#
+# Topology (depends on bench/setup/setup-netns-pair.sh having been run):
+#
+#     +========= HOST root netns ==========+    +===== NETNS intp-app ======+
+#     |                                     |    |                            |
+#     | NameNode  bind 10.42.0.1:9000       |◄──►| Spark Driver  10.42.0.2   |
+#     | DataNode  bind 10.42.0.1:9866       |    |   (HiBench job)            |
+#     | SparkMaster  bind 10.42.0.1:7077    |    |                            |
+#     | SparkWorker  conects to Master      |    |                            |
+#     |                                     |    |                            |
+#     | intp-veth-h  10.42.0.1/24           |    | intp-veth-g  10.42.0.2/24 |
+#     +=====================================+    +============================+
+#
+# Usage:
+#   sudo ./setup-distributed-mode.sh init     # one-time: write configs + format NameNode
+#   sudo ./setup-distributed-mode.sh start    # bring daemons up
+#   sudo ./setup-distributed-mode.sh stop     # bring daemons down
+#   sudo ./setup-distributed-mode.sh status   # show what's running
+#   sudo ./setup-distributed-mode.sh smoke    # verify Driver-in-netns can reach Master
+#   sudo ./setup-distributed-mode.sh teardown # remove distributed configs (keep dataset)
+# -----------------------------------------------------------------------------
+
+set -euo pipefail
+
+HADOOP_HOME="${HADOOP_HOME:-/opt/hadoop}"
+SPARK_HOME="${SPARK_HOME:-/opt/spark}"
+HIBENCH_HOME="${HIBENCH_HOME:-/opt/HiBench}"
+
+HOST_IP="${INTP_NETNS_HOST_IP:-10.42.0.1}"
+GUEST_IP="${INTP_NETNS_GUEST_IP:-10.42.0.2}"
+NETNS="${INTP_NETNS_NAME:-intp-net}"
+
+NN_PORT=9000
+DN_PORT=9866
+DN_IPC_PORT=9867
+DN_HTTP_PORT=9864
+NN_HTTP_PORT=9870
+SPARK_MASTER_PORT=7077
+SPARK_MASTER_WEBUI=8080
+SPARK_WORKER_PORT=7078
+SPARK_WORKER_WEBUI=8081
+DRIVER_PORT=30000
+DRIVER_BLOCKMGR_PORT=30001
+
+HADOOP_DATA_DIR="${HADOOP_DATA_DIR:-/var/lib/hadoop}"
+HADOOP_DIST_CONF="$HADOOP_HOME/etc/hadoop-distributed"
+SPARK_DIST_CONF="$SPARK_HOME/conf-distributed"
+
+LOG_DIR="${INTP_DIST_LOG_DIR:-/var/log/intp-distributed}"
+
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+}
+
+require_veth() {
+    if ! ip netns list | awk '{print $1}' | grep -qx "$NETNS"; then
+        die "netns '$NETNS' missing — run bench/setup/setup-netns-pair.sh first"
+    fi
+    if ! ip a show intp-veth-h >/dev/null 2>&1; then
+        die "intp-veth-h missing — run bench/setup/setup-netns-pair.sh first"
+    fi
+}
+
+require_paths() {
+    [ -x "$HADOOP_HOME/bin/hadoop" ] || die "Hadoop not found at $HADOOP_HOME (run bench/hibench/setup-hadoop-localmode.sh first)"
+    [ -x "$SPARK_HOME/bin/spark-submit" ] || die "Spark not found at $SPARK_HOME (run bench/hibench/setup-spark-hibench.sh first)"
+}
+
+# ---------------------------------------------------------------------------
+# init: write parallel configs and format the NameNode (one-time)
+# ---------------------------------------------------------------------------
+
+write_hadoop_configs() {
+    mkdir -p "$HADOOP_DIST_CONF"
+    # Inherit base hadoop-env.sh, mapred-site.xml, etc. from etc/hadoop/
+    # We only override files that need distributed-mode bind values.
+    if [ -d "$HADOOP_HOME/etc/hadoop" ]; then
+        find "$HADOOP_HOME/etc/hadoop" -maxdepth 1 -type f \
+            ! -name 'core-site.xml' ! -name 'hdfs-site.xml' \
+            -exec cp -n {} "$HADOOP_DIST_CONF/" \;
+    fi
+
+    cat > "$HADOOP_DIST_CONF/core-site.xml" <<EOF
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://$HOST_IP:$NN_PORT</value>
+  </property>
+  <property>
+    <name>hadoop.tmp.dir</name>
+    <value>$HADOOP_DATA_DIR/tmp</value>
+  </property>
+  <property>
+    <!-- Allow connections from anywhere within 10.42.0.0/24 (netns). -->
+    <name>hadoop.proxyuser.root.hosts</name>
+    <value>*</value>
+  </property>
+  <property>
+    <name>hadoop.proxyuser.root.groups</name>
+    <value>*</value>
+  </property>
+</configuration>
+EOF
+
+    cat > "$HADOOP_DIST_CONF/hdfs-site.xml" <<EOF
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <property>
+    <name>dfs.replication</name>
+    <value>1</value>
+  </property>
+  <property>
+    <name>dfs.namenode.name.dir</name>
+    <value>file://$HADOOP_DATA_DIR/dfs/name</value>
+  </property>
+  <property>
+    <name>dfs.datanode.data.dir</name>
+    <value>file://$HADOOP_DATA_DIR/dfs/data</value>
+  </property>
+
+  <!-- Bind every NameNode endpoint to the veth host IP so traffic from the
+       netns side traverses intp-veth-h and is observable by V2/V3/V3.1. -->
+  <property>
+    <name>dfs.namenode.rpc-bind-host</name>
+    <value>$HOST_IP</value>
+  </property>
+  <property>
+    <name>dfs.namenode.servicerpc-bind-host</name>
+    <value>$HOST_IP</value>
+  </property>
+  <property>
+    <name>dfs.namenode.http-bind-host</name>
+    <value>$HOST_IP</value>
+  </property>
+  <property>
+    <name>dfs.namenode.https-bind-host</name>
+    <value>$HOST_IP</value>
+  </property>
+
+  <!-- DataNode endpoints likewise. -->
+  <property>
+    <name>dfs.datanode.address</name>
+    <value>$HOST_IP:$DN_PORT</value>
+  </property>
+  <property>
+    <name>dfs.datanode.ipc.address</name>
+    <value>$HOST_IP:$DN_IPC_PORT</value>
+  </property>
+  <property>
+    <name>dfs.datanode.http.address</name>
+    <value>$HOST_IP:$DN_HTTP_PORT</value>
+  </property>
+
+  <!-- Force DataNode to advertise the veth IP, not the default hostname,
+       so HDFS clients in the netns connect via 10.42.0.1 and not via the
+       resolvable hostname (which would route through eno1 / loopback). -->
+  <property>
+    <name>dfs.datanode.hostname</name>
+    <value>$HOST_IP</value>
+  </property>
+  <property>
+    <name>dfs.client.use.datanode.hostname</name>
+    <value>false</value>
+  </property>
+</configuration>
+EOF
+
+    log "wrote Hadoop distributed configs to $HADOOP_DIST_CONF"
+}
+
+write_spark_configs() {
+    mkdir -p "$SPARK_DIST_CONF"
+    # Inherit log4j, metrics from base conf/ if present.
+    if [ -d "$SPARK_HOME/conf" ]; then
+        find "$SPARK_HOME/conf" -maxdepth 1 -type f \
+            ! -name 'spark-defaults.conf' ! -name 'spark-env.sh' \
+            -exec cp -n {} "$SPARK_DIST_CONF/" \;
+    fi
+
+    cat > "$SPARK_DIST_CONF/spark-env.sh" <<EOF
+#!/usr/bin/env bash
+# Distributed-mode env: Master/Worker bind to host veth IP.
+SPARK_MASTER_HOST=$HOST_IP
+SPARK_MASTER_PORT=$SPARK_MASTER_PORT
+SPARK_MASTER_WEBUI_PORT=$SPARK_MASTER_WEBUI
+SPARK_WORKER_PORT=$SPARK_WORKER_PORT
+SPARK_WORKER_WEBUI_PORT=$SPARK_WORKER_WEBUI
+SPARK_LOCAL_IP=$HOST_IP
+HADOOP_CONF_DIR=$HADOOP_DIST_CONF
+EOF
+    chmod +x "$SPARK_DIST_CONF/spark-env.sh"
+
+    cat > "$SPARK_DIST_CONF/spark-defaults.conf" <<EOF
+# IntP distributed-mode Spark defaults.
+# Driver runs in netns "$NETNS" with IP $GUEST_IP.
+# Master/Worker run in host root netns with IP $HOST_IP.
+# All RPC crosses intp-veth-h <-> intp-veth-g, observed by V2/V3/V3.1.
+
+spark.master                       spark://$HOST_IP:$SPARK_MASTER_PORT
+spark.driver.bindAddress           $GUEST_IP
+spark.driver.host                  $GUEST_IP
+spark.driver.port                  $DRIVER_PORT
+spark.driver.blockManager.port     $DRIVER_BLOCKMGR_PORT
+spark.network.timeout              300s
+spark.executor.heartbeatInterval   30s
+EOF
+
+    log "wrote Spark distributed configs to $SPARK_DIST_CONF"
+}
+
+write_hibench_overlay() {
+    # HiBench reads conf/hibench.conf and conf/{hadoop,spark}.conf. We don't
+    # overwrite those (localmode-friendly) — instead we provide a wrapper
+    # config file the orchestrator sources before invoking workloads.
+    local overlay="$HIBENCH_HOME/conf/hibench.distributed.conf"
+    cat > "$overlay" <<EOF
+# IntP distributed-mode overlay for HiBench (sourced by run-hibench-distributed.sh).
+hibench.hdfs.master       hdfs://$HOST_IP:$NN_PORT
+hibench.spark.master      spark://$HOST_IP:$SPARK_MASTER_PORT
+EOF
+    log "wrote HiBench overlay $overlay"
+}
+
+format_namenode() {
+    local nn_dir="$HADOOP_DATA_DIR/dfs/name"
+    if [ -d "$nn_dir" ] && [ -n "$(ls -A "$nn_dir" 2>/dev/null)" ]; then
+        log "NameNode already formatted at $nn_dir — skip"
+        return 0
+    fi
+    mkdir -p "$HADOOP_DATA_DIR/dfs/name" "$HADOOP_DATA_DIR/dfs/data" \
+             "$HADOOP_DATA_DIR/tmp" "$LOG_DIR"
+    HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+    HADOOP_LOG_DIR="$LOG_DIR" \
+        "$HADOOP_HOME/bin/hdfs" namenode -format -nonInteractive -clusterId intp-pseudo
+    log "NameNode formatted (clusterId intp-pseudo)"
+}
+
+cmd_init() {
+    require_root
+    require_veth
+    require_paths
+    write_hadoop_configs
+    write_spark_configs
+    write_hibench_overlay
+    format_namenode
+    log "init complete. Next: '$0 start'"
+}
+
+# ---------------------------------------------------------------------------
+# start / stop daemons
+# ---------------------------------------------------------------------------
+
+is_running() {
+    local pattern="$1"
+    pgrep -f "$pattern" >/dev/null 2>&1
+}
+
+cmd_start() {
+    require_root
+    require_veth
+    require_paths
+    [ -d "$HADOOP_DIST_CONF" ] || die "distributed configs missing — run '$0 init' first"
+
+    mkdir -p "$LOG_DIR"
+
+    if is_running 'NameNode'; then
+        log "NameNode already running"
+    else
+        log "starting NameNode (bind $HOST_IP:$NN_PORT)..."
+        HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+        HADOOP_LOG_DIR="$LOG_DIR" \
+            "$HADOOP_HOME/bin/hdfs" --daemon start namenode
+    fi
+
+    if is_running 'DataNode'; then
+        log "DataNode already running"
+    else
+        log "starting DataNode (bind $HOST_IP:$DN_PORT)..."
+        HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+        HADOOP_LOG_DIR="$LOG_DIR" \
+            "$HADOOP_HOME/bin/hdfs" --daemon start datanode
+    fi
+
+    # Give HDFS time to leave safemode.
+    sleep 3
+    HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+        "$HADOOP_HOME/bin/hdfs" dfsadmin -safemode wait >/dev/null || true
+
+    if is_running 'org.apache.spark.deploy.master.Master'; then
+        log "Spark Master already running"
+    else
+        log "starting Spark Master (bind $HOST_IP:$SPARK_MASTER_PORT)..."
+        SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+        SPARK_LOG_DIR="$LOG_DIR" \
+            "$SPARK_HOME/sbin/start-master.sh" --host "$HOST_IP" --port "$SPARK_MASTER_PORT"
+    fi
+    sleep 2
+
+    if is_running 'org.apache.spark.deploy.worker.Worker'; then
+        log "Spark Worker already running"
+    else
+        log "starting Spark Worker (connects to spark://$HOST_IP:$SPARK_MASTER_PORT)..."
+        SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+        SPARK_LOG_DIR="$LOG_DIR" \
+            "$SPARK_HOME/sbin/start-worker.sh" "spark://$HOST_IP:$SPARK_MASTER_PORT" \
+                --host "$HOST_IP"
+    fi
+
+    sleep 2
+    cmd_status
+    log "start complete."
+}
+
+cmd_stop() {
+    require_root
+    require_paths
+
+    if is_running 'org.apache.spark.deploy.worker.Worker'; then
+        log "stopping Spark Worker..."
+        SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+        SPARK_LOG_DIR="$LOG_DIR" \
+            "$SPARK_HOME/sbin/stop-worker.sh" 2>/dev/null || true
+    fi
+    if is_running 'org.apache.spark.deploy.master.Master'; then
+        log "stopping Spark Master..."
+        SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+        SPARK_LOG_DIR="$LOG_DIR" \
+            "$SPARK_HOME/sbin/stop-master.sh" 2>/dev/null || true
+    fi
+    if is_running 'DataNode'; then
+        log "stopping DataNode..."
+        HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+        HADOOP_LOG_DIR="$LOG_DIR" \
+            "$HADOOP_HOME/bin/hdfs" --daemon stop datanode 2>/dev/null || true
+    fi
+    if is_running 'NameNode'; then
+        log "stopping NameNode..."
+        HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+        HADOOP_LOG_DIR="$LOG_DIR" \
+            "$HADOOP_HOME/bin/hdfs" --daemon stop namenode 2>/dev/null || true
+    fi
+
+    # Belt-and-suspenders: pkill anything left over.
+    sleep 1
+    pkill -f 'NameNode|DataNode|deploy.master.Master|deploy.worker.Worker' 2>/dev/null || true
+    log "stop complete."
+}
+
+cmd_status() {
+    log "daemons:"
+    if command -v jps >/dev/null 2>&1; then
+        jps | grep -E 'NameNode|DataNode|Master|Worker' || echo "  (none)"
+    else
+        pgrep -af 'NameNode|DataNode|deploy.master.Master|deploy.worker.Worker' || echo "  (none)"
+    fi
+    echo
+    log "listening on veth IP $HOST_IP:"
+    ss -tlnp 2>/dev/null | awk -v IP="$HOST_IP" '$4 ~ IP':$NN_PORT'|^.*'$DN_PORT'|^.*'$SPARK_MASTER_PORT'|^.*'$SPARK_WORKER_PORT'/{print "  " $0}' \
+        || ss -tlnp 2>/dev/null | grep -E ":(${NN_PORT}|${DN_PORT}|${SPARK_MASTER_PORT}|${SPARK_WORKER_PORT})\b" || echo "  (none)"
+}
+
+# ---------------------------------------------------------------------------
+# smoke: verify Driver-in-netns can reach Master + NameNode
+# ---------------------------------------------------------------------------
+
+cmd_smoke() {
+    require_root
+    require_veth
+
+    log "ping host from netns..."
+    ip netns exec "$NETNS" ping -c2 -W2 "$HOST_IP" >/dev/null \
+        || die "netns cannot reach $HOST_IP (veth pair broken?)"
+
+    log "TCP reach NameNode :$NN_PORT from netns..."
+    ip netns exec "$NETNS" timeout 3 bash -c "</dev/tcp/$HOST_IP/$NN_PORT" \
+        || die "netns cannot connect to NameNode at $HOST_IP:$NN_PORT"
+
+    log "TCP reach Spark Master :$SPARK_MASTER_PORT from netns..."
+    ip netns exec "$NETNS" timeout 3 bash -c "</dev/tcp/$HOST_IP/$SPARK_MASTER_PORT" \
+        || die "netns cannot connect to Spark Master at $HOST_IP:$SPARK_MASTER_PORT"
+
+    log "submitting Spark Pi job from netns Driver..."
+    SPARK_CONF_DIR="$SPARK_DIST_CONF" \
+    HADOOP_CONF_DIR="$HADOOP_DIST_CONF" \
+    ip netns exec "$NETNS" \
+        "$SPARK_HOME/bin/spark-submit" \
+        --master "spark://$HOST_IP:$SPARK_MASTER_PORT" \
+        --conf "spark.driver.bindAddress=$GUEST_IP" \
+        --conf "spark.driver.host=$GUEST_IP" \
+        --class org.apache.spark.examples.SparkPi \
+        "$SPARK_HOME/examples/jars/spark-examples_"*.jar 100 \
+        2>&1 | tail -8
+
+    log "smoke OK. Pi computed across veth, traffic visible to all 4 IntP variants."
+}
+
+# ---------------------------------------------------------------------------
+# teardown: remove distributed configs (does not delete HDFS data dir)
+# ---------------------------------------------------------------------------
+
+cmd_teardown() {
+    require_root
+    cmd_stop
+    log "removing parallel config dirs (HDFS data dir at $HADOOP_DATA_DIR is preserved)..."
+    rm -rf "$HADOOP_DIST_CONF" "$SPARK_DIST_CONF"
+    rm -f "$HIBENCH_HOME/conf/hibench.distributed.conf"
+    log "teardown complete. To wipe HDFS data: rm -rf $HADOOP_DATA_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+usage() {
+    sed -n '3,40p' "$0"
+}
+
+case "${1:-help}" in
+    init)     cmd_init ;;
+    start)    cmd_start ;;
+    stop)     cmd_stop ;;
+    restart)  cmd_stop; cmd_start ;;
+    status)   cmd_status ;;
+    smoke)    cmd_smoke ;;
+    teardown) cmd_teardown ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 2 ;;
+esac

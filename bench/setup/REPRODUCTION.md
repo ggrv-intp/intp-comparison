@@ -1,0 +1,459 @@
+# Host Reproduction — `intp-master`
+
+End-to-end recipe to reproduce the IntP campaign host. Everything in
+**Sections 1-7** is whole-machine setup that applies to **stress-ng,
+profilers (V1.1/V2/V3/V3.1), CloudSim/IADA, and any other workload**.
+Section 8 is HiBench/Hadoop-specific and is the only piece that doesn't
+apply if you only need stress-ng + profilers.
+
+> **Authoritative state, May 2026.** Documents what is currently
+> deployed on `intp-master` (Hetzner SB Xeon Gold 5412U) for the IADA/IntP
+> SBAC-PAD campaign. Cross-references real configuration captured from
+> the running host and chat-history decisions, so any drift between
+> repo scripts and reality is called out explicitly.
+
+---
+
+## 1. Hardware target
+
+| Item | Value | Source / verification |
+|---|---|---|
+| Server | Hetzner Server Auction (SB) | rented by user |
+| CPU | Intel Xeon Gold 5412U, Sapphire Rapids, 24C/48T | `metadata.txt` from any campaign |
+| Memory | 8 × 32 GiB DDR5-4800 ECC = 256 GiB nominal (251 free) | dmidecode |
+| Storage | 2 × 1.92 TB NVMe (datacenter) | Hetzner spec |
+| Network | 2 × 1 GbE Intel X550-AT2; only `eno1` (195.201.193.143) carries traffic | `ip a` on host |
+| RDT support | Full: CMT, MBM, CAT, MBA | `shared/intp-detect.sh` |
+
+The hardware is the implicit assumption everywhere downstream. Different
+CPU/memory generation invalidates the calibration values in §5.
+
+### Design constraint: single socket, single node
+
+This entire setup is **single-socket, single-node**. One CPU package
+(the 5412U, 24C/48T, no NUMA across sockets), one physical machine, no
+cluster. Every choice that follows in this document — Spark `local[*]`,
+HDFS `file:///`, daemons off during measurement, loopback as the only
+live network path, mem-bandwidth ground truth from one IMC — is a
+direct adaptation to that constraint:
+
+- **No multi-host distributed traffic** to measure → can't reproduce
+  paper-style cluster numbers, but probing fidelity per-app is testable.
+- **No cross-socket interference** → mbw / llcocc readings are
+  per-socket only, no remote-socket false signals.
+- **No cluster scheduling overhead** → CloudSim/IADA is the simulator
+  that fills that role; the bench feeds it real per-app fingerprints.
+- **HiBench in `local[*]` + `file:///`** so Spark and HDFS daemons don't
+  add their own footprint on top of the workload signal.
+
+When you read "loopback-only", "in-process Spark", or "no cluster", the
+single-socket/single-node constraint is what's driving it.
+
+---
+
+## 2. OS install via Hetzner installimage
+
+Two disks, two distros (only one bootable at a time via Hetzner Robot
+boot-order toggle):
+
+| Disk | Distro | Kernel | Used for |
+|---|---|---|---|
+| `nvme0n1` | Ubuntu 22.04 LTS (jammy) + HWE 6.5 | 6.5.x pinned | V0 baseline (kernel must be ≤6.7) |
+| `nvme1n1` | Ubuntu 24.04 LTS (noble) | 6.8.0-111-generic stock | V0.1, V1, V1.1, V2, V3, V3.1 |
+
+The current campaign runs on **noble (nvme1n1)**. Templates:
+
+- `bench/installimage-jammy.conf` — V0 baseline OS
+- `bench/setup/installimage-noble.conf` — modern OS
+
+Reproduction steps (Hetzner Rescue System):
+
+```bash
+# In Rescue System with the chosen disk targeted:
+wget -O /tmp/installimage.conf https://<your-mirror>/installimage-noble.conf
+installimage -a -c /tmp/installimage.conf -x default
+reboot
+```
+
+Partitioning per template (single disk per install): 256 MiB EFI, 1 GiB
+`/boot` ext4, 8 GiB swap, rest `/` ext4. **No RAID.**
+
+---
+
+## 3. Bootstrap — `bench/setup/setup-host.sh`
+
+After the OS comes up over SSH, this is the **single automated step**
+that brings the host from "fresh distro" to "ready for IntP runs":
+
+```bash
+sudo bash bench/setup/setup-host.sh
+```
+
+It auto-detects jammy vs noble and does, in order:
+
+1. **Common packages**: build-essential, gcc, git, curl, wget, jq,
+   stress-ng, iperf3, sysstat, numactl, bc, linux-tools-$(uname -r),
+   ca-certificates.
+2. **Matching kernel compiler** for stap module builds (auto-detected
+   via `/proc/version`).
+3. **resctrl mount** at `/sys/fs/resctrl` + `/etc/fstab` entry for
+   persistence.
+4. **`/etc/sysctl.d/99-intp.conf`** with:
+   - `kernel.perf_event_paranoid = -1`
+   - `kernel.kptr_restrict = 0`
+5. **Profile-specific software**:
+   - **jammy**: SystemTap 5.2 from source, intel-cmt-cat, kernel debuginfo via ddebs, `stap-prep`
+   - **noble**: systemtap + systemtap-runtime (apt), bpftrace, clang/llvm/libbpf-dev/libelf-dev/pahole, kernel-headers, kernel debuginfo
+6. **Builds V2 and V3** (`make -C v2-c-stable-abi`, `make -C v3-ebpf-libbpf`).
+7. **Self-tests** for each profiler.
+
+Idempotent — safe to re-run. Logs to stdout.
+
+### What it does NOT do (manual gap)
+
+- `/etc/default/grub` cmdline (mitigations, hugepages, isolcpus, nohz)
+   — left at distro defaults
+- CPU frequency governor, turbo boost, c-states — left at defaults
+- Transparent hugepages, swap, vm.* sysctls — left at defaults
+- LLC CAT / MBA schemata persistence — runtime profilers create
+   `/sys/fs/resctrl/mon_groups/intp` dynamically, no systemd unit to
+   restore on boot
+- IADA env (R 4.3 + JRI flags) — separate, see §6
+
+These are reproducibility gaps. The campaign tolerates defaults but if
+you re-run on a different host, set `INTP_BENCH_SET_CPU_GOVERNOR=1` for
+deterministic CPU freq.
+
+---
+
+## 4. Network namespace pair (currently active on `intp-master`)
+
+### Why this exists
+
+stress-ng `--sock` and `--udp` default to `127.0.0.1`. Loopback bypasses
+`__dev_queue_xmit` against any real device, so the V3/V3.1 tracepoints
+filter `lo` ([intp.bpf.c:148-161](../../v3-ebpf-libbpf/src/intp.bpf.c#L148-L161),
+[netp.bt:28-38](../../v3.1-bpftrace/scripts/netp.bt#L28-L38)) and V2's
+`/proc/softirqs` NET_RX/TX path is kernel-bypassed for `lo`. **All three
+return zero for `netp`/`nets` on synthetic loopback workloads, by design.**
+V1.1 stap probes higher in the TCP stack and remains sensitive.
+
+### What's deployed on `intp-master` right now (verified May 2026)
+
+```text
+intp-veth-h@if6 (host root netns, 10.42.0.1/24)  <==veth==>  intp-veth-g (netns intp-net, 10.42.0.2/24)
+                qdisc: netem rate 1gbit                       lo also UP inside netns
+```
+
+Setup script: [setup-netns-pair.sh](setup-netns-pair.sh). Verify with:
+
+```bash
+ip a show intp-veth-h          # host side, 10.42.0.1
+ip netns list | grep intp-net  # guest netns present
+ip netns exec intp-net ping -c1 10.42.0.1
+tc -s qdisc show dev intp-veth-h    # netem rate set (default 1gbit)
+```
+
+### How to drive traffic across it
+
+[run-net-pair-workload.sh](run-net-pair-workload.sh) wraps an iperf3
+server (in netns) + client (on host) for any duration. Used as a
+"control positive" workload that hits the NIC code path:
+
+```bash
+sudo bench/setup/run-net-pair-workload.sh -d 90 -P 16
+```
+
+This makes V2/V3/V3.1 emit nonzero `netp`/`nets` (since `intp-veth-h`
+is not literal `lo` and `__dev_queue_xmit` fires). It is **not wired
+into the bench WORKLOADS array** — must be invoked manually around a
+profiler run, or extended into a new workload entry.
+
+### Tear down
+
+```bash
+sudo bench/setup/teardown-netns-pair.sh
+```
+
+### Reproduction (if veth pair is missing on a fresh host)
+
+```bash
+sudo bash bench/setup/setup-netns-pair.sh                    # default 1gbit
+sudo INTP_NETNS_RATE=100mbit bash bench/setup/setup-netns-pair.sh   # cap to 100mbit
+```
+
+### ⚠ The netns pair is NOT persistent
+
+Network namespaces and veth pairs are **kernel runtime state, not config
+on disk** — they vanish on:
+
+- Reboot (always)
+- Manual `teardown-netns-pair.sh`
+- Any `ip netns delete intp-net`
+
+Verify before any campaign run that depends on the veth path:
+
+```bash
+ip netns list | grep -qx intp-net && echo "OK" || echo "MISSING — re-run setup-netns-pair.sh"
+ip a show intp-veth-h >/dev/null 2>&1 && echo "OK" || echo "MISSING"
+```
+
+To make it survive reboots, drop a systemd unit at
+`/etc/systemd/system/intp-netns.service`:
+
+```ini
+[Unit]
+Description=IntP netns + veth pair for bench network workloads
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/intp/bench/setup/setup-netns-pair.sh
+ExecStop=/root/intp/bench/setup/teardown-netns-pair.sh
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then `systemctl enable --now intp-netns`.
+
+---
+
+## 5. Calibration values (host-specific)
+
+Auto-detected by `shared/intp-detect.sh` and consumed by every variant
+for metric normalization. Verified on `intp-master`:
+
+| Var | Detected | Source |
+|---|---|---|
+| `INTP_MEM_BW_MBPS` | 281,600 (281.6 GB/s) | `dmidecode` × DDR5-4800 × 8 channels |
+| `INTP_NIC_SPEED_MBPS` | 1,000 | `/sys/class/net/eno1/speed` |
+| `INTP_LLC_SIZE_KB` | 46,080 (45 MiB) | `/sys/devices/system/cpu/cpu0/cache/index3/size` |
+
+### `MEM_BW_MAX_BPS=24000000000` override (24 GB/s)
+
+The campaign command passes this **manually**, overriding the detected
+281.6 GB/s. Source not in transcripts; treat as a campaign parameter,
+not a hardware fact. Document in your paper which value was used and
+why if you replicate.
+
+To verify the actual peak with a real measurement:
+
+```bash
+stress-ng --vm 8 --vm-bytes 100% --metrics --timeout 30s 2>&1 | tail -5
+# OR more rigorously:
+bench/setup/run-stream-bench.sh   # if/when available
+```
+
+---
+
+## 6. IADA / CloudSim environment (separate, manual)
+
+This is the only campaign component **not bootstrapped by `setup-host.sh`**.
+
+```bash
+sudo bash bench/iada/scripts/setup-iada.sh \
+    --intp-r-folder /root/intp/R   # path to IntP's R/ directory
+```
+
+Installs: R, r-base-dev, r-cran-rjava, libtirpc-dev, openjdk-17-jdk-headless,
+plus R packages (caret, e1071, dplyr, ggplot2, ocp) into `~/R/library`.
+Generates `~/.iada-env` with `JAVA_HOME`, `R_LIBS_USER`, `LD_LIBRARY_PATH`,
+`INTP_R_FOLDER`.
+
+### Required JVM flag (manual, not in setup script)
+
+R 4.3 installs signal handlers that conflict with the JVM. Without this
+flag, `library(caret)` segfaults during JRI initialization:
+
+```bash
+export JAVA_TOOL_OPTIONS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
+```
+
+Document in [bench/iada/docs/campanha-iada.md](../iada/docs/campanha-iada.md).
+
+### MLClassifier.java patch (manual, not in repo)
+
+CloudSim's `MLClassifier.java` has hardcoded paths to the build host's
+filesystem. The patch reads `INTP_R_FOLDER` and `INTP_R_LIBPATHS` env
+vars instead. **Patch is not in this repo** — apply manually to the
+CloudSim checkout before building.
+
+---
+
+## 7. Profiler stack — what's installed and how to re-verify
+
+After `setup-host.sh`, validate each variant:
+
+```bash
+# V1.1 (SystemTap)
+which stap && stap -V
+
+# V2 (C hybrid)
+v2-c-stable-abi/intp-hybrid --list-backends
+
+# V3 (eBPF/libbpf)
+v3-ebpf-libbpf/intp-ebpf --list-capabilities
+ls /sys/kernel/btf/vmlinux   # must exist
+
+# V3.1 (bpftrace)
+bpftrace -V
+bash v3.1-bpftrace/run-intp-bpftrace.sh --help
+
+# resctrl
+mount | grep resctrl
+cat /sys/fs/resctrl/info/L3_MON/mon_features
+
+# perf permissions
+sysctl kernel.perf_event_paranoid kernel.kptr_restrict
+```
+
+All of these are exercised by the bench's own `detect` and `build`
+stages on every campaign start.
+
+---
+
+## 8. HiBench / Hadoop / Spark — Hadoop-specific section
+
+The only piece of host setup that's about Hadoop, isolated here so it can
+be skipped if you don't run HiBench.
+
+### What's deployed on `intp-master`
+
+- **HiBench** at `/opt/HiBench` (checked out from upstream, `hadoop3` profile)
+- **Hadoop 3.3.6** at `/opt/hadoop`
+- **Python 2.7.18** via pyenv (HiBench `load-config.py` requires py2)
+- **Spark** included via HiBench's setup script (`hadoop3` Spark binary)
+
+**Daemons NOT running during campaign.** Verified May 2026:
+
+```bash
+jps
+# 3404309 Jps    <-- only Jps itself, no NameNode/DataNode/SparkMaster
+```
+
+### Two-phase setup that needs to be reproduced in order
+
+**Phase A — install/setup (daemons UP, one-time):** HiBench's
+`setup-spark-hibench.sh` requires running HDFS to:
+- format the NameNode
+- start NameNode + DataNode
+- run each workload's `prepare/prepare.sh` (TeraGen, RandomTextWriter,
+   pagerank graph generation, kmeans data, bayes corpus, etc.) which
+   writes datasets to HDFS
+- start Spark Master + Worker so the prepare jobs run end-to-end
+
+After prepare completes, the **datasets are persisted** in HDFS storage
+on disk. They survive daemon shutdown.
+
+**Phase B — campaign (daemons DOWN, every run):** the actual benchmark
+runs read those persisted datasets via local-FS URIs:
+
+- `hibench.hdfs.master = file:///` (no HDFS daemon)
+- `hibench.spark.master = local[$ncores]` (Spark in-process, no
+   standalone cluster)
+- All Spark RPC stays in-JVM or via 127.0.0.1 → loopback
+
+**Deliberate choice**: keep daemons OFF during measurement so namenode/
+datanode/master overhead doesn't pollute the profiler signal, and so
+runs are deterministic single-host. Datasets stay readable because Phase
+A wrote them and `file:///` mode reads them from the same paths.
+
+The tradeoff (consequence of this choice): V2/V3/V3.1 see zero `netp`/
+`nets` for HiBench because Spark internal traffic is loopback. V1.1
+captures it because it probes higher in the stack.
+
+### Reproduction
+
+```bash
+# After setup-host.sh, run:
+sudo bash bench/hibench/setup-hadoop-localmode.sh
+sudo HADOOP_PROFILE=3 HIBENCH_SCALE=large \
+     bash bench/hibench/setup-spark-hibench.sh
+```
+
+`setup-spark-hibench.sh` overwrites scale.profile and workload.input/output
+in `/opt/HiBench/conf/hibench.conf`. To bypass when re-running on an
+already-configured host:
+
+```bash
+SKIP_SPARK_HIBENCH_SETUP=1 bash run-big-batch.sh
+```
+
+### If you actually need pseudo-distributed HDFS / Spark Standalone
+
+Not currently set up. Would require:
+
+1. Configure `core-site.xml` with `fs.defaultFS=hdfs://localhost:9000` (or
+   `<eth0_ip>:9000` if you want NIC traffic — see caveat below)
+2. Configure `hdfs-site.xml` with `dfs.replication=1`
+3. `hdfs namenode -format` (one-time)
+4. `start-dfs.sh` then `start-yarn.sh` (for cluster mode)
+5. Spark standalone: `start-master.sh`, `start-worker.sh spark://<ip>:7077`
+
+**Caveat**: even when binding to `eth0_ip:9000`, traffic between
+processes on the same host is routed through `lo` by the kernel local
+routing table (`ip route get $eth0_ip` returns `local $eth0_ip dev lo`).
+To actually traverse a NIC code path you need either (a) two physical
+hosts, (b) the netns/veth pair from §4, or (c) tricky route + iptables
+manipulation.
+
+### Wiring HiBench through the veth pair (option c, advanced)
+
+Run the Spark client/HiBench inside `intp-net` netns and HDFS daemons
+in the host root netns. Requires Spark/Hadoop config to bind to
+`10.42.0.1` (host) and `10.42.0.2` (netns). Not wired up — would be a
+follow-up paper experiment, not a SBAC-PAD blocker.
+
+---
+
+## 9. Reproduction checklist (clean host → ready for campaign)
+
+```bash
+# 1. OS install via Hetzner installimage (manual, ~10 min)
+# Use bench/setup/installimage-noble.conf
+
+# 2. Single-pass automated bootstrap (~15 min)
+sudo bash bench/setup/setup-host.sh
+
+# 3. Verify (~30 sec)
+sudo bash shared/intp-detect.sh
+sudo bash bench/run-intp-bench.sh --stage detect,build --variants v1.1,v2,v3,v3.1
+
+# 4. HiBench (only if running HiBench segment)
+sudo bash bench/hibench/setup-hadoop-localmode.sh
+sudo HADOOP_PROFILE=3 HIBENCH_SCALE=large bash bench/hibench/setup-spark-hibench.sh
+
+# 5. Veth pair for NIC-traversing network workloads (optional, ~10 sec)
+sudo bash bench/setup/setup-netns-pair.sh
+
+# 6. IADA environment (only if running CloudSim afterward)
+sudo bash bench/iada/scripts/setup-iada.sh --intp-r-folder /root/intp/R
+# then add to ~/.bashrc or wrapper:
+# export JAVA_TOOL_OPTIONS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
+# Apply MLClassifier.java patch manually.
+
+# 7. Smoke test
+sudo REPS=2 DURATION=30 RUN_HIBENCH=0 RUN_PLOTS=0 \
+     BENCH_VARIANTS=v3.1 BENCH_WORKLOADS=app01_ml_llc \
+     bash run-big-batch.sh
+```
+
+---
+
+## 10. Reproducibility risks worth flagging in the paper
+
+| Risk | Impact |
+|---|---|
+| Kernel mitigations status not captured | small perf shift if next host differs |
+| CPU governor not pinned | up to 5% throughput variance run-to-run |
+| `MEM_BW_MAX_BPS=24 GB/s` source unclear | calibration is reproducible only if value is documented |
+| MLClassifier.java patch not in repo | IADA campaign won't run without manual patch |
+| resctrl schemata not persisted | reboot loses CAT/MBA state until first run re-creates |
+| Veth pair not in `WORKLOADS` array | `netp`/`nets` gap on V2+ unless veth-driven workload is invoked manually |
+
+These are the only places where naive "git clone + setup-host.sh + run"
+won't quite reproduce. The fixes are tracked but were not gating for
+the SBAC-PAD May 2026 campaign.
