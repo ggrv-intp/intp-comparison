@@ -57,9 +57,21 @@ tracepoint:net:net_dev_xmit
     }
 }
 
-/* ---- RX: __napi_schedule_irqoff -> napi_complete_done per-poll svc time */
+/* ---- RX: NAPI schedule -> napi_complete_done per-poll svc time --------
+ *
+ * V0 used kprobe:__napi_schedule_irqoff which only fires from IRQ context
+ * (physical NICs in hard-IRQ). For veth / loopback / any device using the
+ * per-CPU backlog NAPI, the entry point is __napi_schedule (no _irqoff)
+ * called from process context via napi_schedule. Probe both so the metric
+ * works on both physical NICs and veth-routed (distributed-mode) traffic.
+ *
+ * Both functions take struct napi_struct *n as arg0, so we use it as the
+ * map key — last writer wins if both fire for the same NAPI instance in a
+ * single dispatch (rare, harmless).
+ */
 
-kprobe:__napi_schedule_irqoff
+kprobe:__napi_schedule_irqoff,
+kprobe:__napi_schedule
 {
     @rx_start[arg0] = nsecs;
 }
