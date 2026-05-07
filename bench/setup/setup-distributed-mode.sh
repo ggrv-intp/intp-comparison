@@ -279,18 +279,26 @@ format_namenode() {
 }
 
 write_netns_hosts() {
-    # Some Java/Spark code paths resolve hostnames via JNI/getaddrinfo and
-    # blow up inside a minimal netns. Provide a /etc/hosts override visible
-    # only inside the netns (via bind mount) so localhost + the host/guest
-    # IPs always resolve.
+    # Some Java/Spark/MapReduce code paths resolve hostnames via JNI/
+    # getaddrinfo and blow up inside a minimal netns. Provide a /etc/hosts
+    # override visible only inside the netns (via bind mount) so localhost,
+    # the veth aliases, and the host's own hostname all resolve.
+    #
+    # The host hostname matters because Hadoop's LocalJobRunner (used by
+    # dfsioe / TestDFSIOEnh) calls InetAddress.getLocalHost() which returns
+    # the kernel hostname; that lookup must succeed inside the netns or
+    # JobClient.submitJob fails with UnknownHostException.
     local netns_hosts="/etc/netns/$NETNS/hosts"
     mkdir -p "$(dirname "$netns_hosts")"
-    cat > "$netns_hosts" <<EOF
-127.0.0.1   localhost
-::1         localhost ip6-localhost ip6-loopback
-$HOST_IP    intp-host
-$GUEST_IP   intp-app
-EOF
+    local kernel_hostname kernel_short
+    kernel_hostname="$(hostname -f 2>/dev/null || hostname)"
+    kernel_short="$(hostname -s 2>/dev/null || hostname)"
+    {
+        printf '127.0.0.1   localhost %s %s\n' "$kernel_short" "$kernel_hostname"
+        printf '::1         localhost ip6-localhost ip6-loopback\n'
+        printf '%s    intp-host %s %s\n' "$HOST_IP" "$kernel_short" "$kernel_hostname"
+        printf '%s    intp-app\n' "$GUEST_IP"
+    } > "$netns_hosts"
     log "wrote $netns_hosts (visible only inside netns $NETNS)"
 }
 
@@ -574,6 +582,11 @@ cmd_switch_distributed() {
     local hbench="$HIBENCH_HOME/conf/hibench.conf"
     local sconf="$HIBENCH_HOME/conf/spark.conf"
     [ -f "$hbench" ] || die "$hbench not found"
+
+    # Refresh netns /etc/hosts so the host hostname is resolvable inside the
+    # netns (dfsioe / Hadoop LocalJobRunner needs InetAddress.getLocalHost()
+    # to succeed). Idempotent.
+    write_netns_hosts
 
     # One-time backup of localmode versions.
     [ -f "${hbench}.localmode" ] || cp "$hbench" "${hbench}.localmode"
