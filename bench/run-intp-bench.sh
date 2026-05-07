@@ -93,6 +93,23 @@ V3_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
 
 DEFAULT_STAGES="detect,build,solo,pairwise,overhead,timeseries,report"
 DEFAULT_VARIANTS="v0,v0.1,v1,v1.1,v2,v3.1,v3"
+# Seven execution environments form three nested axes:
+#   • where the WORKLOAD runs (host / container / VM)
+#   • where the PROFILER runs (host-observer or in-guest)
+#   • where the SUPPORTING STACK runs (HDFS+Spark on host vs in-container/VM)
+#
+#   bare              workload + profiler on host (HDFS + Spark on host)
+#   container         workload in container, profiler on host (--pid=host)
+#   container-guest   workload + profiler inside container (own PID namespace);
+#                     HDFS + Spark still on host
+#   container-full    workload + profiler + HDFS + Spark all inside one image
+#                     (intp-full:latest); host-side HDFS/YARN MUST be paused
+#                     via bench/deploy/host-services.sh pause
+#   vm                workload in VM, profiler on host (measures qemu PID)
+#   vm-guest          workload + profiler inside VM, results scp'd back;
+#                     HDFS + Spark still on host
+#   vm-full           workload + profiler + HDFS + Spark inside the VM;
+#                     host-side HDFS/YARN MUST be paused
 DEFAULT_ENVS="bare,container,vm"
 
 STAGES_CSV="$DEFAULT_STAGES"
@@ -126,6 +143,10 @@ CONTAINER_IMAGE="${INTP_BENCH_CONTAINER:-ubuntu:24.04}"
 VM_IMAGE="${INTP_BENCH_VM_IMAGE:-}"           # qcow2 path, optional
 VM_MEM="${INTP_BENCH_VM_MEM:-32G}"
 VM_CPUS="${INTP_BENCH_VM_CPUS:-16}"
+# All-in-one image for env=container-full / vm-full (HDFS+Spark+IntP baked).
+# Built via bench/deploy/build-full-image.sh.
+INTP_FULL_IMAGE="${INTP_BENCH_FULL_IMAGE:-intp-full:latest}"
+INTP_FULL_VM_IMAGE="${INTP_BENCH_FULL_VM_IMAGE:-}"  # qcow2 with full stack baked
 # v2/v3 PID filtering against launcher PID tends to miss child workers and
 # softirq-context activity; default to system-wide for representative samples.
 V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
@@ -578,17 +599,69 @@ stage_build() {
 # 7. Variant gating -- which kernel/env combinations are valid
 # -----------------------------------------------------------------------------
 
-variant_kernel_ok() {
-    local variant="$1"
-    local k major minor
+_kernel_ge() {
+    # _kernel_ge MAJOR MINOR  →  return 0 if running kernel ≥ MAJOR.MINOR
+    local want_maj="$1" want_min="$2"
+    local k cur_maj cur_min
     k=$(uname -r | cut -d. -f1-2)
-    major=${k%.*}; minor=${k#*.}
+    cur_maj=${k%.*}; cur_min=${k#*.}
+    [ "$cur_maj" -gt "$want_maj" ] && return 0
+    [ "$cur_maj" -eq "$want_maj" ] && [ "$cur_min" -ge "$want_min" ] && return 0
+    return 1
+}
+
+_kernel_lt() {
+    # _kernel_lt MAJOR MINOR  →  return 0 if running kernel < MAJOR.MINOR
+    ! _kernel_ge "$@"
+}
+
+variant_kernel_ok() {
+    # Per-variant kernel-version compatibility gate. Returns 0 (OK) or 1 (skip).
+    # Floor and ceiling reflect tested support; degraded operation outside the
+    # window is possible but not promised.
+    local variant="$1"
+    local k; k=$(uname -r)
     case "$variant" in
         v0)
+            # SystemTap with embedded C calling perf_event_create_kernel_counter
+            # broke on kernel ≥6.8 (cqm_rmid removed, MSR header relocations).
+            # Floor 4.19 — original IntP development era.
             if [ "$ALLOW_V0_ON_NEW_KERNEL" -eq 1 ]; then return 0; fi
-            if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -ge 8 ]; }; then
+            if _kernel_lt 4 19; then warn "v0 needs kernel ≥4.19 (have $k)"; return 1; fi
+            if _kernel_ge 6 8;  then warn "v0 incompatible with kernel ≥6.8 (have $k); use v0.1"; return 1; fi
+            ;;
+        v0.1)
+            # Kernel-6.8 port of v0; same 4.19 floor.
+            if _kernel_lt 4 19; then warn "v0.1 needs kernel ≥4.19 (have $k)"; return 1; fi
+            ;;
+        v1)
+            # Native SystemTap module; same floor as v0, same ceiling.
+            if _kernel_lt 4 19; then warn "v1 needs kernel ≥4.19 (have $k)"; return 1; fi
+            if _kernel_ge 6 8;  then warn "v1 incompatible with kernel ≥6.8 (have $k); use v1.1"; return 1; fi
+            ;;
+        v1.1)
+            # Helper-bridged stap; perf_event_open via userspace helper avoids
+            # the kernel-≥6.8 RCU stall path. Floor still 4.19 for SystemTap.
+            if _kernel_lt 4 19; then warn "v1.1 needs kernel ≥4.19 (have $k)"; return 1; fi
+            ;;
+        v2)
+            # Hybrid procfs+resctrl+perf_event_open. Floor 5.8 because
+            # CAP_PERFMON (and unprivileged perf_event_open) were introduced
+            # in 5.8 — earlier kernels need root or paranoid≤1.
+            if _kernel_lt 5 8;  then warn "v2 needs kernel ≥5.8 (CAP_PERFMON)"; return 1; fi
+            ;;
+        v3)
+            # libbpf + CO-RE eBPF with BTF. Practical floor 5.10 for stable
+            # libbpf + reliable kfunc/tp_btf attach.
+            if _kernel_lt 5 10; then warn "v3 needs kernel ≥5.10 (libbpf+CO-RE)"; return 1; fi
+            if [ ! -f /sys/kernel/btf/vmlinux ]; then
+                warn "v3 needs CONFIG_DEBUG_INFO_BTF=y (no /sys/kernel/btf/vmlinux)"
                 return 1
             fi
+            ;;
+        v3.1)
+            # bpftrace ≥0.13 over kernel ≥5.4 (tracepoints + BPF maps stable).
+            if _kernel_lt 5 4;  then warn "v3.1 needs kernel ≥5.4 (bpftrace tracepoints)"; return 1; fi
             ;;
     esac
     return 0
@@ -597,11 +670,35 @@ variant_kernel_ok() {
 variant_env_ok() {
     local variant="$1" env="$2"
     case "$env" in
-        vm)
-            # SystemTap variants and resctrl-based metrics rarely work
-            # inside an unprivileged guest. We still let the host run the
-            # variant against the qemu PID -- so this gating is for
-            # in-guest profiler runs, which we don't do. Always allow.
+        vm|container)
+            # Host-observer modes: profiler runs on host attached to qemu /
+            # container PID. Any variant works.
+            return 0
+            ;;
+        container-guest)
+            # In-container profiler: needs CAP_BPF/CAP_PERFMON for v2/v3,
+            # CAP_SYS_ADMIN + host kernel modules for stap. Already plumbed
+            # in launch_workload_container_guest. Allow all variants and
+            # let the run fail if the host kernel doesn't expose what's
+            # needed (already filtered upstream by variant_kernel_ok).
+            return 0
+            ;;
+        vm-guest)
+            # In-guest profiler runs inside the VM. RDT (mbw, llcocc) is
+            # typically unavailable to the guest unless the host configures
+            # vRDT pass-through, so v2 metrics may degrade. v3 requires the
+            # qcow2 to expose BTF (most cloud images do). v0/v0.1/v1 stap
+            # need kernel-headers in guest -- skip unless explicitly opted
+            # via INTP_VMG_ALLOW_STAP=1.
+            case "$variant" in
+                v0|v0.1|v1)
+                    if [ "${INTP_VMG_ALLOW_STAP:-0}" != "1" ]; then
+                        warn "$variant on vm-guest needs guest-side stap+headers; "\
+"set INTP_VMG_ALLOW_STAP=1 if your qcow2 has them"
+                        return 1
+                    fi
+                    ;;
+            esac
             return 0
             ;;
     esac
@@ -770,17 +867,118 @@ launch_workload_container() {
         echo 0; return 1
     fi
     docker rm -f "$name" >/dev/null 2>&1 || true
-    # --pid=host so the profiler can see the workload PID;
-    # --cap-add SYS_NICE for stress-ng affinity tweaks
+
+    # Capability matrix:
+    #   --pid=host       so the host-side profiler can see the workload PID
+    #   --network=host   so net traffic counters reflect the same NIC the host sees
+    #   SYS_NICE         stress-ng affinity / nice() calls
+    # When INTP_CONTAINER_INGUEST_PROFILER=1 (future in-guest profiler hook),
+    # the container also needs perf/BPF capabilities. Defaults stay minimal so
+    # the current host-attached path doesn't request privileges it doesn't use.
+    local extra_caps=()
+    if [ "${INTP_CONTAINER_INGUEST_PROFILER:-0}" = "1" ]; then
+        extra_caps+=(--cap-add CAP_PERFMON --cap-add CAP_BPF --cap-add CAP_SYS_RESOURCE)
+        # resctrl bind mount is required for v2/v3/v3.1 RDT metrics in-container
+        if [ -d /sys/fs/resctrl ]; then
+            extra_caps+=(-v /sys/fs/resctrl:/sys/fs/resctrl)
+        fi
+    fi
+
     docker run --rm -d --name "$name" \
         --pid=host --cap-add SYS_NICE \
         --network host \
+        "${extra_caps[@]}" \
         "$CONTAINER_IMAGE" \
         bash -c "apt-get update -qq && apt-get install -y -qq stress-ng >/dev/null && stress-ng $args --timeout ${duration}s --metrics-brief" \
         > "$logfile" 2>&1
     # Get the PID of the in-container stress-ng on the host PID namespace
     local cpid
     cpid=$(docker inspect -f '{{.State.Pid}}' "$name" 2>/dev/null || echo 0)
+    echo "$cpid"
+}
+
+# Tracks tmpdirs created by launch_workload_vm so they can be reaped.
+# Cleaned by _vm_cleanup_tmpdirs (registered as EXIT trap by parse_args).
+VM_TMPDIRS=()
+
+_vm_cleanup_tmpdirs() {
+    local d
+    for d in "${VM_TMPDIRS[@]:-}"; do
+        [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d" 2>/dev/null
+    done
+    VM_TMPDIRS=()
+}
+
+launch_workload_container_guest() {
+    # Workload + profiler both run INSIDE the container (own PID namespace).
+    # The host script later launches the profiler via `docker exec` (see
+    # run_profiler_inguest_container) so it inherits the container's namespaces.
+    #
+    # Bind mounts:
+    #   /opt/intp        ← repo root (binaries; read-only)
+    #   /sys/fs/resctrl  ← RDT control fs (RW; profiler creates groups)
+    #   /sys/kernel/btf  ← BTF for v3 (read-only)
+    # Capabilities:
+    #   CAP_PERFMON      perf_event_open without paranoid<-1
+    #   CAP_BPF          load eBPF programs (5.8+)
+    #   CAP_SYS_RESOURCE bump RLIMIT_MEMLOCK for BPF maps
+    #   CAP_SYS_ADMIN    SystemTap module load (v0/v0.1/v1/v1.1)
+    #   CAP_NET_ADMIN    bpftrace tracepoints touching net
+    local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: docker run (in-guest profiler) ... stress-ng $args"
+        echo $$
+        return 0
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not installed -- container-guest launch failed"
+        echo 0; return 1
+    fi
+    docker rm -f "$name" >/dev/null 2>&1 || true
+
+    local extra_caps=(
+        --cap-add CAP_PERFMON --cap-add CAP_BPF
+        --cap-add CAP_SYS_RESOURCE --cap-add CAP_SYS_ADMIN
+        --cap-add CAP_SYS_NICE --cap-add CAP_NET_ADMIN
+    )
+    local extra_mounts=(
+        -v "$REPO_ROOT:/opt/intp:ro"
+    )
+    if [ -d /sys/fs/resctrl ]; then
+        extra_mounts+=(-v /sys/fs/resctrl:/sys/fs/resctrl)
+    fi
+    if [ -d /sys/kernel/btf ]; then
+        extra_mounts+=(-v /sys/kernel/btf:/sys/kernel/btf:ro)
+    fi
+    if [ -d /usr/lib/modules ]; then
+        # SystemTap variants need access to host kernel modules
+        extra_mounts+=(-v /usr/lib/modules:/usr/lib/modules:ro)
+    fi
+    if [ -d /lib/modules ] && [ ! -L /lib/modules ]; then
+        extra_mounts+=(-v /lib/modules:/lib/modules:ro)
+    fi
+
+    docker run --rm -d --name "$name" \
+        --network host \
+        "${extra_caps[@]}" \
+        "${extra_mounts[@]}" \
+        "$CONTAINER_IMAGE" \
+        bash -c "set -e
+            apt-get update -qq && apt-get install -y -qq \
+                stress-ng systemtap bpftrace linux-tools-generic >/dev/null 2>&1 || true
+            stress-ng $args --timeout ${duration}s --metrics-brief &
+            echo \$! > /tmp/intp-wl.pid
+            wait \$!" \
+        > "$logfile" 2>&1
+    # Wait briefly for stress-ng to start, then return its container-local PID
+    local cpid="" attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        cpid=$(docker exec "$name" cat /tmp/intp-wl.pid 2>/dev/null || true)
+        [ -n "$cpid" ] && break
+        sleep 0.5
+    done
+    [ -z "$cpid" ] && cpid=0
     echo "$cpid"
 }
 
@@ -792,16 +990,41 @@ launch_workload_vm() {
         echo $$
         return 0
     fi
+    # Hard-fail on missing prereqs. Previously these were warn+continue, which
+    # produced "successful" runs that measured an empty qemu host process and
+    # silently polluted the dataset. For paper-grade results, fail loud.
     if [ -z "$VM_IMAGE" ] || [ ! -f "$VM_IMAGE" ]; then
-        warn "VM env requested but --vm-image is not set or missing: '$VM_IMAGE'"
-        echo 0; return 1
+        die "VM env requested but VM_IMAGE is not set or file missing: '$VM_IMAGE'"
     fi
     if [ ! -e /dev/kvm ]; then
-        warn "/dev/kvm not present -- VM env unavailable"
-        echo 0; return 1
+        die "/dev/kvm not present -- VM env unavailable. Install qemu-kvm and ensure /dev/kvm is accessible."
     fi
-    # Boot a transient VM with cloud-init userdata that runs stress-ng then halts
-    local tmpdir; tmpdir="$(mktemp -d)"
+    if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+        die "qemu-system-x86_64 not in PATH. Install qemu-system-x86 (apt: qemu-system-x86)."
+    fi
+    if ! command -v cloud-localds >/dev/null 2>&1; then
+        die "cloud-localds not in PATH. Install cloud-image-utils (apt: cloud-image-utils)."
+    fi
+
+    # Caveat documented for the operator:
+    # ------------------------------------------------------------------------
+    # SEMANTICS: The PID returned here is the qemu-system-x86_64 host process.
+    # IntP profilers attach to that PID and observe the *host-side* view of
+    # the VM (CPU time spent in qemu, memory bandwidth on host, host LLC
+    # contention, host NIC traffic for SLIRP/TAP, host block I/O for the
+    # qcow2 backing). They do NOT see the guest's per-process metrics —
+    # those would require running a profiler INSIDE the guest and shipping
+    # results back over SSH. Use INTP_VM_IN_GUEST=1 with INTP_VM_GUEST_SSH
+    # to enable that path (currently a documented TODO; falls back to
+    # host-observer mode otherwise).
+    # ------------------------------------------------------------------------
+    if [ "${INTP_VM_IN_GUEST:-0}" = "1" ]; then
+        warn "INTP_VM_IN_GUEST=1 set but in-guest profiler hook not yet implemented; falling back to host-observer mode"
+    fi
+
+    local tmpdir; tmpdir="$(mktemp -d -t intp-vm-XXXXXX)"
+    VM_TMPDIRS+=("$tmpdir")
+
     cat > "$tmpdir/user-data" <<EOF
 #cloud-config
 package_update: true
@@ -810,15 +1033,12 @@ runcmd:
   - [ bash, -lc, "stress-ng $args --timeout ${duration}s --metrics-brief; poweroff" ]
 EOF
     cat > "$tmpdir/meta-data" <<EOF
-instance-id: intp-bench
+instance-id: intp-bench-$name
 local-hostname: intp-bench
 EOF
-    if command -v cloud-localds >/dev/null 2>&1; then
-        cloud-localds "$tmpdir/seed.iso" "$tmpdir/user-data" "$tmpdir/meta-data"
-    else
-        warn "cloud-localds not found -- cannot build VM seed; skipping"
-        echo 0; return 1
-    fi
+    cloud-localds "$tmpdir/seed.iso" "$tmpdir/user-data" "$tmpdir/meta-data" \
+        || die "cloud-localds failed to build seed.iso for $name"
+
     qemu-system-x86_64 -enable-kvm -nographic \
         -name "$name" \
         -smp "$VM_CPUS" -m "$VM_MEM" \
@@ -829,12 +1049,277 @@ EOF
     echo $!
 }
 
+# Tracks ephemeral SSH keys + per-VM ports for vm-guest cleanup.
+VM_GUEST_KEYS=()
+VM_GUEST_PORTS=()
+
+_vm_guest_cleanup() {
+    local k
+    for k in "${VM_GUEST_KEYS[@]:-}"; do
+        [ -n "$k" ] && [ -f "$k" ] && rm -f "$k" "$k.pub"
+    done
+    VM_GUEST_KEYS=()
+    VM_GUEST_PORTS=()
+}
+
+# Allocate a free TCP port in 12200–12299 for SSH forward to a vm-guest VM.
+_vm_alloc_port() {
+    local p used
+    for p in $(seq 12200 12299); do
+        used=$(ss -tln 2>/dev/null | awk -v p=":$p$" '$4 ~ p {print}' | wc -l)
+        if [ "$used" -eq 0 ] && ! printf '%s\n' "${VM_GUEST_PORTS[@]:-}" | grep -qx "$p"; then
+            echo "$p"; return 0
+        fi
+    done
+    echo ""
+    return 1
+}
+
+launch_workload_vm_guest() {
+    # Workload + profiler run INSIDE the guest. Cloud-init provisions an
+    # ephemeral SSH keypair so the host can scp the profiler binary in,
+    # launch it via SSH, and scp results back. Requires the qcow2 to have
+    # cloud-init + sshd + (kernel headers for stap variants OR libbpf for
+    # eBPF variants); pre-installing IntP build dependencies in the qcow2
+    # is RECOMMENDED to keep launch latency tractable.
+    #
+    # The function exports VM_GUEST_SSH_PORT, VM_GUEST_SSH_KEY, VM_GUEST_NAME
+    # so run_profiler_inguest_vm() can use them. Returns qemu host PID.
+    local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: qemu-system-x86_64 -enable-kvm + cloud-init SSH ... stress-ng $args"
+        echo $$
+        return 0
+    fi
+    [ -z "$VM_IMAGE" ] || [ ! -f "$VM_IMAGE" ] && die "vm-guest needs VM_IMAGE: '$VM_IMAGE'"
+    [ -e /dev/kvm ] || die "/dev/kvm absent — vm-guest unavailable"
+    command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 not in PATH"
+    command -v cloud-localds >/dev/null 2>&1 || die "cloud-localds not in PATH"
+    command -v ssh >/dev/null 2>&1 || die "ssh client missing (apt: openssh-client)"
+
+    local tmpdir; tmpdir="$(mktemp -d -t intp-vmg-XXXXXX)"
+    VM_TMPDIRS+=("$tmpdir")
+    local sshport; sshport=$(_vm_alloc_port)
+    [ -z "$sshport" ] && die "no free TCP port in 12200-12299 for vm-guest SSH"
+    VM_GUEST_PORTS+=("$sshport")
+
+    # Ephemeral keypair, deleted on EXIT trap (_vm_guest_cleanup)
+    ssh-keygen -t ed25519 -N '' -q -f "$tmpdir/key"
+    VM_GUEST_KEYS+=("$tmpdir/key")
+    local pubkey; pubkey=$(cat "$tmpdir/key.pub")
+
+    cat > "$tmpdir/user-data" <<EOF
+#cloud-config
+package_update: true
+packages: [stress-ng, openssh-server]
+users:
+  - name: intp
+    ssh_authorized_keys: ["$pubkey"]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    groups: [sudo]
+runcmd:
+  - [ systemctl, enable, --now, ssh ]
+EOF
+    cat > "$tmpdir/meta-data" <<EOF
+instance-id: intp-bench-$name
+local-hostname: intp-bench
+EOF
+    cloud-localds "$tmpdir/seed.iso" "$tmpdir/user-data" "$tmpdir/meta-data" \
+        || die "cloud-localds failed for vm-guest $name"
+
+    qemu-system-x86_64 -enable-kvm -nographic \
+        -name "$name" \
+        -smp "$VM_CPUS" -m "$VM_MEM" \
+        -drive "file=$VM_IMAGE,if=virtio,format=qcow2" \
+        -drive "file=$tmpdir/seed.iso,if=virtio,format=raw" \
+        -netdev user,id=n0,hostfwd=tcp::${sshport}-:22 \
+        -device virtio-net-pci,netdev=n0 \
+        > "$logfile" 2>&1 &
+    local qpid=$!
+
+    # Wait up to 120 s for sshd. Cloud images usually boot in 30-60 s.
+    local i
+    for i in $(seq 1 60); do
+        if ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 'true' >/dev/null 2>&1; then
+            break
+        fi
+        sleep 2
+    done
+
+    # Persist the per-run state for run_profiler_inguest_vm()
+    echo "$sshport"   > "$tmpdir/.sshport"
+    echo "$tmpdir"    > "$tmpdir/.tmpdir"
+    export INTP_VMG_TMPDIR="$tmpdir"
+    export INTP_VMG_SSHPORT="$sshport"
+
+    # Launch stress-ng inside guest in the background; profiler is launched
+    # by run_profiler_inguest_vm which does its own ssh.
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 \
+        "nohup bash -lc 'stress-ng $args --timeout ${duration}s --metrics-brief > /tmp/wl.log 2>&1 & echo \$! > /tmp/intp-wl.pid; wait' >/dev/null 2>&1 &" \
+        || warn "ssh stress-ng dispatch failed for $name"
+    sleep 1
+    local gpid; gpid=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 'cat /tmp/intp-wl.pid 2>/dev/null' 2>/dev/null || echo 0)
+    # Return host-side qemu PID so the existing stop_workload path can kill it.
+    # The guest-local stress-ng PID is exported in INTP_VMG_GUEST_PID.
+    export INTP_VMG_GUEST_PID="$gpid"
+    echo "$qpid"
+}
+
+launch_workload_container_full() {
+    # All-in-one container: HDFS + Spark + workload + profiler INSIDE.
+    # Host-side HDFS/YARN must already be paused (host-services.sh pause).
+    # This is the deployment-isolated mode for paper-grade comparisons.
+    #
+    # The variant is read from $CURRENT_VARIANT (set by run_one before launch).
+    # Output: profiler.tsv lands in the bind-mounted $RUN_OUTDIR via
+    # /opt/results inside the container.
+    local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: container-full $INTP_FULL_IMAGE run-stressng $CURRENT_VARIANT $args (${duration}s)"
+        echo $$
+        return 0
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not installed -- container-full launch failed"
+        echo 0; return 1
+    fi
+    if ! docker image inspect "$INTP_FULL_IMAGE" >/dev/null 2>&1; then
+        warn "image '$INTP_FULL_IMAGE' not found — build with bench/deploy/build-full-image.sh"
+        echo 0; return 1
+    fi
+    docker rm -f "$name" >/dev/null 2>&1 || true
+
+    # Detect host-services pause status and warn loudly if HDFS/YARN still up
+    # (port 9000 collision would fail HDFS startup inside container).
+    if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE ':9000$'; then
+        warn "host port 9000 is still bound — pause host services first:"
+        warn "  bash bench/deploy/host-services.sh pause"
+    fi
+
+    # The container needs SYS_ADMIN for SystemTap variants and CAP_BPF/PERFMON
+    # for v3/v3.1; we grant the union since one image handles all variants.
+    docker run --rm -d --name "$name" \
+        --network host \
+        --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --cap-add SYS_NICE \
+        --cap-add NET_ADMIN --cap-add CAP_PERFMON --cap-add CAP_BPF \
+        -v "$REPO_ROOT:/opt/intp:ro" \
+        -v "$RUN_OUTDIR:/opt/results" \
+        -v /sys/kernel/btf:/sys/kernel/btf:ro \
+        -v /sys/fs/resctrl:/sys/fs/resctrl \
+        -v /usr/lib/modules:/usr/lib/modules:ro \
+        -e "INTP_DURATION=$duration" \
+        -e "INTP_INTERVAL=$INTERVAL" \
+        "$INTP_FULL_IMAGE" \
+        bash -lc "intp-entrypoint start-hdfs && \
+                  intp-entrypoint run-stressng $CURRENT_VARIANT $args" \
+        > "$logfile" 2>&1
+    # Return container's host PID (qemu/main process) for stop_workload tracking.
+    local cpid
+    cpid=$(docker inspect -f '{{.State.Pid}}' "$name" 2>/dev/null || echo 0)
+    echo "$cpid"
+}
+
+launch_workload_vm_full() {
+    # All-in-one VM: HDFS + Spark + workload + profiler INSIDE the guest.
+    # Requires INTP_FULL_VM_IMAGE pointing at a qcow2 produced by
+    # bench/deploy/build-full-vm.sh. SSH key + 9p share scaffolded by
+    # cloud-init as in launch_workload_vm_guest, but the entrypoint is the
+    # baked-in /usr/local/bin/intp-entrypoint script.
+    local logfile="$1" duration="$2" args="$3" name="$4"
+    CURRENT_WORKLOAD_CGROUP=""
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: vm-full $INTP_FULL_VM_IMAGE boot + intp-entrypoint run-stressng $CURRENT_VARIANT $args"
+        echo $$
+        return 0
+    fi
+    [ -z "$INTP_FULL_VM_IMAGE" ] || [ ! -f "$INTP_FULL_VM_IMAGE" ] && \
+        die "vm-full needs INTP_FULL_VM_IMAGE (build via bench/deploy/build-full-vm.sh): '$INTP_FULL_VM_IMAGE'"
+    [ -e /dev/kvm ] || die "/dev/kvm absent — vm-full unavailable"
+    command -v qemu-system-x86_64 >/dev/null 2>&1 || die "qemu-system-x86_64 not in PATH"
+    command -v cloud-localds >/dev/null 2>&1 || die "cloud-localds not in PATH"
+
+    local tmpdir; tmpdir="$(mktemp -d -t intp-vmf-XXXXXX)"
+    VM_TMPDIRS+=("$tmpdir")
+    local sshport; sshport=$(_vm_alloc_port)
+    [ -z "$sshport" ] && die "no free TCP port for vm-full SSH"
+    VM_GUEST_PORTS+=("$sshport")
+
+    ssh-keygen -t ed25519 -N '' -q -f "$tmpdir/key"
+    VM_GUEST_KEYS+=("$tmpdir/key")
+    local pubkey; pubkey=$(cat "$tmpdir/key.pub")
+
+    cat > "$tmpdir/user-data" <<EOF
+#cloud-config
+users:
+  - name: intp
+    ssh_authorized_keys: ["$pubkey"]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    groups: [sudo]
+runcmd:
+  - [ systemctl, enable, --now, ssh ]
+  - [ bash, -lc, "intp-entrypoint start-hdfs >> /var/log/intp-bootstrap.log 2>&1 &" ]
+EOF
+    cat > "$tmpdir/meta-data" <<EOF
+instance-id: intp-bench-$name
+local-hostname: intp-bench
+EOF
+    cloud-localds "$tmpdir/seed.iso" "$tmpdir/user-data" "$tmpdir/meta-data" \
+        || die "cloud-localds failed for vm-full $name"
+
+    qemu-system-x86_64 -enable-kvm -nographic \
+        -name "$name" \
+        -smp "$VM_CPUS" -m "$VM_MEM" \
+        -drive "file=$INTP_FULL_VM_IMAGE,if=virtio,format=qcow2" \
+        -drive "file=$tmpdir/seed.iso,if=virtio,format=raw" \
+        -netdev user,id=n0,hostfwd=tcp::${sshport}-:22 \
+        -device virtio-net-pci,netdev=n0 \
+        > "$logfile" 2>&1 &
+    local qpid=$!
+
+    # Wait for sshd
+    local i
+    for i in $(seq 1 90); do
+        if ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 'true' >/dev/null 2>&1; then
+            break
+        fi
+        sleep 2
+    done
+
+    export INTP_VMG_TMPDIR="$tmpdir"
+    export INTP_VMG_SSHPORT="$sshport"
+
+    # Launch workload+profiler via the baked-in entrypoint, results land in
+    # /opt/results inside guest; we scp profiler.tsv back via run_profiler
+    # (vm-full reuses the vm-guest profiler-fetch path).
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 \
+        "sudo bash -lc 'INTP_DURATION=$duration INTP_INTERVAL=$INTERVAL \
+            intp-entrypoint run-stressng $CURRENT_VARIANT $args > /tmp/wl.log 2>&1 &'" \
+        || warn "ssh dispatch to vm-full failed for $name"
+    sleep 1
+    echo "$qpid"
+}
+
 launch_workload() {
     # $1 env, $2 logfile, $3 duration, $4 stress_args, $5 unique_name
     case "$1" in
-        bare)      launch_workload_bare      "$2" "$3" "$4" "$5" ;;
-        container) launch_workload_container "$2" "$3" "$4" "$5" ;;
-        vm)        launch_workload_vm        "$2" "$3" "$4" "$5" ;;
+        bare)             launch_workload_bare            "$2" "$3" "$4" "$5" ;;
+        container)        launch_workload_container       "$2" "$3" "$4" "$5" ;;
+        container-guest)  launch_workload_container_guest "$2" "$3" "$4" "$5" ;;
+        container-full)   launch_workload_container_full  "$2" "$3" "$4" "$5" ;;
+        vm)               launch_workload_vm              "$2" "$3" "$4" "$5" ;;
+        vm-guest)         launch_workload_vm_guest        "$2" "$3" "$4" "$5" ;;
+        vm-full)          launch_workload_vm_full         "$2" "$3" "$4" "$5" ;;
         *) die "Unknown env: $1" ;;
     esac
 }
@@ -849,11 +1334,25 @@ stop_workload() {
                 rmdir "$cgroup_path" 2>/dev/null || true
             fi
             ;;
-        container)
+        container|container-guest|container-full)
             docker rm -f "$name" >/dev/null 2>&1 || true
             ;;
-        vm)
-            terminate_pid_gracefully "$pid" "stop_workload/vm/$name"
+        vm|vm-full)
+            terminate_pid_gracefully "$pid" "stop_workload/$env/$name"
+            ;;
+        vm-guest)
+            # Best-effort guest-side cleanup before host-side qemu kill.
+            if [ -n "${INTP_VMG_TMPDIR:-}" ] && [ -d "$INTP_VMG_TMPDIR" ]; then
+                local sshport="${INTP_VMG_SSHPORT:-}"
+                if [ -n "$sshport" ]; then
+                    ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+                        -o UserKnownHostsFile=/dev/null \
+                        -i "$INTP_VMG_TMPDIR/key" -p "$sshport" intp@127.0.0.1 \
+                        'sudo poweroff' 2>/dev/null || true
+                fi
+            fi
+            sleep 2
+            terminate_pid_gracefully "$pid" "stop_workload/vm-guest/$name"
             ;;
     esac
 }
@@ -1148,8 +1647,129 @@ run_profiler_v6() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
+# Map a variant to the profiler invocation as it appears INSIDE the guest.
+# Inside the container, /opt/intp/ is the bind-mounted REPO_ROOT (read-only);
+# inside the VM, /home/intp/intp is assumed (scp'd by run_profiler_inguest_vm).
+_inguest_profiler_cmd() {
+    # _inguest_profiler_cmd <variant> <pid> <duration> <interval>
+    local variant="$1" pid="$2" duration="$3" interval="$4" prefix="$5"
+    case "$variant" in
+        v2)   echo "$prefix/v2-c-stable-abi/intp-hybrid --pid $pid --interval $interval --duration $duration --no-prom" ;;
+        v3)   echo "$prefix/v3-ebpf-libbpf/intp-ebpf --pid $pid --interval $interval --duration $duration" ;;
+        v3.1) echo "bash $prefix/v3.1-bpftrace/run-intp-bpftrace.sh --pid $pid --interval $interval --duration $duration" ;;
+        v1.1) echo "stap -DMAXACTION=8192 -DSTP_NO_OVERLOAD --suppress-handler-errors $prefix/v1.1-stap-helper/intp-v1.1.stp -x $pid --target-pid=$pid -F" ;;
+        v0|v0.1|v1) echo "stap -DMAXACTION=8192 --suppress-handler-errors $prefix/v0.1-stap-k68/intp-6.8.stp -x $pid -F" ;;
+        *) echo ""; return 1 ;;
+    esac
+}
+
+run_profiler_inguest_container() {
+    # Launches profiler inside the running container via docker exec.
+    local variant="$1" outfile="$2" duration="$3" pid="$4" cname="$5"
+    local cmd
+    cmd=$(_inguest_profiler_cmd "$variant" "$pid" "$duration" "$INTERVAL" "/opt/intp")
+    [ -z "$cmd" ] && { warn "no in-guest cmd for variant=$variant"; return 1; }
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: docker exec $cname bash -lc '$cmd' -> $outfile"
+        : > "$outfile"; echo 0 > "$outfile.samples"
+        return 0
+    fi
+    log "    [in-guest container] $cmd"
+    # shellcheck disable=SC2086
+    docker exec "$cname" bash -lc "$cmd" > "$outfile" 2>&1 &
+    local prof_pid=$!
+    wait_pid_timeout "$prof_pid" $((duration + 30)) "in-guest-container/$variant" || true
+    awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples" 2>/dev/null || true
+}
+
+run_profiler_inguest_vm() {
+    # Launches profiler inside the booted VM via SSH; results scp'd back.
+    local variant="$1" outfile="$2" duration="$3" pid="$4"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: rsync IntP into vm-guest, ssh launch profiler $variant pid=$pid duration=${duration}s, scp profiler.tsv back -> $outfile"
+        : > "$outfile"; echo 0 > "$outfile.samples"
+        return 0
+    fi
+    local tmpdir="${INTP_VMG_TMPDIR:-}" sshport="${INTP_VMG_SSHPORT:-}"
+    if [ -z "$tmpdir" ] || [ -z "$sshport" ]; then
+        warn "vm-guest state not exported (INTP_VMG_TMPDIR/SSHPORT) — skipping"
+        return 1
+    fi
+    # Stage IntP checkout into guest if not already present.
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 \
+        'test -d /home/intp/intp || mkdir -p /home/intp/intp' || true
+    rsync -az --delete -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -i $tmpdir/key -p $sshport" \
+        --exclude='.git' --exclude='results' --exclude='*.o' \
+        "$REPO_ROOT/" intp@127.0.0.1:/home/intp/intp/ 2>/dev/null || \
+        warn "rsync of IntP checkout into vm-guest failed"
+
+    local cmd
+    cmd=$(_inguest_profiler_cmd "$variant" "$pid" "$duration" "$INTERVAL" "/home/intp/intp")
+    [ -z "$cmd" ] && { warn "no in-guest cmd for variant=$variant"; return 1; }
+    log "    [in-guest vm] $cmd"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -p "$sshport" intp@127.0.0.1 \
+        "sudo bash -lc '$cmd > /tmp/profiler.tsv 2>&1'" &
+    local prof_pid=$!
+    wait_pid_timeout "$prof_pid" $((duration + 60)) "in-guest-vm/$variant" || true
+    scp -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$tmpdir/key" -P "$sshport" \
+        intp@127.0.0.1:/tmp/profiler.tsv "$outfile" 2>/dev/null \
+        || warn "scp of profiler.tsv from vm-guest failed"
+    awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples" 2>/dev/null || true
+}
+
 run_profiler() {
     local variant="$1" outfile="$2" duration="$3" pid="$4" cgroup_path="${5:-}"
+    # In-guest envs propagate the env name through CURRENT_ENV (set in run_one).
+    case "${CURRENT_ENV:-}" in
+        container-guest)
+            run_profiler_inguest_container "$variant" "$outfile" "$duration" "$pid" "${CURRENT_CONTAINER_NAME:-}"
+            return $?
+            ;;
+        vm-guest)
+            run_profiler_inguest_vm "$variant" "$outfile" "$duration" "$pid"
+            return $?
+            ;;
+        container-full)
+            # Profiler runs INSIDE the container, launched by the entrypoint.
+            # The container's /opt/results is bind-mounted to host outdir, so
+            # profiler.tsv lands directly. Host just waits for completion.
+            log "    [$CURRENT_ENV] profiler runs inside container; host waits up to ${duration}s"
+            if [ "$DRY_RUN" -eq 1 ]; then
+                : > "$outfile"; echo 0 > "$outfile.samples"
+                return 0
+            fi
+            local end=$((SECONDS + duration + 30))
+            while [ $SECONDS -lt $end ]; do
+                if [ -s "$outfile.samples" ]; then break; fi
+                sleep 2
+            done
+            [ -s "$outfile.samples" ] || { warn "$CURRENT_ENV did not produce samples"; echo 0 > "$outfile.samples"; }
+            return 0
+            ;;
+        vm-full)
+            # Profiler runs INSIDE the VM. Host waits then scp's profiler.tsv
+            # back from /opt/results/profiler.tsv inside the guest.
+            log "    [$CURRENT_ENV] profiler runs inside VM; host waits up to ${duration}s then scp back"
+            if [ "$DRY_RUN" -eq 1 ]; then
+                : > "$outfile"; echo 0 > "$outfile.samples"
+                return 0
+            fi
+            local tmpdir="${INTP_VMG_TMPDIR:-}" sshport="${INTP_VMG_SSHPORT:-}"
+            [ -z "$tmpdir" ] || [ -z "$sshport" ] && { warn "vm-full state missing"; echo 0 > "$outfile.samples"; return 1; }
+            sleep "$duration"
+            sleep 5  # allow profiler to flush
+            scp -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -i "$tmpdir/key" -P "$sshport" \
+                intp@127.0.0.1:/opt/results/profiler.tsv "$outfile" 2>/dev/null \
+                || warn "scp profiler.tsv from vm-full failed"
+            awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples" 2>/dev/null || true
+            return 0
+            ;;
+    esac
     case "$variant" in
         v0) run_profiler_systemtap v0 "$V0_STP" "$outfile" "$duration" "$pid" ;;
         v0.1) run_profiler_systemtap v0.1 "$V0_1_STP" "$outfile" "$duration" "$pid" ;;
@@ -1216,6 +1836,14 @@ run_one() {
         wl_cgroup="/sys/fs/cgroup/intp-bench-$cname"
     fi
 
+    # Export per-run state BEFORE launch_workload so full-deployment launchers
+    # (container-full, vm-full) can read CURRENT_VARIANT and RUN_OUTDIR for
+    # bind-mounting and entrypoint dispatch.
+    export CURRENT_ENV="$env"
+    export CURRENT_VARIANT="$variant"
+    export CURRENT_CONTAINER_NAME="$cname"
+    export RUN_OUTDIR="$outdir"
+
     local wl_pid
     wl_pid=$(launch_workload "$env" "$wl_log" "$total" "$wl_args" "$cname" 2>&1 | tail -1 || echo 0)
     if [ "$wl_pid" = "0" ] || [ -z "$wl_pid" ]; then
@@ -1233,6 +1861,14 @@ run_one() {
     fi
 
     [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
+
+    # Propagate env / variant / outdir / container name so launch_workload and
+    # run_profiler can dispatch to in-guest / full deployments without changing
+    # the existing caller signatures.
+    export CURRENT_ENV="$env"
+    export CURRENT_VARIANT="$variant"
+    export CURRENT_CONTAINER_NAME="$cname"
+    export RUN_OUTDIR="$outdir"
 
     start_groundtruth "$outdir" "$duration" "$wl_pid"
     run_profiler "$variant" "$prof" "$duration" "$wl_pid" "$wl_cgroup" || true
@@ -1724,7 +2360,7 @@ main() {
     prepare_output_dir
     write_metadata
 
-    trap 'restore_cpu_env; stop_resctrl_helper' EXIT INT TERM
+    trap 'restore_cpu_env; stop_resctrl_helper; _vm_cleanup_tmpdirs; _vm_guest_cleanup' EXIT INT TERM
 
     log "== intp-bench =="
     log "output: $OUTPUT_DIR"

@@ -42,6 +42,13 @@ WORKLOADS_CSV="${WORKLOADS_CSV:-all}"
 OUT_ROOT="${OUT_ROOT:-/var/lib/hibench/runs}"
 HIBENCH_HOME="${HIBENCH_HOME:-/opt/HiBench}"
 SPARK_HOME="${SPARK_HOME:-}"
+# Deployment environment selector (mirrors run-intp-bench.sh --env values).
+# Currently HiBench supports: bare, container-full, vm-full.
+# host-observer modes (container, vm) and per-process in-guest (container-guest,
+# vm-guest) are not meaningful for Spark jobs that drive HDFS+Spark themselves.
+ENV_DEPLOY="${ENV_DEPLOY:-bare}"
+INTP_FULL_IMAGE="${INTP_FULL_IMAGE:-intp-full:latest}"
+INTP_FULL_VM_IMAGE="${INTP_FULL_VM_IMAGE:-}"
 DRY_RUN=0
 INTERVAL=1
 WARMUP=15                   # seconds to let Spark ramp before recording
@@ -203,6 +210,7 @@ parse_args() {
             --reps)          WORKLOAD_REPS="$2"; shift 2 ;;
             --elapsed-cv-warn-pct) ELAPSED_CV_WARN_PCT="$2"; shift 2 ;;
             --stap-target)   STAP_TARGET="$2"; shift 2 ;;
+            --env)           ENV_DEPLOY="$2"; shift 2 ;;
             --dry-run)       DRY_RUN=1; shift ;;
             -h|--help)       usage; exit 0 ;;
             *) die "unknown option: $1" ;;
@@ -619,8 +627,76 @@ set_hibench_size() {
 # Per-workload runner: one variant × one workload
 # -----------------------------------------------------------------------------
 
+# Dispatcher for full-deployment modes (container-full, vm-full).
+# Runs HiBench Spark workload + profiler INSIDE one container/VM. Stressor
+# runs alongside on the host (intentional — keeps the synthetic-stress
+# antagonist as an external pressure source rather than coupling it to
+# the deployment unit).
+run_workload_full_deploy() {
+    local mode="$1" variant="$2" workload_name="$3" outdir="$4" profile_mode="$5"
+    local profiler_tsv="$outdir/profiler.tsv"
+    local workload_log="$outdir/workload.log"
+    mkdir -p "$outdir"
+    local cname="intp-hibench-${mode}-${variant}-${workload_name}-${profile_mode}-$$"
+
+    start_stressor "$profile_mode" "$outdir"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "  DRY: [$mode] intp-entrypoint run-hibench $variant $workload_name -> $outdir"
+        : > "$profiler_tsv"; echo 0 > "$profiler_tsv.samples"
+        stop_stressor
+        return 0
+    fi
+
+    case "$mode" in
+        container-full)
+            if ! docker image inspect "$INTP_FULL_IMAGE" >/dev/null 2>&1; then
+                warn "  [$mode] image '$INTP_FULL_IMAGE' missing — build with bench/deploy/build-full-image.sh"
+                stop_stressor; return 1
+            fi
+            local hibench_workload
+            hibench_workload=$(printf '%s' "$workload_name" | sed 's|_|/|')
+            docker run --rm --name "$cname" \
+                --network host \
+                --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --cap-add SYS_NICE \
+                --cap-add NET_ADMIN --cap-add CAP_PERFMON --cap-add CAP_BPF \
+                -v "$REPO_ROOT:/opt/intp:ro" \
+                -v "$outdir:/opt/results" \
+                -v /sys/kernel/btf:/sys/kernel/btf:ro \
+                -v /sys/fs/resctrl:/sys/fs/resctrl \
+                -e "INTP_DURATION=$MAX_WORKLOAD_DURATION" \
+                -e "INTP_INTERVAL=$INTERVAL" \
+                "$INTP_FULL_IMAGE" \
+                bash -lc "intp-entrypoint start-hdfs && \
+                          /opt/HiBench/bin/workloads/${hibench_workload}/prepare/prepare.sh > /opt/results/prepare.log 2>&1 && \
+                          intp-entrypoint run-hibench $variant $hibench_workload && \
+                          intp-entrypoint stop-hdfs" \
+                > "$workload_log" 2>&1 \
+                || warn "  [$mode] container exited non-zero — see $workload_log"
+            ;;
+        vm-full)
+            warn "  [vm-full] HiBench-in-VM is gated behind a baked qcow2 (build-full-vm.sh); falling back to skip"
+            : > "$profiler_tsv"; echo 0 > "$profiler_tsv.samples"
+            ;;
+    esac
+    stop_stressor
+    awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" > "$profiler_tsv.samples" 2>/dev/null || true
+    return 0
+}
+
 run_workload_with_profiler() {
     local variant="$1" workload_name="$2" spark_script="$3" spark_env="$4" outdir="$5" profile_mode="${6:-standard}"
+
+    # Delegate to full-deployment handler when ENV_DEPLOY != bare.
+    case "$ENV_DEPLOY" in
+        bare) ;;  # fall through
+        container-full|vm-full)
+            run_workload_full_deploy "$ENV_DEPLOY" "$variant" "$workload_name" "$outdir" "$profile_mode"
+            return $?
+            ;;
+        *) die "ENV_DEPLOY='$ENV_DEPLOY' not supported (use bare, container-full, vm-full)" ;;
+    esac
+
     local profiler_tsv="$outdir/profiler.tsv"
     local workload_log="$outdir/workload.log"
     mkdir -p "$outdir"

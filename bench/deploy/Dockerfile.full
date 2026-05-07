@@ -1,0 +1,166 @@
+# Dockerfile.full — Self-contained image with HDFS + Spark + HiBench + IntP
+# baked in. Used when BENCH_ENVS includes container-full so the entire
+# experimental stack runs INSIDE one container, decoupled from the host.
+#
+# Build:
+#   bash bench/deploy/build-full-image.sh   (handles caching of Hadoop/Spark tarballs)
+#
+# Image layout:
+#   /opt/hadoop      Hadoop 3.3.6 binary distribution
+#   /opt/spark       Spark 3.5.x with hadoop3 binaries
+#   /opt/HiBench     HiBench checkout (ML/SQL/streaming/microbenchmarks)
+#   /opt/intp        IntP repo checkout (read-only at runtime via bind mount)
+#   /var/lib/hadoop  HDFS storage (NN + DN dirs)
+#   /var/lib/hibench HiBench reports + datasets metadata
+#
+# At runtime the entrypoint formats HDFS (idempotent), starts NN+DN+SNN,
+# launches the requested workload, runs the chosen profiler against the
+# workload PID, ships /opt/results/profiler.tsv to the host bind mount,
+# then cleanly tears HDFS down on exit.
+
+FROM ubuntu:24.04
+
+ARG HADOOP_VERSION=3.3.6
+ARG SPARK_VERSION=3.5.3
+ARG SPARK_HADOOP=hadoop3
+ARG HIBENCH_REF=HiBench-7.1.1
+# JDK_VERSION mirrors the host bare-metal setup so that bare/container/VM
+# campaigns are comparable without JDK-version as a confounding factor.
+# Hadoop 3.3.6 officially supports Java 8/11; Java 17 needs the --add-opens
+# flags below (already validated on the bare host).
+ARG JDK_VERSION=17
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ── 1. base packages ─────────────────────────────────────────────────────────
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        openjdk-11-jdk-headless openjdk-17-jdk-headless \
+        bash curl wget tar gzip ca-certificates openssh-server openssh-client \
+        rsync git build-essential \
+        bpftrace linux-tools-generic systemtap stress-ng \
+        libelf1 zlib1g \
+        python3 python3-pip python3-venv \
+        net-tools iproute2 iputils-ping \
+        sudo procps less vim && \
+    rm -rf /var/lib/apt/lists/*
+
+# Default to Java ${JDK_VERSION} (mirrors host). Override at build time:
+#   docker build --build-arg JDK_VERSION=11 ...
+ENV JAVA_HOME=/usr/lib/jvm/java-${JDK_VERSION}-openjdk-amd64 \
+    PATH=/usr/lib/jvm/java-${JDK_VERSION}-openjdk-amd64/bin:/opt/spark/bin:/opt/hadoop/bin:/opt/hadoop/sbin:$PATH
+
+# ── 2. Hadoop ────────────────────────────────────────────────────────────────
+RUN mkdir -p /opt && cd /opt && \
+    curl -fsSL "https://dlcdn.apache.org/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
+        -o hadoop.tgz && \
+    tar -xzf hadoop.tgz && \
+    ln -sfn "hadoop-${HADOOP_VERSION}" hadoop && \
+    rm hadoop.tgz
+
+ENV HADOOP_HOME=/opt/hadoop \
+    HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop \
+    HADOOP_MAPRED_HOME=/opt/hadoop \
+    HDFS_NAMENODE_USER=root \
+    HDFS_DATANODE_USER=root \
+    HDFS_SECONDARYNAMENODE_USER=root
+
+# ── 3. Spark ─────────────────────────────────────────────────────────────────
+RUN cd /opt && \
+    curl -fsSL "https://dlcdn.apache.org/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-${SPARK_HADOOP}.tgz" \
+        -o spark.tgz && \
+    tar -xzf spark.tgz && \
+    ln -sfn "spark-${SPARK_VERSION}-bin-${SPARK_HADOOP}" spark && \
+    rm spark.tgz
+
+ENV SPARK_HOME=/opt/spark
+
+# ── 4. HiBench (Intel) ────────────────────────────────────────────────────────
+RUN cd /opt && \
+    git clone --depth 1 --branch master https://github.com/Intel-bigdata/HiBench.git && \
+    cd HiBench && \
+    # Build only the workloads we use — avoid pulling all upstream profiles.
+    /opt/spark/bin/spark-submit --version 2>&1 | head -3 || true
+
+ENV HIBENCH_HOME=/opt/HiBench
+
+# ── 5. HDFS pseudo-distributed config (mirrors host setup we use) ────────────
+RUN cat > /opt/hadoop/etc/hadoop/core-site.xml <<'EOF'
+<?xml version="1.0"?>
+<configuration>
+  <property><name>fs.defaultFS</name><value>hdfs://localhost:9000</value></property>
+  <property><name>hadoop.tmp.dir</name><value>/var/lib/hadoop/tmp</value></property>
+</configuration>
+EOF
+
+RUN cat > /opt/hadoop/etc/hadoop/hdfs-site.xml <<'EOF'
+<?xml version="1.0"?>
+<configuration>
+  <property><name>dfs.replication</name><value>1</value></property>
+  <property><name>dfs.namenode.name.dir</name><value>/var/lib/hadoop/hdfs/name</value></property>
+  <property><name>dfs.datanode.data.dir</name><value>/var/lib/hadoop/hdfs/data</value></property>
+  <property><name>dfs.permissions.enabled</name><value>false</value></property>
+</configuration>
+EOF
+
+# mapred-site.xml: include --add-opens at AM + map + reduce JVM levels
+# (mandatory for Java 17; harmless on Java 11 since flags are accepted but no-op).
+RUN cat > /opt/hadoop/etc/hadoop/mapred-site.xml <<'EOF'
+<?xml version="1.0"?>
+<configuration>
+  <property><name>mapreduce.framework.name</name><value>local</value></property>
+  <property><name>yarn.app.mapreduce.am.command-opts</name><value>-Xmx1024m --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.security.action=ALL-UNNAMED</value></property>
+  <property><name>mapreduce.map.java.opts</name><value>-Xmx1024m --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.security.action=ALL-UNNAMED</value></property>
+  <property><name>mapreduce.reduce.java.opts</name><value>-Xmx2048m --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.security.action=ALL-UNNAMED</value></property>
+</configuration>
+EOF
+
+# hadoop-env.sh: HADOOP_OPTS gets the same --add-opens (NN/DN/SNN need it
+# for Guice/cglib reflection on Java 17) — mirrors the host bare-metal setup.
+RUN sed -i '/^export JAVA_HOME=/d' /opt/hadoop/etc/hadoop/hadoop-env.sh && \
+    cat >> /opt/hadoop/etc/hadoop/hadoop-env.sh <<'EOF'
+export JAVA_HOME=$JAVA_HOME
+export HADOOP_HOME=/opt/hadoop
+export HADOOP_MAPRED_HOME=/opt/hadoop
+export HDFS_NAMENODE_USER=root
+export HDFS_DATANODE_USER=root
+export HDFS_SECONDARYNAMENODE_USER=root
+export HADOOP_OPTS="$HADOOP_OPTS \
+  --add-opens java.base/java.lang=ALL-UNNAMED \
+  --add-opens java.base/java.lang.reflect=ALL-UNNAMED \
+  --add-opens java.base/java.io=ALL-UNNAMED \
+  --add-opens java.base/java.net=ALL-UNNAMED \
+  --add-opens java.base/java.nio=ALL-UNNAMED \
+  --add-opens java.base/java.util=ALL-UNNAMED \
+  --add-opens java.base/java.util.concurrent=ALL-UNNAMED \
+  --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+  --add-opens java.base/sun.security.action=ALL-UNNAMED"
+EOF
+
+# Allow root-→localhost ssh for start-dfs.sh
+RUN ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_ed25519 && \
+    cat /root/.ssh/id_ed25519.pub >> /root/.ssh/authorized_keys && \
+    chmod 600 /root/.ssh/authorized_keys && \
+    printf 'Host localhost\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\nHost 0.0.0.0\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' \
+        > /root/.ssh/config && chmod 600 /root/.ssh/config
+
+# ── 6. HiBench config ─────────────────────────────────────────────────────────
+RUN cd /opt/HiBench/conf && \
+    cp -n hadoop.conf.template hadoop.conf 2>/dev/null || true && \
+    cp -n hibench.conf.template hibench.conf 2>/dev/null || true && \
+    cp -n spark.conf.template spark.conf 2>/dev/null || true && \
+    sed -i 's|^hibench.hadoop.home.*|hibench.hadoop.home /opt/hadoop|' hadoop.conf && \
+    grep -q '^hibench.hdfs.master' hadoop.conf || \
+        echo 'hibench.hdfs.master                    hdfs://localhost:9000' >> hadoop.conf && \
+    sed -i 's|^hibench.spark.home.*|hibench.spark.home /opt/spark|' spark.conf 2>/dev/null || true && \
+    sed -i 's|^hibench.scale.profile.*|hibench.scale.profile        large|' hibench.conf
+
+# ── 7. Storage scaffolds ─────────────────────────────────────────────────────
+RUN mkdir -p /var/lib/hadoop/{tmp,hdfs/name,hdfs/data} \
+             /var/lib/hibench /opt/results
+
+# ── 8. Entrypoint ────────────────────────────────────────────────────────────
+COPY full-container-entrypoint.sh /usr/local/bin/intp-entrypoint
+RUN chmod +x /usr/local/bin/intp-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/intp-entrypoint"]
+CMD ["help"]

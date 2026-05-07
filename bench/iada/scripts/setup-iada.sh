@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# setup-iada.sh — Provisioning script for the IADA/CloudSim simulation host.
+#
+# Installs R + rJava + native deps, prepares env vars, validates CloudSim
+# checkout, and prints the steps still requiring manual attention (the
+# MLClassifier.java patch lives outside this repo).
+#
+# Idempotent: re-runs are safe.
+#
+# Usage:
+#   sudo bash bench/iada/scripts/setup-iada.sh \
+#     --cloudsim /path/to/cloudsim-build \
+#     --intp-r-folder /path/to/intp/checkout/R
+#
+# Outputs:
+#   ~/.iada-env       — sourceable env vars (R_LIBS_USER, JAVA_HOME, etc.)
+#   ~/R/library/      — R user library with installed packages
+#
+# After this finishes, source the env file before running campaigns:
+#   source ~/.iada-env
+
+set -euo pipefail
+
+CLOUDSIM_REPO=""
+INTP_R_FOLDER=""
+JAVA_HOME_OVERRIDE=""
+
+usage() {
+    cat <<EOF
+Usage: sudo $0 [options]
+
+Options:
+  --cloudsim DIR        Path to CloudSim checkout (must contain target/ or build/)
+  --intp-r-folder DIR   Path to IntP repo's R/ subdirectory
+  --java-home DIR       Override JAVA_HOME (default: auto-detect Java 17)
+  -h, --help            Show this help
+
+What this does:
+  1. Installs apt packages: r-base, r-base-dev, r-cran-rjava, libtirpc-dev,
+     openjdk-17-jdk-headless, build-essential
+  2. Installs R packages into ~/R/library: ocp (Bayesian OCPD), e1071 (SVM),
+     caret (classifier), dplyr, ggplot2
+  3. Generates ~/.iada-env with required environment variables
+  4. Validates CloudSim build (if --cloudsim given)
+  5. Reports what manual steps remain (MLClassifier.java patch)
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cloudsim)       CLOUDSIM_REPO="$2"; shift 2 ;;
+        --intp-r-folder)  INTP_R_FOLDER="$2"; shift 2 ;;
+        --java-home)      JAVA_HOME_OVERRIDE="$2"; shift 2 ;;
+        -h|--help)        usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage; exit 1 ;;
+    esac
+done
+
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() { log "WARN: $*" >&2; }
+die()  { log "FATAL: $*" >&2; exit 1; }
+
+[ "$(id -u)" = "0" ] || die "run as root (apt install needs it)"
+
+# ─── 1. apt deps ─────────────────────────────────────────────────────────────
+log "installing apt dependencies"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    r-base r-base-dev r-cran-rjava \
+    libtirpc-dev libcurl4-openssl-dev libssl-dev libxml2-dev \
+    openjdk-17-jdk-headless \
+    build-essential pkg-config \
+    >/dev/null
+
+# ─── 2. JAVA_HOME ────────────────────────────────────────────────────────────
+if [ -n "$JAVA_HOME_OVERRIDE" ]; then
+    JAVA_HOME="$JAVA_HOME_OVERRIDE"
+elif [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+else
+    JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+fi
+[ -d "$JAVA_HOME" ] || die "JAVA_HOME=$JAVA_HOME does not exist"
+log "JAVA_HOME = $JAVA_HOME"
+
+# ─── 3. rJava reconfig (links libjvm into rJava once Java home is fixed) ─────
+log "rJava JAVA reconfigure"
+JAVA_HOME="$JAVA_HOME" R CMD javareconf >/dev/null 2>&1 || \
+    warn "R CMD javareconf returned non-zero — check that openjdk-17-jdk-headless is installed"
+
+# ─── 4. R packages into user library ─────────────────────────────────────────
+TARGET_USER="${SUDO_USER:-root}"
+TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+R_LIBS_USER="$TARGET_HOME/R/library"
+mkdir -p "$R_LIBS_USER"
+chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/R" 2>/dev/null || true
+
+log "installing R packages into $R_LIBS_USER"
+sudo -u "$TARGET_USER" \
+    R_LIBS_USER="$R_LIBS_USER" \
+    JAVA_HOME="$JAVA_HOME" \
+    R --no-save --quiet <<'RSCRIPT' || warn "some R packages failed to install — review output"
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+required <- c("ocp", "e1071", "caret", "dplyr", "ggplot2", "rJava")
+to_install <- setdiff(required, rownames(installed.packages(lib.loc = Sys.getenv("R_LIBS_USER"))))
+if (length(to_install) > 0) {
+    install.packages(to_install, lib = Sys.getenv("R_LIBS_USER"), Ncpus = 4)
+}
+cat("R libraries installed:\n")
+for (p in required) {
+    found <- p %in% rownames(installed.packages(lib.loc = Sys.getenv("R_LIBS_USER")))
+    cat(sprintf("  %-12s %s\n", p, ifelse(found, "OK", "MISSING")))
+}
+RSCRIPT
+
+# ─── 5. JRI library path detection ────────────────────────────────────────────
+JRI_LIB=""
+for cand in \
+    "$R_LIBS_USER/rJava/jri" \
+    /usr/lib/R/site-library/rJava/jri \
+    /usr/local/lib/R/site-library/rJava/jri; do
+    if [ -d "$cand" ] && [ -f "$cand/libjri.so" ]; then
+        JRI_LIB="$cand"; break
+    fi
+done
+[ -z "$JRI_LIB" ] && warn "libjri.so not found — rJava install may have failed"
+R_LIB_DIR=$(R RHOME 2>/dev/null)/lib
+log "JRI lib = $JRI_LIB"
+log "R lib   = $R_LIB_DIR"
+
+# ─── 6. Write env file ────────────────────────────────────────────────────────
+ENV_FILE="$TARGET_HOME/.iada-env"
+log "writing $ENV_FILE"
+cat > "$ENV_FILE" <<EOF
+# Generated by setup-iada.sh on $(date -Iseconds). Source before running IADA.
+# Required to keep R 4.x + Java 17 cooperating without segfault under JRI.
+export JAVA_HOME="$JAVA_HOME"
+export PATH="\$JAVA_HOME/bin:\$PATH"
+export R_LIBS_USER="$R_LIBS_USER"
+export LD_LIBRARY_PATH="$JRI_LIB:$R_LIB_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+
+# CloudSim entry point — set by setup-iada.sh if --cloudsim was given.
+${CLOUDSIM_REPO:+export CLOUDSIM_REPO=\"$CLOUDSIM_REPO\"}
+
+# IntP R folder used by patched MLClassifier.java.
+${INTP_R_FOLDER:+export INTP_R_FOLDER=\"$INTP_R_FOLDER\"}
+${INTP_R_FOLDER:+export INTP_R_LIBPATHS=\"$R_LIBS_USER\"}
+
+# JVM flags that prevent JRI ↔ R signal-handler clashes.
+# - R_SignalHandlers=0 disables R's own SIGINT/SIGSEGV handlers in JRI mode
+# - SerialGC + Xss8m reduce contention with native R threads
+export INTP_JAVA_OPTS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
+EOF
+chown "$TARGET_USER:$TARGET_USER" "$ENV_FILE"
+
+# ─── 7. CloudSim build validation ─────────────────────────────────────────────
+if [ -n "$CLOUDSIM_REPO" ]; then
+    if [ ! -d "$CLOUDSIM_REPO" ]; then
+        warn "CloudSim path '$CLOUDSIM_REPO' does not exist"
+    else
+        log "validating CloudSim at $CLOUDSIM_REPO"
+        if [ -d "$CLOUDSIM_REPO/target" ]; then
+            log "  Maven target/ found"
+        elif [ -d "$CLOUDSIM_REPO/build" ]; then
+            log "  Gradle build/ found"
+        else
+            warn "  no target/ or build/ — run 'mvn package' or './gradlew build' in $CLOUDSIM_REPO"
+        fi
+        ML_CLASSIFIER=$(find "$CLOUDSIM_REPO" -name 'MLClassifier.java' 2>/dev/null | head -1)
+        if [ -n "$ML_CLASSIFIER" ]; then
+            if grep -q 'INTP_R_FOLDER' "$ML_CLASSIFIER"; then
+                log "  MLClassifier.java already patched (INTP_R_FOLDER detected)"
+            else
+                warn "  MLClassifier.java NOT patched — see manual step below"
+            fi
+        else
+            warn "  MLClassifier.java not found in CloudSim tree"
+        fi
+    fi
+fi
+
+# ─── 8. Manual steps that remain ─────────────────────────────────────────────
+cat <<'NEXT'
+
+================================================================================
+SETUP COMPLETE — manual steps still required
+================================================================================
+
+1. Source the env file in every shell that runs IADA campaigns:
+
+       source ~/.iada-env
+
+2. MLClassifier.java patch (if not already applied):
+
+   The patch replaces hostname-hardcoded paths in MLClassifier.java with
+   reads from INTP_R_FOLDER and INTP_R_LIBPATHS env vars. Find lines that
+   look like:
+
+       String rFolder = "/home/<user>/some/path/R";
+
+   Replace with:
+
+       String rFolder = System.getenv().getOrDefault("INTP_R_FOLDER", "<default>");
+
+   Same pattern for any libPaths() call.
+
+   After editing, recompile CloudSim (mvn package or gradle build).
+
+3. Add the JVM flags to your CloudSim launch command:
+
+       java $INTP_JAVA_OPTS -jar cloudsim-with-iada.jar ...
+
+   $INTP_JAVA_OPTS expands to: -DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m
+
+4. Verify with the smoke test:
+
+       cd <intp>/bench/iada && bash scripts/run-iada-campaign.sh --smoke
+
+   Expected: 192 cloudlets, 48 PMs, 24 intervals, idi_avg ≈ 3476.2,
+             wallclock ~26 min on a 16-core laptop.
+================================================================================
+NEXT

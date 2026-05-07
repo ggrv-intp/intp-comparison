@@ -119,7 +119,11 @@ VARIANT_COLORS = {
     "v3.1": "#ff7f0e",
     "v3":   "#2ca02c",
 }
-ENV_ORDER = ["bare", "container", "vm"]
+ENV_ORDER = [
+    "bare",
+    "container", "container-guest", "container-full",
+    "vm", "vm-guest", "vm-full",
+]
 
 # Pre-rename → current names. Applied at load time so legacy result trees
 # (v1..v6 directories) are displayed with the current nomenclature.

@@ -57,6 +57,31 @@ run_step "bench quick detect+build+solo+report (v2,v3.1,v3)" \
     --reps 1 \
     --output-dir "$OUT/bench-quick"
 
+# Optional in-guest smokes — opt-in via env vars to keep the default smoke fast.
+# SMOKE_CONTAINER_GUEST=1   exercises the container-guest path (needs docker).
+# SMOKE_VM_GUEST=1          exercises the vm-guest path (needs cloud-localds + qcow2).
+if [ "${SMOKE_CONTAINER_GUEST:-0}" = "1" ]; then
+  run_step "bench in-guest container smoke (v3.1, app01)" \
+    bash bench/run-intp-bench.sh \
+      --stage detect,solo,report \
+      --variants v3.1 \
+      --env container-guest \
+      --workloads app01_ml_llc \
+      --duration 15 --reps 1 \
+      --output-dir "$OUT/bench-quick-cg"
+fi
+if [ "${SMOKE_VM_GUEST:-0}" = "1" ]; then
+  : "${VM_IMAGE:?SMOKE_VM_GUEST=1 requires VM_IMAGE pointing to a qcow2}"
+  run_step "bench in-guest vm smoke (v3.1, app01)" \
+    bash bench/run-intp-bench.sh \
+      --stage detect,solo,report \
+      --variants v3.1 \
+      --env vm-guest \
+      --workloads app01_ml_llc \
+      --duration 15 --reps 1 \
+      --output-dir "$OUT/bench-quick-vg"
+fi
+
 echo
 echo "Smoke finished. PASS=$ok FAIL=$fail"
 echo "Output: $OUT"

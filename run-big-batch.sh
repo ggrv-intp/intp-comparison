@@ -16,12 +16,20 @@
 #     RUN_SEED=                 deterministic seed for per-rep shuffle (default: wall clock)
 #
 #   Execution environments (run-intp-bench.sh full-bench only)
-#     BENCH_ENVS=bare           comma-separated: bare | container | vm
+#     BENCH_ENVS=bare           comma-separated execution environments. Values:
+#                                 bare              workload + profiler on host
+#                                 container         workload in Docker, profiler on host (--pid=host)
+#                                 container-guest   workload + profiler INSIDE container (own PID ns)
+#                                 vm                workload in QEMU guest, profiler on host (qemu PID)
+#                                 vm-guest          workload + profiler INSIDE guest, results scp'd back
+#                               container-guest needs Docker; vm-guest needs cloud-localds + a qcow2
+#                               with sshd + cloud-init, ideally with IntP build deps preinstalled.
 #     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench/hibench
-#     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container env
-#     VM_IMAGE=                 path to .qcow2 for vm env (required when vm in BENCH_ENVS)
+#     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container/container-guest envs
+#     VM_IMAGE=                 path to .qcow2 for vm/vm-guest envs (required when set)
 #     VM_MEM=32G                memory for QEMU guest
 #     VM_CPUS=16                vCPUs for QEMU guest
+#     INTP_VMG_ALLOW_STAP=0     set to 1 if your qcow2 has linux-headers + stap (vm-guest stap support)
 #
 #   Segment toggles
 #     RUN_STRESS_BENCH=1        run stress-ng full bench stages (detect/build/solo/pairwise/overhead/timeseries/report)
@@ -176,9 +184,9 @@ run_step "python benchmark deps" bash -c '
   || pip3 install --quiet numpy matplotlib pandas scipy
 '
 
-# Container preflight (only when container is in BENCH_ENVS)
+# Container preflight (only when container or container-guest in BENCH_ENVS)
 case ",$BENCH_ENVS," in
-  *,container,*)
+  *,container,*|*,container-guest,*)
     run_step "container preflight (docker)" bash -c '
       command -v docker >/dev/null 2>&1 || { echo "docker not found"; exit 1; }
       docker info >/dev/null 2>&1 || { echo "docker daemon not running"; exit 1; }
