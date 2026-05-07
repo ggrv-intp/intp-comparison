@@ -145,7 +145,7 @@ int resctrl_assign_pids(const char *name,
     /* Expand each input PID to its transitive descendant tree, then write
      * every thread of every process. Threads aren't auto-tracked when only
      * the leader's TID is written (resctrl is per-TID), so we iterate
-     * /proc/<pid>/task/* for each process leader. */
+     * /proc/<pid>/task entries for each process leader. */
     enum { ALL_CAP = 8192 };
     pid_t *all = calloc(ALL_CAP, sizeof(pid_t));
     if (!all) return -1;
