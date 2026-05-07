@@ -70,8 +70,9 @@ SPARK_DIST_CONF="$SPARK_HOME/conf-distributed"
 
 LOG_DIR="${INTP_DIST_LOG_DIR:-/var/log/intp-distributed}"
 
-log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
-die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -249,9 +250,11 @@ write_hibench_overlay() {
     # config file the orchestrator sources before invoking workloads.
     local overlay="$HIBENCH_HOME/conf/hibench.distributed.conf"
     cat > "$overlay" <<EOF
-# IntP distributed-mode overlay for HiBench (sourced by run-hibench-distributed.sh).
-hibench.hdfs.master       hdfs://$HOST_IP:$NN_PORT
-hibench.spark.master      spark://$HOST_IP:$SPARK_MASTER_PORT
+# IntP distributed-mode overlay for HiBench (parsed AFTER hadoop.conf/spark.conf).
+hibench.hdfs.master              hdfs://$HOST_IP:$NN_PORT
+hibench.spark.master             spark://$HOST_IP:$SPARK_MASTER_PORT
+hibench.hadoop.configure.dir     $HADOOP_DIST_CONF
+hibench.spark.confdir            $SPARK_DIST_CONF
 EOF
     log "wrote HiBench overlay $overlay"
 }
@@ -504,7 +507,19 @@ cmd_switch_distributed() {
 
     sed -i -E "s|^(hibench\.hdfs\.master[[:space:]]+).*|\1hdfs://$HOST_IP:$NN_PORT|" "$hbench"
     sed -i -E "s|^(hibench\.spark\.master[[:space:]]+).*|\1spark://$HOST_IP:$SPARK_MASTER_PORT|" "$sconf"
-    log "HiBench switched to distributed (hdfs://$HOST_IP:$NN_PORT, spark://$HOST_IP:$SPARK_MASTER_PORT)"
+    # HiBench derives `hadoop --config <DIR>` from hibench.hadoop.configure.dir
+    # (if absent, falls back to ${hibench.hadoop.home}/etc/hadoop = localmode).
+    # Patch hadoop.conf so prepare.sh and TestDFSIOEnh see the distributed dir.
+    local hadoopconf="$HIBENCH_HOME/conf/hadoop.conf"
+    if [ -f "$hadoopconf" ]; then
+        [ -f "${hadoopconf}.localmode" ] || cp "$hadoopconf" "${hadoopconf}.localmode"
+        if grep -qE '^hibench\.hadoop\.configure\.dir' "$hadoopconf"; then
+            sed -i -E "s|^(hibench\.hadoop\.configure\.dir[[:space:]]+).*|\1$HADOOP_DIST_CONF|" "$hadoopconf"
+        else
+            printf '\n# IntP distributed-mode override (added by setup-distributed-mode.sh).\nhibench.hadoop.configure.dir   %s\n' "$HADOOP_DIST_CONF" >> "$hadoopconf"
+        fi
+    fi
+    log "HiBench switched to distributed (hdfs://$HOST_IP:$NN_PORT, spark://$HOST_IP:$SPARK_MASTER_PORT, hadoop.conf=$HADOOP_DIST_CONF)"
 }
 
 cmd_switch_localmode() {
@@ -512,11 +527,15 @@ cmd_switch_localmode() {
     require_paths
     local hbench="$HIBENCH_HOME/conf/hibench.conf"
     local sconf="$HIBENCH_HOME/conf/spark.conf"
+    local hadoopconf="$HIBENCH_HOME/conf/hadoop.conf"
     if [ -f "${hbench}.localmode" ]; then
         cp "${hbench}.localmode" "$hbench"
     fi
     if [ -f "${sconf}.localmode" ]; then
         cp "${sconf}.localmode" "$sconf"
+    fi
+    if [ -f "${hadoopconf}.localmode" ]; then
+        cp "${hadoopconf}.localmode" "$hadoopconf"
     fi
     log "HiBench switched to localmode (file:/// + local[*])"
 }
