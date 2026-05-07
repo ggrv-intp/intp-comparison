@@ -22,7 +22,7 @@ This document tracks how each metric is computed across the 7 variants and which
 |---|---|---|---|---|---|---|---|
 | **netp** | `(tput_bps / 125e6) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | `bps / NIC_speed × 100` (autodetect) | ≡ V2 | ≡ V2 |
 | **nets** | `(avg_lat_ns × count) / 1e9 × 100`, summed TX+RX. Probes: `__dev_queue_xmit`+`net:net_dev_xmit` (TX) and `__napi_schedule_irqoff`+`napi_complete_done` (RX) | ≡ V0 | ≡ V0 | ≡ V0 | **softirq fraction × softirq pct × num_cores** [fixed: was missing `× num_cores`, now matches V0 wall-clock semantics] | `lat_total_ns / interval_ns × 100` ≡ V0 (per-event service time, no `/num_cores`) | **per-packet service time via `net:net_dev_start_xmit`+`net:net_dev_xmit` (TX) and `kprobe:__napi_schedule_irqoff`+`kprobe:napi_complete_done` (RX)** [fixed: reverted from softirq tracepoints which had different semantics] |
-| **blk** | `(avg_svctm_us × ops_per_sec) / 100` from `block:block_rq_complete` | ≡ V0 | ≡ V0 | ≡ V0 | `io_ticks_delta / interval_ms × 100` (DIFFERENT MODEL — measures % time disk had ≥1 outstanding I/O, not sum-of-svctm). | `svctm_ns_sum / interval_ns × 100` ≡ V0's intent | `svctm_ms × ops_per_sec / 100` ≡ V0 |
+| **blk** | `(avg_svctm_us × ops_per_sec) / 100` from `block:block_rq_complete` (over-amplified by ~100×) | ≡ V0 | ≡ V0 | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3, drops V0's amplification quirk] | `io_ticks_delta / interval_ms × 100` (DIFFERENT MODEL — measures % time disk had ≥1 outstanding I/O, no queue-depth signal) | `svctm_ns_sum / interval_ns × 100` (physical disk-busy fraction; preserves queue-depth pressure for parallel NVMe) | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3] |
 | **mbw** | `bw_bps / 34e9 × 100` (hardcoded 34 GB/s) | ≡ V0 | ≡ V0 (returns 0; helper-fed) | ≡ V0 (helper-fed) | `bw / mem_bw_max × 100` (autodetect) | ≡ V2 | ≡ V2 |
 | **llcmr** | `(misses / loads) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 (refs ≈ loads) | ≡ V0 |
 | **llcocc** | `(occ_count × 49152) / 34e6 × 100` (hardcoded 34 MB) | ≡ V0 | ≡ V0 (helper-fed) | ≡ V0 (helper-fed) | `occ_bytes / llc_size × 100` (autodetect via resctrl) | ≡ V2 | ≡ V2 |
@@ -41,6 +41,8 @@ Legend:
 | V3.1 | nets | Removed `× cpus` from `compute_nets` in aggregator.py — V0 sums per-event service times across all events on all CPUs without dividing by core count. | (pending) |
 | V2   | nets | Multiplied `softirq_pct` by `num_cores` in `softirq_read` (`/proc/stat` aggregates jiffies across CPUs already, so the resulting fraction was system-wide-normalized; multiplying recovers V0's "total CPU-seconds-in-stack" semantics). | (pending) |
 | V2   | nets | Removed `/num_cores` from `throughput_read` (was previously expressing as system-wide; now matches V0's cumulative-across-CPUs semantics). | (pending) |
+| V1.1 | blk  | Switched from `(svctm_ns / 1e8) × ops_per_sec` (10× under-amplified, blind port of V0) to `sum(svctm_ns) / (runtime × 1e9) × 100` — physical disk-busy fraction matching V3 / V3.1. V1.1 is the modern stap variant; alignment with V3/V3.1 prioritised over fidelity to V0's amplification quirk. | (pending) |
+| V3.1 | blk  | Replaced `svctm_ms × ops_per_sec / 100` (algebraically same as V1.1's old formula, 10× under-amplified) with `svctm_sum_ns / interval_ns × 100` — physical scale matching V3 directly. | (pending) |
 
 ## Remaining divergences (NOT patched — discussed below)
 
@@ -48,28 +50,23 @@ Legend:
 
 **Current**: V2 reads `io_ticks` from `/proc/diskstats`, which is "% time disk had ≥1 outstanding I/O" (capped at 100% per device).
 
-**V0**: `(avg_svctm_us × ops_per_sec) / 100` — sum of per-I/O service times divided by interval (can exceed 100% on devices with parallel I/O queues like NVMe).
+**V1.1 / V3 / V3.1** (post-patch): physical disk-busy fraction `svctm_sum_ns / interval_ns × 100`. Captures parallel queue-depth pressure (can exceed 100% on multi-queue NVMe; capped to 99 in IntP schema).
 
-**Why not patched**: V2 is degraded-mode by design (`/proc` only, no kprobes). To get per-I/O service time, V2 would need access to `block:block_rq_complete` deltas, which is essentially what V3 does via eBPF. The `/proc/diskstats` `read_ticks + write_ticks` fields approximate this but include queueing time too.
+**Why V2 not patched**: V2 is degraded-mode by design (`/proc` only, no kprobes/tracepoints). To get per-I/O service time, V2 would need access to `block:block_rq_complete` deltas, which is essentially what V1.1/V3/V3.1 do. `/proc/diskstats` `read_ticks + write_ticks` fields approximate this but include queueing time too. **V2's role is the "no eBPF / no stap" fallback**, so io_ticks-based blk is its identity, not a bug.
 
-**Workaround**: prefer V3/V3.1 for blk-sensitive interference analysis. Document V2's blk as "approximation" in the paper.
+**Workaround**: prefer V1.1 / V3 / V3.1 for blk-sensitive interference analysis. Document V2's blk as "approximation" in the paper, with explicit note that V2 cannot capture queue-depth pressure on parallel NVMe.
 
-### V0 blk scaling quirk
+### V0 / V0.1 / V1 blk scaling quirk (preserved by design)
 
-V0's formula is:
-```
-svctm_ms = (svctm_ns / 1e6) / 100
-util    = (svctm_ns / 1e6) × ops_per_sec / 100
-        = svctm_us × ops_per_sec / 100
-```
+V0 / V0.1 / V1 effectively compute `svctm_us × ops_per_sec / 100` which is **~100× higher** than the physical disk-busy fraction. For a workload with 100 IOPS × 1 ms each (= 10% disk utilization), V0 outputs 1000 → capped to 99%.
 
-The variable named `svctm_ms` is actually `svctm_us / 100` (units are ambiguous). The util computation effectively yields `svctm_us × ops_per_sec / 100` which is **1000× higher** than the physical disk-busy fraction. For a workload with 100 IOPS × 1 ms each (= 10% disk utilization), V0 outputs 1000 → capped to 99%.
+**Decision**: V0 / V0.1 / V1 keep their original (over-amplified) formula for backward fidelity with the original IntP paper. **V1.1, V3, V3.1 explicitly drop this quirk** because they are the modern variants whose role is comparability with each other and with physical disk-busy fraction, not byte-for-byte numerical reproduction of V0.
 
-V3 / V3.1 use the physical disk-busy fraction (≈ 10% for the same scenario). They are physically meaningful but **not numerically aligned with V0**.
+This is a documented design split in the paper:
 
-**Decision**: leave V3/V3.1 with physical scaling. V0's amplification is likely a 2014 implementation artifact (slow HDDs would saturate easily, masking the bug). For modern NVMe + multi-queue, the physical scaling is more useful for interference comparison.
-
-This is a documented divergence in the paper, not a bug to fix.
+- V0 / V0.1 / V1: faithful reproduction of original IntP design (saturates easily on modern hardware)
+- V1.1 / V3 / V3.1: physically meaningful disk-busy fraction (allows fine-grained interference comparison on NVMe)
+- V2: io_ticks-based approximation (no kprobes, design-bounded)
 
 ### Constants (NIC speed, mbw max, llc size)
 

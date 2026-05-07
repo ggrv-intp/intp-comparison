@@ -122,21 +122,26 @@ probe kernel.trace("block_rq_complete")?, kernel.trace("block:block_rq_complete"
 
 function print_block_report()
 {
+    /* Aligned with V3 (eBPF) blk: physical disk-busy fraction =
+     *   util = sum(svctm_ns) / interval_ns * 100
+     * V0 / V0.1 / V1 keep their original (over-amplified) formula for
+     * backward fidelity; V1.1 deliberately drops it because V1.1's role
+     * is to be comparable to V2 / V3 / V3.1, not byte-for-byte with V0.
+     * See METRICS-ALIGNMENT.md. */
     if (runtime_procfs <= 0) {
 		delete block_op_dep
 		delete block_srv_time
 		return 0
 	}
 
-    if (@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
+    if (@count(block_srv_time)) {svctm_sum = @sum(block_srv_time)} else {svctm_sum = 0}
 
-    block_op_dep = block_op_dep / runtime_procfs
-    svctm = svctm / runtime_procfs
+    /* svctm_sum is ns, runtime_procfs is seconds.
+     *   util = svctm_sum_ns * 100 / (runtime_procfs * 1e9)
+     *        = svctm_sum / (runtime_procfs * 1e7)
+     * Divide first to avoid 64-bit overflow on long captures. */
+    util = (svctm_sum / 10000000) / runtime_procfs
 
-    if (block_op_dep < 0) { block_op_dep = 0 }
-    if (svctm < 0) { svctm = 0 }
-
-	util = (svctm / 100000000) * block_op_dep
     if (util < 0) { util = 0 }
     if (util >= 100) { util = 99 }
 

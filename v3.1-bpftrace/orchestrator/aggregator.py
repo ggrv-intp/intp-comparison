@@ -124,15 +124,19 @@ def compute_nets(payload: dict | None, interval: float, cpus: int) -> int:
 
 
 def compute_blk(payload: dict | None, interval: float) -> int:
+    # Aligned with V3 (eBPF) blk: physical disk-busy fraction =
+    #   util = sum(svctm_ns) / interval_ns * 100
+    # Algebraically equal to (avg_svctm × ops_per_sec / 100) when
+    # ops > 0, but expressed directly so it works even when ops=0
+    # (rare zero-IO sample), and produces the same numerical scale
+    # as V3 instead of being 10× smaller.
     if not payload or interval <= 0:
         return 0
-    ops = payload.get("ops", 0)
-    svctm_sum = payload.get("svctm_sum_ns", 0)
-    if ops <= 0:
+    svctm_sum_ns = payload.get("svctm_sum_ns", 0)
+    interval_ns = interval * 1_000_000_000
+    if interval_ns <= 0:
         return 0
-    svctm_ms = (svctm_sum / ops) / 1_000_000
-    ops_per_sec = ops / interval
-    return _clamp(svctm_ms * ops_per_sec / 100)
+    return _clamp(svctm_sum_ns / interval_ns * 100)
 
 
 def compute_cpu(payload: dict | None, interval: float, cpus: int) -> int:
