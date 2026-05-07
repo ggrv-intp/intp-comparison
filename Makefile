@@ -58,17 +58,24 @@ v3:
 v3.1:
 	$(MAKE) -C $(V31_DIR) deps validate
 
+# V0/V0.1/V1 are runtime-instrumented SystemTap scripts that read @1 (the
+# target program name) at parse time and contain embedded C blocks. So
+# `stap -p1 <script>` alone fails twice: once because @1 is unresolved
+# ("command line argument out of range"), and again because embedded C
+# needs -g (guru mode). We pass a placeholder cmdline argument to satisfy
+# @1 and -g to permit the embedded C, both of which are no-ops at parse
+# time but required to advance past the parser.
 validate-v0:
 	@command -v stap >/dev/null 2>&1 || { echo "[v0] skip: stap not installed"; exit 0; }
-	@test -f $(V0_STP) && stap -p1 $(V0_STP) >/dev/null && echo "[v0] parse OK"
+	@test -f $(V0_STP) && stap -g -p1 $(V0_STP) stress-ng >/dev/null && echo "[v0] parse OK"
 
 validate-v0.1:
 	@command -v stap >/dev/null 2>&1 || { echo "[v0.1] skip: stap not installed"; exit 0; }
-	@test -f $(V01_STP) && stap -p1 $(V01_STP) >/dev/null && echo "[v0.1] parse OK"
+	@test -f $(V01_STP) && stap -g -p1 $(V01_STP) stress-ng >/dev/null && echo "[v0.1] parse OK"
 
 validate-v1:
 	@command -v stap >/dev/null 2>&1 || { echo "[v1] skip: stap not installed"; exit 0; }
-	@test -f $(V1_STP) && stap -p1 $(V1_STP) >/dev/null && echo "[v1] parse OK"
+	@test -f $(V1_STP) && stap -g -p1 $(V1_STP) stress-ng >/dev/null && echo "[v1] parse OK"
 
 # ---- clean ------------------------------------------------------------------
 
