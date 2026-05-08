@@ -35,6 +35,8 @@ SHARED_DIR="$REPO_ROOT/shared"
 
 V3_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
 V3_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
+V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
+V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
 V4_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
 V5_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
 V6_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
@@ -87,6 +89,7 @@ PROFILER_PID=""
 STAP_PID=""
 STAP_COLLECTOR_PID=""
 STRESSOR_PID=""
+V1_1_HELPER_PID=""
 ACTIVE_RESCTRL_HELPER=0
 
 # Profile → stress-ng args. Empty = no co-runner.
@@ -351,14 +354,15 @@ restore_cpu_env() {
 
 start_profiler() {
     local variant="$1" outfile="$2"
-    PROFILER_PID="" STAP_PID="" STAP_COLLECTOR_PID=""
+    PROFILER_PID="" STAP_PID="" STAP_COLLECTOR_PID="" V1_1_HELPER_PID=""
 
     case "$variant" in
-        v1) _start_v3_profiler "$outfile" ;;
-        v2) _start_v46_profiler v2 "$outfile" ;;
+        v1)   _start_v3_profiler "$outfile" ;;
+        v1.1) _start_v1_1_profiler "$outfile" ;;
+        v2)   _start_v46_profiler v2 "$outfile" ;;
         v3.1) _start_v5_profiler "$outfile" ;;
-        v3) _start_v46_profiler v3 "$outfile" ;;
-        *)  warn "unknown variant $variant"; return 1 ;;
+        v3)   _start_v46_profiler v3 "$outfile" ;;
+        *)    warn "unknown variant $variant"; return 1 ;;
     esac
 }
 
@@ -406,7 +410,19 @@ stop_profiler() {
         STAP_PID=""
     fi
 
-    if [ "$variant" = "v1" ]; then
+    # V1.1 helper cleanup (intp-helper userspace process feeding /tmp/intp-hw-data)
+    if [ -n "$V1_1_HELPER_PID" ]; then
+        kill -TERM "$V1_1_HELPER_PID" 2>/dev/null || true
+        local k1=0
+        while [ $k1 -lt 8 ] && kill -0 "$V1_1_HELPER_PID" 2>/dev/null; do
+            sleep 0.25; k1=$((k1 + 1))
+        done
+        kill -KILL "$V1_1_HELPER_PID" 2>/dev/null || true
+        wait "$V1_1_HELPER_PID" 2>/dev/null || true
+        V1_1_HELPER_PID=""
+    fi
+
+    if [ "$variant" = "v1" ] || [ "$variant" = "v1.1" ]; then
         stap_deep_cleanup "post-hibench-${outfile##*/}"
     fi
 
@@ -467,6 +483,87 @@ _start_v3_profiler() {
     } > "$outfile"
 
     # Background collector: poll intestbench and append timestamped rows
+    local ib="$intestbench" of="$outfile" iv="$INTERVAL"
+    (
+        while true; do
+            local line ts
+            ts=$(date +%s.%N)
+            line=$(grep -E '^[0-9]' "$ib" 2>/dev/null | tail -1 || true)
+            [ -n "$line" ] && printf '%s\t%s\n' "$ts" "$line" >> "$of"
+            sleep "$iv"
+        done
+    ) &
+    STAP_COLLECTOR_PID=$!
+}
+
+_start_v1_1_profiler() {
+    # V1.1 = stap script + userspace helper. Helper owns the RCU-unsafe
+    # operations (uncore IMC perf events, resctrl mon_group); the stap
+    # script reads /tmp/intp-hw-data via a procfs read probe.
+    local outfile="$1"
+
+    V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
+    stap_deep_cleanup "pre-hibench-v1.1-run-${V3_RUN_COUNT}"
+    if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+        log "[v1.1] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+        [ "$DRY_RUN" -eq 0 ] && sleep 8
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        {
+            printf '# variant=v1.1 hibench target=%s\n' "$STAP_TARGET"
+            printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
+        } > "$outfile"
+        STAP_PID=$$  # fake
+        return 0
+    fi
+
+    if [ ! -x "$V1_1_HELPER" ]; then
+        warn "[v1.1] helper not built: $V1_1_HELPER"
+        return 1
+    fi
+
+    # Launch helper first; it primes /tmp/intp-hw-data with the first
+    # uncore-IMC + resctrl reading before stap attaches.
+    local helper_log="${outfile%.tsv}.helper.log"
+    rm -f /tmp/intp-hw-data
+    "$V1_1_HELPER" "$STAP_TARGET" > "$helper_log" 2>&1 &
+    V1_1_HELPER_PID=$!
+    sleep 0.3
+
+    local stap_log="${outfile%.tsv}.stap.log"
+    stap --suppress-handler-errors -g \
+        -B CONFIG_MODVERSIONS=y \
+        -DMAXSKIPPED=1000000 \
+        -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
+        -DSTP_OVERLOAD_INTERVAL=1000000000LL \
+        "$V1_1_STP" "$STAP_TARGET" > "$stap_log" 2>&1 &
+    STAP_PID=$!
+
+    local intestbench=""
+    for _ in $(seq 1 "$STAP_WAIT_MAX"); do
+        intestbench=$(find /proc/systemtap -name intestbench 2>/dev/null | head -1)
+        [ -n "$intestbench" ] && break
+        sleep 1
+    done
+
+    if [ -z "$intestbench" ]; then
+        warn "[v1.1] intestbench did not appear after ${STAP_WAIT_MAX}s for HiBench"
+        kill "$STAP_PID" 2>/dev/null || true
+        wait "$STAP_PID" 2>/dev/null || true
+        STAP_PID=""
+        kill "$V1_1_HELPER_PID" 2>/dev/null || true
+        wait "$V1_1_HELPER_PID" 2>/dev/null || true
+        V1_1_HELPER_PID=""
+        stap_deep_cleanup "v1.1-startup-timeout"
+        return 1
+    fi
+
+    {
+        printf '# variant=v1.1 hibench target=%s\n' "$STAP_TARGET"
+        printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
+    } > "$outfile"
+
     local ib="$intestbench" of="$outfile" iv="$INTERVAL"
     (
         while true; do
@@ -1065,6 +1162,12 @@ preflight() {
                 command -v stap >/dev/null 2>&1 || die "stap not found (required for v1)"
                 [ -f "$V3_STP" ] || die "V1 script not found: $V3_STP"
                 [ -x "$V3_HELPER" ] || die "resctrl helper not found: $V3_HELPER"
+                ;;
+            v1.1)
+                [ "$DRY_RUN" -eq 1 ] && continue
+                command -v stap >/dev/null 2>&1 || die "stap not found (required for v1.1)"
+                [ -f "$V1_1_STP" ] || die "V1.1 script not found: $V1_1_STP"
+                [ -x "$V1_1_HELPER" ] || die "V1.1 helper not built: $V1_1_HELPER (run 'make -C $REPO_ROOT/v1.1-stap-helper')"
                 ;;
             v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
             v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;
