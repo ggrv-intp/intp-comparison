@@ -1011,7 +1011,14 @@ build_aggregate_means() {
             awk -v E="$env" -v V="$variant" -v S="$stage" -v W="$workload" -v R="$rep" '
                 /^#/||/^ts/||/^netp/||NF==0 { next }
                 /^[0-9]/ {
-                    n=NF; off=(n>=8)?1:0
+                    # 7 metrics live in the last 7 columns regardless of how
+                    # many prefix columns the variant emits:
+                    #   V0/V0.1 (stap):    7 cols (no time_ms, no host ts)  → off=0
+                    #   V2/V3/V3.1:        8 cols (host ts + 7 metrics)     → off=1
+                    #   V1/V1.1 (stap):    9 cols (host ts + stap time_ms + 7 metrics) → off=2
+                    # Compute off=NF-7 so any prefix arrangement maps correctly.
+                    n=NF; off=n-7
+                    if (off < 0) next
                     for(i=1;i<=7;i++){ if($(i+off)!="--"){s[i]+=$(i+off);c[i]++} }
                 }
                 END {
