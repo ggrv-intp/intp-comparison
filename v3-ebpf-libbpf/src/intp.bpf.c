@@ -402,6 +402,95 @@ int krp_napi_poll_alt_exit(struct pt_regs *ctx)
 }
 
 /* =====================================================================
+ * nets via softirq tracepoints (V3.1-aligned fallback / primary path)
+ *
+ * V0's per-packet kprobe model (__dev_queue_xmit + napi_poll entry/exit)
+ * degenerates on modern kernels with veth / backlog NAPI:
+ *   - veth_xmit is microseconds; __dev_queue_xmit captures only that
+ *     trivial driver call, not the queue/protocol time V0 captured on
+ *     2014-era physical NICs.
+ *   - napi_poll / __napi_poll are inlined on kernels ≥6.x — kprobes
+ *     simply don't attach, leaving RX timing dark.
+ * Verified on Hetzner kernel 6.8.0-111 + veth: kprobe model gives
+ * sub-1% nets at 880 Mbps, truncated to 0 in the IntP int schema.
+ *
+ * irq:softirq_entry / softirq_exit fire for every NET_TX / NET_RX
+ * dispatch regardless of device class and capture the actual CPU time
+ * spent in the network bottom half. Same signal V2 reads from /proc/stat
+ * and V3.1 captures via bpftrace tracepoints. Per-CPU map keyed by
+ * smp_processor_id since softirqs are non-preemptible on a CPU.
+ *
+ * Emits the existing INTP_EVENT_NAPI_TX_LAT / NAPI_RX_LAT event types so
+ * userspace aggregation accumulates softirq time into tx_lat_ns_sum /
+ * rx_lat_ns_sum without code changes. On kernels where napi_poll kprobes
+ * also fire (older), this double-counts moderately — userspace can
+ * disable the kprobe path via existing autoload toggle when softirq
+ * tracepoints are preferred.
+ * ===================================================================== */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u64);
+} softirq_tx_start SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u64);
+} softirq_rx_start SEC(".maps");
+
+SEC("tracepoint/irq/softirq_entry")
+int tp_softirq_entry(struct trace_event_raw_softirq *ctx)
+{
+    __u32 vec = BPF_CORE_READ(ctx, vec);
+    if (vec != 2 && vec != 3) return 0;
+    __u32 cpu = bpf_get_smp_processor_id();
+    __u64 ts = bpf_ktime_get_ns();
+    if (vec == 2) {
+        bpf_map_update_elem(&softirq_tx_start, &cpu, &ts, BPF_ANY);
+    } else {
+        bpf_map_update_elem(&softirq_rx_start, &cpu, &ts, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("tracepoint/irq/softirq_exit")
+int tp_softirq_exit(struct trace_event_raw_softirq *ctx)
+{
+    __u32 vec = BPF_CORE_READ(ctx, vec);
+    if (vec != 2 && vec != 3) return 0;
+    __u32 cpu = bpf_get_smp_processor_id();
+    __u64 now = bpf_ktime_get_ns();
+
+    __u64 *start_ts;
+    if (vec == 2) {
+        start_ts = bpf_map_lookup_elem(&softirq_tx_start, &cpu);
+    } else {
+        start_ts = bpf_map_lookup_elem(&softirq_rx_start, &cpu);
+    }
+    if (!start_ts) return 0;
+    __u64 delta = now - *start_ts;
+
+    if (vec == 2) {
+        bpf_map_delete_elem(&softirq_tx_start, &cpu);
+    } else {
+        bpf_map_delete_elem(&softirq_rx_start, &cpu);
+    }
+
+    struct intp_netstack_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) return 0;
+    fill_header(&e->hdr,
+                vec == 2 ? INTP_EVENT_NAPI_TX_LAT : INTP_EVENT_NAPI_RX_LAT);
+    e->hdr.ts_ns  = now;
+    e->latency_ns = delta;
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+/* =====================================================================
  * llcmr -- LLC miss ratio via perf_event BPF programs
  *
  * Userspace opens two perf_event counters (HW_CACHE_L3 references and

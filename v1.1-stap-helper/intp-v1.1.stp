@@ -171,49 +171,66 @@ probe netfilter.ip.local_in {
 	}
 }
 
+/*
+ * nets via NET_TX (vec=2) / NET_RX (vec=3) softirq service-time tracepoints.
+ *
+ * V0/V0.1 used per-packet kprobes (__dev_queue_xmit + __napi_schedule_irqoff
+ * → napi_complete_done). On modern kernels with veth / backlog NAPI those
+ * probes degenerate:
+ *   - __dev_queue_xmit on veth captures only the trivial driver xmit time;
+ *     the queue+protocol time the V0 probe pair captured on physical NICs
+ *     in 2014 is now split across other functions.
+ *   - napi_complete_done rarely fires for backlog NAPI under sustained
+ *     traffic because the queue never empties.
+ * Verified empirically on Hetzner kernel 6.8 + veth: per-packet pair gives
+ * sub-1% nets at 880 Mbps line rate — truncated to 0 in the IntP int schema.
+ *
+ * Softirq tracepoints fire for every NET_TX/NET_RX dispatch regardless of
+ * device class (physical NIC, lo, veth) and capture actual CPU time spent
+ * in the network bottom half — same signal V2's procfs softirq backend and
+ * V3.1's bpftrace softirq tracepoint script use. See METRICS-ALIGNMENT.md.
+ *
+ * V0/V0.1/V1 keep their original per-packet probes for paper-fidelity;
+ * V1.1 (modern stap variant) explicitly diverges from V0 here, just as it
+ * does for blk.
+ */
+
 global net_sent_req
 global net_sent_lat
-global skb_queue_start_t
+global tx_softirq_start_t
 
-probe kernel.function("__dev_queue_xmit")
-{
-	if (nprocs > 0 && $skb->truesize>0) {
-		skb_queue_start_t[$skb] = gettimeofday_ns();
-	}
-}
+global net_rcv_req
+global net_rcv_lat
+global rx_softirq_start_t
 
-probe kernel.trace("net_dev_xmit")?, kernel.trace("net:net_dev_xmit")?
+probe kernel.trace("irq_softirq_entry")?, kernel.trace("irq:softirq_entry")?
 {
-	if (nprocs > 0 && $skb->len>0) {
-		t = gettimeofday_ns();
-		st = skb_queue_start_t[$skb]
-		if (st) {
-			net_sent_lat <<< t - st
-			net_sent_req += 1
-			delete skb_queue_start_t[$skb]
+	if (nprocs > 0) {
+		if ($vec == 2) {
+			tx_softirq_start_t[tid()] = gettimeofday_ns();
+		} else if ($vec == 3) {
+			rx_softirq_start_t[tid()] = gettimeofday_ns();
 		}
 	}
 }
 
-global net_rcv_req
-global net_rcv_lat
-global skb_rcv_queue_start_t
-
-probe kernel.function("__napi_schedule_irqoff")
-{
-	if (nprocs > 0)
-		skb_rcv_queue_start_t[$n] = gettimeofday_ns();
-}
-
-probe kernel.function("napi_complete_done")
+probe kernel.trace("irq_softirq_exit")?, kernel.trace("irq:softirq_exit")?
 {
 	if (nprocs > 0) {
-		t = gettimeofday_ns();
-		st = skb_rcv_queue_start_t[$n]
-		if (st) {
-			net_rcv_lat <<< t - st
-			net_rcv_req += 1
-			delete skb_rcv_queue_start_t[$n]
+		if ($vec == 2) {
+			st = tx_softirq_start_t[tid()]
+			if (st) {
+				net_sent_lat <<< gettimeofday_ns() - st
+				net_sent_req += 1
+				delete tx_softirq_start_t[tid()]
+			}
+		} else if ($vec == 3) {
+			st = rx_softirq_start_t[tid()]
+			if (st) {
+				net_rcv_lat <<< gettimeofday_ns() - st
+				net_rcv_req += 1
+				delete rx_softirq_start_t[tid()]
+			}
 		}
 	}
 }
