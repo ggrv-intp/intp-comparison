@@ -1,4 +1,4 @@
-# LAD pantanal01 -- RDT monitoring inviável em Skylake-SP gen1
+# LAD pantanal01 -- RDT monitoring unavailable on Skylake-SP gen1
 
 **Date observed:** 2026-05-04
 **Host:** pantanal01.lad.pucrs.br
@@ -8,36 +8,37 @@
 
 ---
 
-## Resumo
+## Summary
 
-A combinação CPU + microcódigo + kernel disponível no LAD pantanal01 **não expõe**
-as features de Cache Monitoring Technology (CMT) e Memory Bandwidth Monitoring
-(MBM) via interface `resctrl`, apesar das flags de CPUID declararem suporte.
-Isso impossibilita a coleta da métrica `llcocc` em qualquer variante do IntP
-(V0, V1, V2, V3.1, V3) neste hardware.
+The CPU + microcode + kernel combination on the LAD pantanal01 host
+**does not expose** Cache Monitoring Technology (CMT) or Memory
+Bandwidth Monitoring (MBM) through the `resctrl` interface, even
+though the CPUID flags claim support. As a result, `llcocc` cannot
+be collected on this hardware by any IntP variant (V0, V1, V2, V3.1,
+V3).
 
-Implicação: cobertura máxima da metodologia IntP no LAD pantanal01 é 6/7
-métricas, independente da variante de instrumentação escolhida.
+Implication: maximum IntP coverage on LAD pantanal01 is 6/7 metrics,
+regardless of which instrumentation variant is selected.
 
 ---
 
-## Evidência empírica
+## Empirical evidence
 
-### O que CPUID promete
+### What CPUID advertises
 
-Flags presentes em `/proc/cpuinfo`:
+Flags present in `/proc/cpuinfo`:
 
 ```
 cqm   cqm_llc   cqm_occup_llc   cqm_mbm_total   cqm_mbm_local
 cat_l3   mba   rdt_a
 ```
 
-Sugerem suporte completo a Intel RDT: monitoring (CMT, MBM) e allocation
-(CAT, MBA).
+These suggest full Intel RDT support: monitoring (CMT, MBM) and
+allocation (CAT, MBA).
 
-### O que o kernel resctrl driver realmente entrega
+### What the kernel resctrl driver actually delivers
 
-Verificação após mount do resctrl:
+After mounting resctrl:
 
 ```bash
 $ sudo mount -t resctrl resctrl /sys/fs/resctrl
@@ -51,77 +52,84 @@ $ sudo cat /sys/fs/resctrl/mon_groups/test/mon_data/mon_L3_*/llc_occupancy
 cat: '...llc_occupancy': No such file or directory
 ```
 
-Mensagens do kernel durante init do resctrl:
+Kernel messages during resctrl init:
 
 ```bash
 $ sudo dmesg | grep -i resctrl
 [    4.402824] resctrl: MB allocation detected
 ```
 
-**Apenas MBA (Memory Bandwidth Allocation) foi detectada.** Nem L3 cache
-monitoring (CMT), nem memory bandwidth monitoring (MBM), nem L3 allocation
-(CAT) foram inicializadas pelo driver, mesmo com as flags de CPUID
-declarando suporte.
+**Only MBA (Memory Bandwidth Allocation) was detected.** L3 cache
+monitoring (CMT), memory bandwidth monitoring (MBM), and L3
+allocation (CAT) were **not** initialised by the driver, even though
+CPUID flags advertised them.
 
-### Diagnóstico
+### Diagnosis
 
-O kernel resctrl driver detectou as flags via CPUID mas decidiu **não ativar**
-as features de monitoring. Causas plausíveis (não-mutuamente exclusivas):
+The kernel resctrl driver saw the CPUID flags but chose **not to
+enable** the monitoring features. Plausible (non-mutually-exclusive)
+causes:
 
-1. **Errata Intel documentada para Skylake-SP gen1.** A primeira geração de
-   Xeon Scalable teve múltiplos errata em RDT/CMT (referência: Intel Xeon
-   Processor Scalable Family Specification Update). Stepping 4 do Gold 5118
-   está na faixa afetada.
-2. **Microcode 0x2007006** está em série posterior às mitigações
-   Spectre/MDS, que degradaram funcionalidade RDT em diversas SKUs
-   Skylake-SP. Em vários casos, microcode subsequente desabilita CMT/MBM
-   silenciosamente para evitar canais laterais.
-3. **Kernel quirk list.** O resctrl driver no kernel Linux mantém lista de
-   CPUs com RDT problemática e suprime init de monitoring quando detecta
-   combinação known-bad — comportamento conservador e correto.
+1. **Documented Intel errata for Skylake-SP gen1.** First-generation
+   Xeon Scalable shipped with multiple RDT/CMT errata (reference:
+   *Intel Xeon Processor Scalable Family Specification Update*).
+   Stepping 4 of the Gold 5118 falls in the affected range.
+2. **Microcode 0x2007006** is in the post-Spectre/MDS-mitigation
+   series, which degraded RDT functionality on several Skylake-SP
+   SKUs. Subsequent microcode revisions silently disable CMT/MBM in
+   multiple cases to close side channels.
+3. **Kernel quirk list.** The Linux resctrl driver carries a list of
+   CPUs with broken RDT and suppresses monitoring init when it
+   detects a known-bad combination — conservative and correct
+   behaviour.
 
-Independentemente da causa exata, o resultado observável é determinístico
-e independe de root, kernel parameters ou software de instrumentação:
-**`llcocc` não pode ser lida via resctrl neste host.**
-
----
-
-## Implicação para a metodologia IntP
-
-A métrica `llcocc` (LLC occupancy) é uma das sete métricas centrais
-definidas no paper IntP de Xavier et al. (SBAC-PAD 2022, Sec. III-E).
-No paper original, ela é coletada via leitura direta de `task_struct->cqm_rmid`
-no kernel (campo removido em kernel 6.8+).
-
-Caminhos alternativos para coletar `llcocc` em hardware moderno:
-
-- **V0 (kernel <=6.6):** lê `cqm_rmid` direto. Requer que o monitoring esteja
-  habilitado pelo kernel — se o resctrl driver não ativa CMT, o RMID
-  não é alocado e o campo retorna lixo ou zero.
-- **V1 / V2 / V3.1 / V3:** leem via interface `resctrl` em `/sys/fs/resctrl/`.
-  Requer que `info/L3_MON/` exista e que mon_groups consigam ser criados
-  com `mon_data/mon_L3_*/llc_occupancy` populado.
-
-Em pantanal01, **nenhum** desses caminhos funciona. Isso é uma limitação
-de hardware/microcode/kernel, não de software de instrumentação.
+Whatever the exact cause, the observable result is deterministic and
+does not depend on root, kernel parameters, or instrumentation
+software: **`llcocc` cannot be read via resctrl on this host.**
 
 ---
 
-## Decisão metodológica decorrente
+## Implication for the IntP methodology
 
-A migração da infraestrutura experimental de LAD/PUCRS para Hetzner
-(servidor dedicado com Xeon Gold 5412U / Sapphire Rapids gen4) **não foi
-opcional** — foi imposta pelo requisito de cobertura completa das 7 métricas
-do paper IntP. Sapphire Rapids é a primeira geração Intel onde:
+`llcocc` (LLC occupancy) is one of the seven metrics defined in the
+IntP paper (Xavier et al., SBAC-PAD 2022, Sec. III-E). The original
+paper collects it by reading `task_struct->cqm_rmid` directly from
+the kernel (a field that was removed in kernel 6.8+).
 
-- RDT monitoring (CMT, MBM) é detectado e exposto via resctrl sem ressalvas.
-- CAT e MBA funcionam em conjunto com monitoring.
-- Não há erratas que forcem o kernel a degradar features.
+Alternative paths for collecting `llcocc` on modern hardware:
 
-Verificação no Hetzner:
+- **V0 (kernel <=6.6):** reads `cqm_rmid` directly. Requires the
+  kernel to have monitoring enabled — when the resctrl driver does
+  not activate CMT, no RMID is allocated and the field returns
+  garbage or zero.
+- **V1 / V2 / V3.1 / V3:** read via the `resctrl` interface under
+  `/sys/fs/resctrl/`. Requires `info/L3_MON/` to exist and
+  mon_groups to be creatable with `mon_data/mon_L3_*/llc_occupancy`
+  populated.
+
+On pantanal01, **none** of these paths work. This is a
+hardware/microcode/kernel limitation, not an instrumentation-software
+limitation.
+
+---
+
+## Resulting methodological decision
+
+Migrating the experimental infrastructure from LAD/PUCRS to Hetzner
+(a dedicated server with Xeon Gold 5412U / Sapphire Rapids gen4) was
+**not optional** — it was forced by the requirement that all seven
+IntP metrics be collected. Sapphire Rapids is the first Intel
+generation where:
+
+- RDT monitoring (CMT, MBM) is detected and exposed via resctrl
+  without caveats.
+- CAT and MBA work in conjunction with monitoring.
+- No errata force the kernel to degrade features.
+
+Verification on Hetzner:
 
 ```bash
-# Mesmo procedimento, host intp-master (Xeon Gold 5412U):
+# Same procedure, host intp-master (Xeon Gold 5412U):
 $ sudo mount -t resctrl resctrl /sys/fs/resctrl
 $ ls /sys/fs/resctrl/info/L3_MON/
 mon_features  num_rmids  ...
@@ -132,27 +140,27 @@ $ sudo dmesg | grep -i resctrl
 [ ... ] resctrl: Memory bandwidth monitoring detected
 ```
 
-Cobertura: 7/7 métricas em qualquer variante.
+Coverage: 7/7 metrics on every variant.
 
 ---
 
-## O que ainda pode ser rodado em pantanal01
+## What can still be run on pantanal01
 
-Apesar da limitação de `llcocc`, o LAD pantanal01 segue útil para:
+Despite the `llcocc` limitation, LAD pantanal01 remains useful for:
 
-1. **Reprodução parcial de V0** com cobertura 6/7 (excluindo `llcocc`).
-   Demonstra que a metodologia legada continua executável em hardware
-   da era original do paper.
-2. **Sanity check de portabilidade de V2** (procfs+perf+resctrl, único
-   variante que roda sem dependência de framework de kernel).
-   Comparação cross-host (LAD vs Hetzner) das 6 métricas comuns valida
-   transferibilidade dos resultados.
+1. **Partial V0 reproduction** with 6/7 coverage (excluding
+   `llcocc`). Demonstrates that the legacy methodology still
+   executes on hardware from the original paper era.
+2. **Portability sanity check for V2** (procfs+perf+resctrl, the
+   only variant that runs without a kernel framework dependency).
+   Cross-host comparison (LAD vs. Hetzner) of the six common
+   metrics validates result transferability.
 
 ---
 
-## Comandos de verificação (reproduzíveis)
+## Verification commands (reproducible)
 
-Qualquer pessoa pode auditar este achado executando:
+Anyone can audit this finding by running:
 
 ```bash
 # 1) Hardware advertising
@@ -162,14 +170,14 @@ grep -oE 'cqm[a-z_]*|cat_l3|mba|rdt_a' /proc/cpuinfo | sort -u
 grep -E 'CONFIG_X86_CPU_RESCTRL|CONFIG_PROC_CPU_RESCTRL' \
      /boot/config-$(uname -r)
 
-# 3) resctrl driver init (decisão real do kernel)
+# 3) resctrl driver init (the kernel's actual decision)
 sudo dmesg | grep -i resctrl
 
-# 4) Tentativa empírica
+# 4) Empirical attempt
 sudo mount -t resctrl resctrl /sys/fs/resctrl 2>&1
 ls /sys/fs/resctrl/info/
 ls /sys/fs/resctrl/info/L3_MON/ 2>&1
 ```
 
-Se `dmesg` reporta apenas "MB allocation detected" e `info/L3_MON/` não
-existe, a limitação está confirmada.
+If `dmesg` reports only "MB allocation detected" and `info/L3_MON/`
+does not exist, the limitation is confirmed.

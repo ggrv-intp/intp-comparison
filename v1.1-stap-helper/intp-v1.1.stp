@@ -362,7 +362,7 @@ function print_cpu_report()
 }
 
 ####
-#	LLC miss ratio (stap-native, faithful to legacy v1-original / current v0)
+#	LLC miss ratio (stap-native, faithful to V0)
 ####
 
 global llc_load, llc_load_misses

@@ -149,7 +149,7 @@ INTP_FULL_IMAGE="${INTP_BENCH_FULL_IMAGE:-intp-full:latest}"
 INTP_FULL_VM_IMAGE="${INTP_BENCH_FULL_VM_IMAGE:-}"  # qcow2 with full stack baked
 # v2/v3 PID filtering against launcher PID tends to miss child workers and
 # softirq-context activity; default to system-wide for representative samples.
-V46_USE_PID_FILTER="${INTP_BENCH_V46_PID_FILTER:-0}"
+V_USE_PID_FILTER="${INTP_BENCH_V_PID_FILTER:-0}"
 # Run bare-metal workloads inside a dedicated cgroup and point v2/v3 to it.
 # This improves attribution for child workers and resctrl-backed metrics.
 USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
@@ -1656,12 +1656,12 @@ run_profiler_systemtap_v1_1() {
     return "$rc"
 }
 
-run_profiler_v4() {
+run_profiler_v2() {
     local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ -n "$cgroup_path" ]; then
             log "DRY: $V2_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
-        elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
             log "DRY: $V2_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
             log "DRY: $V2_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
@@ -1675,7 +1675,7 @@ run_profiler_v4() {
     if [ -n "$cgroup_path" ]; then
         args+=( --cgroup "$cgroup_path" )
         scope="cgroup=$cgroup_path"
-    elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
@@ -1689,7 +1689,7 @@ run_profiler_v4() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
-run_profiler_v5() {
+run_profiler_v3_1() {
     local outfile="$1" duration="$2" pid="$3"
     if [ "$DRY_RUN" -eq 1 ]; then
         log "DRY: $V3_1_RUNNER --interval $INTERVAL --duration $duration --pid $pid -> $outfile"
@@ -1707,12 +1707,12 @@ run_profiler_v5() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
-run_profiler_v6() {
+run_profiler_v3() {
     local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ -n "$cgroup_path" ]; then
             log "DRY: $V3_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path -> $outfile"
-        elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
             log "DRY: $V3_BIN --interval $INTERVAL --duration $duration --pids $pid -> $outfile"
         else
             log "DRY: $V3_BIN --interval $INTERVAL --duration $duration (system-wide) -> $outfile"
@@ -1726,7 +1726,7 @@ run_profiler_v6() {
     if [ -n "$cgroup_path" ]; then
         args+=( --cgroup "$cgroup_path" )
         scope="cgroup=$cgroup_path"
-    elif [ "$V46_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
@@ -1866,9 +1866,9 @@ run_profiler() {
         v0.1) run_profiler_systemtap v0.1 "$V0_1_STP" "$outfile" "$duration" "$pid" ;;
         v1) run_profiler_systemtap v1 "$V1_STP" "$outfile" "$duration" "$pid" ;;
         v1.1) run_profiler_systemtap_v1_1 "$outfile" "$duration" "$pid" ;;
-        v2) run_profiler_v4 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
-        v3.1) run_profiler_v5 "$outfile" "$duration" "$pid" ;;
-        v3) run_profiler_v6 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
+        v2) run_profiler_v2 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
+        v3.1) run_profiler_v3_1 "$outfile" "$duration" "$pid" ;;
+        v3) run_profiler_v3 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         *) die "Unknown variant: $variant" ;;
     esac
 }
@@ -1945,7 +1945,7 @@ run_one() {
 
     if [ -n "$wl_cgroup" ]; then
         target_scope="cgroup:$wl_cgroup"
-    elif [ "${V46_USE_PID_FILTER:-0}" = "1" ]; then
+    elif [ "${V_USE_PID_FILTER:-0}" = "1" ]; then
         target_scope="pid:$wl_pid"
     else
         target_scope="system-wide"

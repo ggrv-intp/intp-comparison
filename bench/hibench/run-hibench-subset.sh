@@ -1149,9 +1149,9 @@ cleanup_stale_orphans() {
         sleep 1
     fi
     pkill -KILL -f 'bpftrace -q' 2>/dev/null || true
-    # Stale resctrl mon groups from any prior aborted run (current variants
-    # use intp-v3 and intp-v3.1; intp-v5 is the legacy-name leftover).
-    for g in /sys/fs/resctrl/mon_groups/intp-v*; do
+    # Stale resctrl mon groups from any prior aborted run (intp-v1.1, intp-v2,
+    # intp-v3, intp-v3.1, plus PID-suffixed mon_groups from intp-helper).
+    for g in /sys/fs/resctrl/mon_groups/intp-v* /sys/fs/resctrl/mon_groups/intp-[0-9]*; do
         [ -d "$g" ] && rmdir "$g" 2>/dev/null || true
     done
 }

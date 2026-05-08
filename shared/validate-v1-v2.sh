@@ -151,7 +151,7 @@ sleep 2
 # -------- Capture window helpers ------------------------------------
 
 # V1 captures by polling /proc/intestbench on an interval
-capture_v3() {
+capture_v1() {
     local out=$1
     local pidname=$2
 
@@ -231,4 +231,4 @@ log "              V2 reads /proc/$STRESS_PID/stat (parent PID only)."
 log "              For cpu/llcocc/mbw this is a known asymmetry; netp/nets/blk"
 log "              are system-wide and unaffected."
 
-log "Done. Analyze with: python3 $REPO/shared/analyze-v1-v2.py $OUTDIR"
+log "Done. Output captures are under $OUTDIR; compare the v1_run*.csv and v2_run*.csv files directly (within-tool stability + across-tool agreement)."

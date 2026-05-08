@@ -19,8 +19,8 @@ Use this chain when moving from setup instructions to evidence and analysis:
 1. Repository overview: `README.md`
 2. Bench orchestration and outputs: `bench/README.md`
 3. Findings index: `bench/findings/README.md`
-4. V0 baseline diagnosis: `bench/findings/v1-baseline-failure-diagnosis.md`
-5. V1 reliability diagnosis: `bench/findings/v3-modernization-reliability-findings.md`
+4. V0 baseline diagnosis: `bench/findings/v0-baseline-failure-diagnosis.md`
+5. V1 reliability diagnosis: `bench/findings/v1-modernization-reliability-findings.md`
 
 ## Why two disks, two OSes
 

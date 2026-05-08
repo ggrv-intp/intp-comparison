@@ -22,8 +22,6 @@
 #
 # Generic by design — reads any aggregate-means.{tsv,csv} produced by
 # bench/run-big-batch.sh regardless of which variants/envs are present.
-# Legacy variant names (v3..v6 from the pre-2026-05-05 campaigns) are
-# remapped to the current v0..v3.1 nomenclature on load.
 #
 # Run:
 #   python3 plot-pca-correlation-circle.py \
@@ -86,12 +84,6 @@ METRIC_LABEL = {
     "cpu":    "cpu",
 }
 
-# Pre-2026-05-05 campaigns used v1..v6 directory names. The current scheme is
-# v0/v0.1/v1/v1.1/v2/v3.1/v3 — apply the same map plot-intp-bench.py uses.
-LEGACY_RENAME = {
-    "v1": "v0", "v2": "v0.1", "v3": "v1",
-    "v4": "v2", "v5": "v3.1", "v6": "v3",
-}
 VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
 VARIANT_COLORS = {
     "v0":   "#7f7f7f",
@@ -116,8 +108,8 @@ def parse_args() -> argparse.Namespace:
                         "Default: every variant present.")
     p.add_argument("--min-samples", type=int, default=20,
                    help="Drop variants with fewer than this many rows after filtering "
-                        "(default: 20). Protects against variants like the legacy v3 "
-                        "with only a handful of valid rows.")
+                        "(default: 20). Protects against variants with too few valid "
+                        "rows to support a meaningful projection.")
     p.add_argument("--features", default=",".join(DEFAULT_METRICS),
                    help="Comma-separated metric column whitelist.")
     p.add_argument("--no-polygons", action="store_true",
@@ -128,16 +120,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_aggregate(path: Path) -> pd.DataFrame:
-    """Load aggregate-means.{tsv,csv} with legacy variant rename applied."""
+    """Load aggregate-means.{tsv,csv}."""
     sep = "\t" if path.suffix.lower() == ".tsv" else ","
     df = pd.read_csv(path, sep=sep, na_values=["--", "NA", ""])
     required = {"env", "variant", "stage", "workload"}
     missing = required - set(df.columns)
     if missing:
         sys.exit(f"input is missing required columns: {sorted(missing)}")
-    if df["variant"].isin(LEGACY_RENAME).any():
-        df["variant"] = df["variant"].map(lambda v: LEGACY_RENAME.get(v, v))
-        print(f"[load] applied legacy variant rename: {LEGACY_RENAME}")
     return df
 
 

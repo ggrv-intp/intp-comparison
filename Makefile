@@ -29,7 +29,7 @@ V11_DIR := $(ROOT)/v1.1-stap-helper
 V2_DIR  := $(ROOT)/v2-c-stable-abi
 V3_DIR  := $(ROOT)/v3-ebpf-libbpf
 V31_DIR := $(ROOT)/v3.1-bpftrace
-V0_STP  := $(ROOT)/v0-stap-classic/INTPCERRADO.STP
+V0_STP  := $(ROOT)/v0-stap-classic/intp.stp
 V01_STP := $(ROOT)/v0.1-stap-k68/intp-6.8.stp
 V1_STP  := $(ROOT)/v1-stap-native/intp-resctrl.stp
 

@@ -51,7 +51,7 @@ Two categories of workload are used in combination:
 The legacy V0 baseline campaign was archived from a previous host
 (`intp-v1-baseline`, kernel 6.5 HWE on Ubuntu 22.04) for documenting
 **portability failure**, not performance. See
-`bench/findings/v1-baseline-failure-diagnosis.md`.
+`bench/findings/v0-baseline-failure-diagnosis.md`.
 
 ---
 
@@ -296,7 +296,7 @@ V0 cannot compile on kernel >= 6.8 (and on the HWE 6.5 used in the
 baseline host, the field `cqm_rmid` of `struct hw_perf_event` was
 already refactored out). The failure is deterministic and is treated as
 **evidence of portability degradation**, not as missing data. See
-`bench/findings/v1-baseline-failure-diagnosis.md`.
+`bench/findings/v0-baseline-failure-diagnosis.md`.
 
 ### 8.2 V1 operational fragility (documented in findings)
 
@@ -394,7 +394,7 @@ distributed-cluster availability.
   paper Section IV.E for RMID-MSR mapping) was removed in the kernel
   series shipped with Ubuntu 22.04 HWE and 24.04. V0 cannot compile
   on this host. Documented in
-  `bench/findings/v1-baseline-failure-diagnosis.md`.
+  `bench/findings/v0-baseline-failure-diagnosis.md`.
 - **Hardware constants.** The paper's V0 has hard-coded calibrations
   (1 GbE NIC, 34 GB/s memory bandwidth, 34 MB LLC, IMC PMU type 14,
   CMT scale factor 49152) tuned for the 2022 dev machine. V1

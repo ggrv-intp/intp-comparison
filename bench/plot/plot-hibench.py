@@ -30,9 +30,6 @@
 # All output PNGs are sized so neither side exceeds ~1900 px (downstream
 # image readers reject ≥ 2000 px assets).
 #
-# Variant rename (legacy data → current):
-#   v1 → v0   v2 → v0.1   v3 → v1   v4 → v2   v5 → v3.1   v6 → v3
-#
 # Run:
 #   python3 bench/plot/plot-hibench.py results/<batch>/hibench
 # -----------------------------------------------------------------------------
@@ -65,7 +62,6 @@ except ImportError:
 # Constants — palette aligned with IntP/IADA paper conventions
 # ---------------------------------------------------------------------------
 
-RENAME = {"v1": "v0", "v2": "v0.1", "v3": "v1", "v4": "v2", "v5": "v3.1", "v6": "v3"}
 VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
 VARIANT_LABELS = {
     "v0":   "v0 (stap classic)",
@@ -221,7 +217,6 @@ def load_hibench_dir(hibench_dir: Path) -> tuple[pd.DataFrame, list[Path]]:
         meta = _read_metadata(subdir)
         profile = meta.get("profile", subdir.name.split("-large-")[0])
         df = pd.read_csv(tsv, sep="\t")
-        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
         df["profile"] = profile
         frames.append(df)
         run_dirs.append(subdir)
@@ -593,7 +588,6 @@ def fig_timeseries(run_dirs: list[Path], outdir: Path) -> None:
                 variant = parts[-4]; workload = parts[-3]
             except IndexError:
                 continue
-            variant = RENAME.get(variant, variant)
             df_t = load_profiler_tsv(prof_path)
             if df_t.empty: continue
             traces.append((profile, variant, workload, prof_path, df_t))
@@ -795,7 +789,6 @@ def fig_resource_timeseries(run_dirs: list[Path], outdir: Path) -> None:
                 variant = parts[-4]; workload = parts[-3]
             except IndexError:
                 continue
-            variant = RENAME.get(variant, variant)
             df_t = load_profiler_tsv(prof_path)
             if df_t.empty: continue
             traces.append((profile, variant, workload, prof_path, df_t))

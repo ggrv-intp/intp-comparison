@@ -125,11 +125,6 @@ ENV_ORDER = [
     "vm", "vm-guest", "vm-full",
 ]
 
-# Pre-rename → current names. Applied at load time so legacy result trees
-# (v1..v6 directories) are displayed with the current nomenclature.
-RENAME = {"v1": "v0", "v2": "v0.1", "v3": "v1", "v4": "v2", "v5": "v3.1", "v6": "v3"}
-
-
 # ---------------------------------------------------------------------------
 # Style
 # ---------------------------------------------------------------------------
@@ -206,13 +201,6 @@ def load_profiler_tsv(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _maybe_rename_variants(values) -> tuple:
-    legacy = {"v4", "v5", "v6"}
-    if any(v in legacy for v in values):
-        return tuple(RENAME.get(v, v) for v in values), True
-    return tuple(values), False
-
-
 def collect_means(results_dir: Path) -> pd.DataFrame:
     """Load every profiler.tsv and return per-run mean per metric."""
     rows = []
@@ -231,13 +219,7 @@ def collect_means(results_dir: Path) -> pd.DataFrame:
         for m in METRICS:
             rec[m] = df[m].mean(skipna=True)
         rows.append(rec)
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        renamed, did = _maybe_rename_variants(df["variant"].unique())
-        if did:
-            df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
-            print(f"  applied legacy variant rename: {RENAME}")
-    return df
+    return pd.DataFrame(rows)
 
 
 def _ordered_variants(values) -> list[str]:
@@ -439,7 +421,6 @@ def fig_timeseries(results_dir: Path, outdir: Path) -> None:
     if not files:
         print("[timeseries] no timeseries data — skip")
         return
-    legacy = any(f.parts[-5] in {"v4", "v5", "v6"} for f in files)
     n = len(files)
     cols = min(2, n)
     rows = (n + cols - 1) // cols
@@ -451,8 +432,6 @@ def fig_timeseries(results_dir: Path, outdir: Path) -> None:
         last_idx = idx
         ax = axes[idx // cols][idx % cols]
         env = f.parts[-6]; variant = f.parts[-5]
-        if legacy:
-            variant = RENAME.get(variant, variant)
         df = load_profiler_tsv(f)
         if df.empty:
             ax.axis("off"); continue
@@ -631,9 +610,6 @@ def fig_overhead_bars(results_dir: Path, outdir: Path) -> None:
     if df.empty:
         print("[overhead] no overhead data — skip")
         return
-    _, did_rename = _maybe_rename_variants(df["variant"].unique())
-    if did_rename:
-        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
     df.to_csv(outdir / "overhead_raw.csv", index=False)
 
     base = (df[df.variant == "_baseline"]
@@ -744,9 +720,6 @@ def fig_fidelity_matrix(results_dir: Path, outdir: Path) -> None:
         print("[fidelity] no fidelity data — skip")
         return
     df = pd.DataFrame(rows)
-    _, did_rename = _maybe_rename_variants(df["variant"].unique())
-    if did_rename:
-        df["variant"] = df["variant"].map(lambda v: RENAME.get(v, v))
     df = df.groupby(["env", "variant", "metric"])["r"].mean().reset_index()
     df.to_csv(outdir / "fidelity_matrix.csv", index=False)
 
@@ -1094,7 +1067,6 @@ def fig_pairwise_timeseries(results_dir: Path, outdir: Path) -> None:
     files = list(results_dir.rglob("timeseries/**/profiler.tsv"))
     if not files:
         return
-    legacy = any(f.parts[-5] in {"v4", "v5", "v6"} for f in files)
     n = len(files)
     cols = min(2, n)
     rows = (n + cols - 1) // cols
@@ -1106,8 +1078,6 @@ def fig_pairwise_timeseries(results_dir: Path, outdir: Path) -> None:
         last = idx
         ax = axes[idx // cols][idx % cols]
         env = f.parts[-6]; variant = f.parts[-5]
-        if legacy:
-            variant = RENAME.get(variant, variant)
         df = load_profiler_tsv(f)
         if df.empty:
             ax.axis("off"); continue
@@ -1167,7 +1137,6 @@ def fig_iada_segmented(results_dir: Path, outdir: Path, n_segments: int = 4) -> 
     if not files:
         print("[iada_segmented] no timeseries data — skip")
         return
-    legacy = any(f.parts[-5] in {"v4", "v5", "v6"} for f in files)
     n = len(files)
     cols = min(2, n)
     rows = (n + cols - 1) // cols
@@ -1179,8 +1148,6 @@ def fig_iada_segmented(results_dir: Path, outdir: Path, n_segments: int = 4) -> 
         last = idx
         ax = axes[idx // cols][idx % cols]
         env = f.parts[-6]; variant = f.parts[-5]
-        if legacy:
-            variant = RENAME.get(variant, variant)
         df = load_profiler_tsv(f)
         if df.empty:
             ax.axis("off"); continue

@@ -24,7 +24,7 @@ implementations within the same paradigm.
 | v0      | v1     | `v0-stap-classic/`        | Original IntP paper, SystemTap + embedded C, MSR-direct RDT, kernel 4.x baseline | Reference only |
 | v0.1    | v2     | `v0.1-stap-k68/`          | v0 patched for kernel 6.8: removes `cqm_rmid` access and conflicting MSR redefinitions; LLC occupancy disabled | Reference only |
 | v1      | v3*    | `v1-stap-native/`         | Stap-only, native probes (`probe perf.type(3).config(...).process(@1)`); no embedded C creating perf events; mbw and llcocc reported as 0 | Active |
-| v1.1    | (new)  | `v1.1-stap-helper/`       | New build: stap for software metrics + userspace helper for hardware metrics (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Helper architecture isolates RCU-unsafe operations from probe context | Planned |
+| v1.1    | (new)  | `v1.1-stap-helper/`       | New build: stap for software metrics + userspace helper for hardware metrics (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Helper architecture isolates RCU-unsafe operations from probe context | Active |
 | v2      | v4     | `v2-c-stable-abi/`        | Pure C (no framework): procfs polling, `perf_event_open` syscall, resctrl filesystem. Runtime-adaptive backend hierarchy | Active |
 | v3      | v6     | `v3-ebpf-libbpf/`         | C + libbpf + CO-RE; software metrics through ring buffer, hardware metrics through resctrl | Active |
 | v3.1    | v5     | `v3.1-bpftrace/`          | bpftrace DSL scripts + Python orchestrator + resctrl. SystemTap-script-style ergonomics on top of eBPF | Active |
@@ -32,8 +32,8 @@ implementations within the same paradigm.
 \* The v3 lineage was discontinued at the `pre-rename-2026-05-05` tag because
 its embedded-C `perf_event_create_kernel_counter()` calls triggered RCU
 stalls on kernel 6.8. The current v1 restores the v0-faithful stap-native
-approach; the new v1.1 (planned) revisits the resctrl integration with a
-userspace helper to avoid the RCU-unsafe pattern.
+approach; v1.1 revisits the resctrl integration with a userspace helper
+to avoid the RCU-unsafe pattern, recovering the full 7-metric coverage.
 
 ## Why the rename
 
@@ -57,11 +57,15 @@ userspace helper to avoid the RCU-unsafe pattern.
   variant strings (e.g., `bare/v3/solo/...`) by design -- snapshots are
   immutable. Use this table to translate when reading them.
 
-## Pending work after rename (2026-05-05)
+## Status after rename (2026-05-05)
 
-- Implement v1.1 (the helper-userspace SystemTap variant). Currently a
-  placeholder.
-- Validate v1 on the production host (no RCU stall under repeated runs).
-- Rerun the v3-legacy results that are missing (only 7 of 60 v3-legacy
-  solo runs completed in the 2026-05-04 campaign before the kernel hung).
-  These are now part of v1 / v1.1 once those builds are validated.
+- v1.1 (the helper-userspace SystemTap variant) is implemented and integrated
+  into `bench/run-intp-bench.sh`; see `v1.1-stap-helper/` and
+  `METRICS-ALIGNMENT.md` for the full coverage matrix and the documented
+  HiBench distributed-mode limitation.
+- v1 was validated on the production host (no RCU stalls under repeated
+  runs); see `bench/findings/v1-modernization-reliability-findings.md`.
+- The v3-legacy result gap from the 2026-05-04 campaign (7 of 60 solo runs
+  before the kernel hung) was retired in favour of the post-rename
+  campaign on Hetzner Sapphire Rapids (`results/bench-full/`, dated
+  2026-05-07), which covers v1.1, v2, v3, and v3.1.

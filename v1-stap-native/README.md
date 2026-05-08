@@ -1,9 +1,11 @@
 # V1 -- IntP stap-native (no helper, no embedded I/O)
 
 This variant targets Linux 6.8+ and is the *restored* SystemTap-only build
-after the legacy `v3-updated-resctrl` lineage proved unsafe under modern
-RCU enforcement (kernel >= 5.15 detects "voluntary context switch within
-RCU read-side critical section" and stalls the system unrecoverably).
+after the predecessor lineage (legacy `v3-updated-resctrl`, preserved at
+the `pre-rename-2026-05-05` git tag; see `VERSIONS.md` for the rename map)
+proved unsafe under modern RCU enforcement (kernel >= 5.15 detects
+"voluntary context switch within RCU read-side critical section" and
+stalls the system unrecoverably).
 
 V1 keeps the SystemTap engine but drops every embedded-C operation that
 required RCU-unsafe context: no `perf_event_create_kernel_counter()`, no

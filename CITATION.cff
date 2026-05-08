@@ -2,12 +2,12 @@ cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
 title: "IntP -- Interference Profiler: Multi-Variant Comparison"
 abstract: >
-  Six implementation variants of IntP, an interference profiler that collects
+  Seven implementation variants of IntP, an interference profiler that collects
   7 metrics from the Linux kernel. Developed as part of a Master's dissertation
   on kernel instrumentation for interference profiling, comparing the original
-  SystemTap-based IntP against modern instrumentation approaches (procfs
-  polling, bpftrace, eBPF/CO-RE) to evaluate portability, safety, and
-  measurement fidelity tradeoffs.
+  SystemTap-based IntP and an RCU-safe stap+helper hybrid against modern
+  instrumentation approaches (procfs polling, bpftrace, eBPF/CO-RE) to
+  evaluate portability, safety, and measurement fidelity tradeoffs.
 authors:
   - family-names: "Sacilotto"
     given-names: "André"

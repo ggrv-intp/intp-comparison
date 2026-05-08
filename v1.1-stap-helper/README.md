@@ -1,7 +1,8 @@
 # v1.1 -- SystemTap with userspace helper for hardware metrics
 
-Status: implementation in progress (helper done; matching `.stp` script
-pending v1 validation on the production host).
+Status: complete. Helper, matching `.stp` script, and bench integration
+all done; nets switched to softirq tapset for kernel-6.8/veth fidelity
+(see `METRICS-ALIGNMENT.md`).
 
 This variant pairs a stap script (software metrics: net, block, cpu,
 LLC miss ratio) with a userspace daemon that owns the RCU-unsafe
@@ -76,8 +77,8 @@ missing or stale, both metrics report 0.
     kill -TERM "$HELPER_PID"
     wait "$HELPER_PID"
 
-The bench harness (`bench/run-intp-bench.sh`) will be updated to
-launch the helper for v1.1 only.
+The bench harness (`bench/run-intp-bench.sh`) launches the helper for
+v1.1 only and tears it down after the run completes.
 
 ## Limitations / known issues
 

@@ -5,13 +5,17 @@ benchmark campaign.
 
 ## Index
 
-- [V0 Baseline -- Compilation failure diagnosis](v1-baseline-failure-diagnosis.md)
+- [V0 Baseline -- Compilation failure diagnosis](v0-baseline-failure-diagnosis.md)
   - Documents why the original V0 probe fails deterministically on modern
     kernel/header combinations.
-- [V1 Modernization -- Reliability findings](v3-modernization-reliability-findings.md)
+- [V1 Modernization -- Reliability findings](v1-modernization-reliability-findings.md)
   - Documents what was improved in V1 (the restored stap-native build) and
     which operational limitations remain under modern kernels and hardware.
     The userspace-helper recovery path is implemented in V1.1.
+- [LAD pantanal01 -- RDT monitoring unavailable on Skylake-SP gen1](lad-skylake-sp-rdt-monitoring-disabled.md)
+  - Documents the platform-level limitation that disables CMT/MBM on the
+    LAD Skylake-SP host (microcode + erratum), affecting `mbw` and
+    `llcocc` on every variant that depends on RDT.
 
 ## Scope
 

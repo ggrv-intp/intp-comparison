@@ -42,10 +42,10 @@ the original SystemTap approach across kernel versions and hardware architecture
 | V0 -- Original (SystemTap, <=6.6) | Complete (baseline; runs on Ubuntu 22.04 + kernel 6.5 HWE only) |
 | V0.1 -- Updated (SystemTap, 6.8+, LLC disabled) | Complete |
 | V1 -- Stap-native (SystemTap, 6.8+, mbw/llcocc disabled) | Complete |
-| V1.1 -- Stap + userspace helper (SystemTap, 6.8+, full metrics, RCU-safe) | Helper implemented; matching `.stp` and bench integration done; pending target-hardware validation |
-| V2 -- C / procfs / perf_event / resctrl | Validated locally; awaiting target hardware for Phase 3 experiments |
-| V3.1 -- bpftrace + Python orchestrator | Validated locally; awaiting target hardware for Phase 3 experiments |
-| V3 -- eBPF/CO-RE (libbpf) | Validated locally; awaiting target hardware for Phase 3 experiments |
+| V1.1 -- Stap + userspace helper (SystemTap, 6.8+, full metrics, RCU-safe) | Complete (helper, `.stp`, and bench integration done; HiBench distributed-mode limitation documented in METRICS-ALIGNMENT.md) |
+| V2 -- C / procfs / perf_event / resctrl | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
+| V3.1 -- bpftrace + Python orchestrator | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
+| V3 -- eBPF/CO-RE (libbpf) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 
 ### Citation
 

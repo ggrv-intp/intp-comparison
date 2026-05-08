@@ -63,7 +63,7 @@ boot-order toggle):
 
 The current campaign runs on **noble (nvme1n1)**. Templates:
 
-- `bench/installimage-jammy.conf` — V0 baseline OS
+- `bench/setup/installimage-jammy.conf` — V0 baseline OS
 - `bench/setup/installimage-noble.conf` — modern OS
 
 Reproduction steps (Hetzner Rescue System):

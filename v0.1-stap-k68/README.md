@@ -47,9 +47,6 @@ sudo stap -g intp-6.8.stp <PID> <interval_ms>
 - Still requires SystemTap, debuginfo, and guru mode
 - Still loads a kernel module (crash risk remains)
 
-See v1-stap-native/ for the full 7/7 metric solution.
-
----
-
-> TODO: Populate with files from the old dev branch.
-> Use: git show old-dev:intp-6.8.stp > intp-6.8.stp (etc.)
+For the full 7/7 metric stack on kernel 6.8+, see `v1.1-stap-helper/`
+(SystemTap + userspace helper) or the eBPF/procfs variants
+(`v3-ebpf-libbpf/`, `v3.1-bpftrace/`, `v2-c-stable-abi/`).

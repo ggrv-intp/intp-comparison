@@ -13,7 +13,7 @@
 #   - Uses ONLY stap-native probes (no embedded C creating perf events,
 #     no embedded C touching /sys or /proc)
 #   - LLC miss ratio comes from `probe perf.type(3).config(...).process(@1)`
-#     (same approach as v0, the legacy `v1-original` SystemTap script)
+#     (same approach as V0; see VERSIONS.md for the legacy-name map)
 #   - mbw  (memory bandwidth)   --> reported as 0 (requires uncore IMC,
 #                                    deferred to v1.1 helper userspace)
 #   - llcocc (LLC occupancy)    --> reported as 0 (requires resctrl helper,
@@ -336,7 +336,7 @@ function print_mem_report()
 }
 
 ####
-#	LLC miss ratio (stap-native, faithful to legacy v1-original / current v0)
+#	LLC miss ratio (stap-native, faithful to V0)
 ####
 
 global llc_load, llc_load_misses

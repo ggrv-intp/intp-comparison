@@ -234,7 +234,7 @@ ensure_data_dirs() {
 
 prepare_hibench_datasets() {
     local size="${HIBENCH_SCALE:-small}"
-    log "preparing HiBench datasets (scale=$size) — pode demorar vários minutos"
+    log "preparing HiBench datasets (scale=$size) — may take several minutes"
     cd "$HIBENCH_HOME"
     export HADOOP_HOME PATH JAVA_HOME
 
@@ -270,16 +270,16 @@ verify_hibench_can_run() {
         warn "wordcount run.sh not found; skipping smoke test"
         return 0
     fi
-    log "smoke test: rodando wordcount/spark…"
+    log "smoke test: running wordcount/spark…"
     cd "$HIBENCH_HOME"
     export HADOOP_HOME PATH JAVA_HOME SPARK_HOME=/opt/spark
     if timeout 300 bash "$wc" > /tmp/hibench-smoke.log 2>&1; then
-        log "  smoke test OK — wordcount completou"
-        log "  últimas 5 linhas do log:"
+        log "  smoke test OK — wordcount completed"
+        log "  last 5 log lines:"
         tail -5 /tmp/hibench-smoke.log | sed 's/^/    /'
         return 0
     else
-        warn "  smoke test FAILED — veja /tmp/hibench-smoke.log"
+        warn "  smoke test FAILED — see /tmp/hibench-smoke.log"
         tail -20 /tmp/hibench-smoke.log | sed 's/^/    /'
         return 1
     fi

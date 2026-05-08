@@ -15,8 +15,8 @@ Narrative claims in this document should be read alongside the benchmark
 findings in:
 
 - `bench/findings/README.md`
-- `bench/findings/v1-baseline-failure-diagnosis.md`
-- `bench/findings/v3-modernization-reliability-findings.md`
+- `bench/findings/v0-baseline-failure-diagnosis.md`
+- `bench/findings/v1-modernization-reliability-findings.md`
 
 ## Variants
 

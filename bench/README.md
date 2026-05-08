@@ -23,9 +23,9 @@ All benchmark diagnoses and reliability notes are centralized in
 `bench/findings/`.
 
 - V0 baseline compilation diagnosis:
-    `bench/findings/v1-baseline-failure-diagnosis.md`
+    `bench/findings/v0-baseline-failure-diagnosis.md`
 - V1 modernization reliability findings:
-    `bench/findings/v3-modernization-reliability-findings.md`
+    `bench/findings/v1-modernization-reliability-findings.md`
 
 ## Quick start
 
@@ -170,13 +170,13 @@ bars in `fig04_overhead_bars.png`; the other figures plot the mean.
 ## Estimated runtime
 
 With defaults (3 reps, 60 s solo, 60 s overhead, 300 s timeseries,
-6 variants, 1 env, 15 solo + 5 pair + 3 overhead workloads):
+7 variants, 1 env, 15 solo + 5 pair + 3 overhead workloads):
 
-- solo: 6 * 15 * 3 * (10 + 60 + 5) ~ 3.4 h
-- pairwise: 6 * 5 * 3 * 75 ~ 1.1 h
-- overhead: 1 * 3 * 3 * 60 (baseline) + 6 * 3 * 3 * 60 (with) ~ 1.4 h
-- timeseries: 6 * 1 * 300 ~ 0.5 h
-- Total bare-metal: ~6.5 h
+- solo: 7 * 15 * 3 * (10 + 60 + 5) ~ 3.9 h
+- pairwise: 7 * 5 * 3 * 75 ~ 1.3 h
+- overhead: 1 * 3 * 3 * 60 (baseline) + 7 * 3 * 3 * 60 (with) ~ 1.6 h
+- timeseries: 7 * 1 * 300 ~ 0.6 h
+- Total bare-metal: ~7.5 h
 - + container env: roughly +6.5 h
 - + VM env: roughly +7 h (boot overhead)
 

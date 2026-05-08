@@ -1,14 +1,20 @@
 # v1.1 -- SystemTap with userspace helper for hardware metrics
 
-Status: design phase. Implementation pending.
+Status: implemented. Both userspace helper (`intp-helper`) and the
+matching SystemTap script (`intp-v1.1.stp`) are in this directory and
+integrated into `bench/run-intp-bench.sh`. This document records the
+design rationale; cross-reference `METRICS-ALIGNMENT.md` for the
+metric-by-metric formulas as actually shipped (notably nets switched
+to the softirq tapset rather than V0's per-packet kprobes).
 
 ## Why a helper
 
-Both v0 (legacy `v1-original`) and the lineage that is now v1 (legacy
-`v3-updated-resctrl`) tried to read uncore IMC counters and resctrl files
-from SystemTap embedded C in probe context. On kernel >= 5.15 this triggers
-"voluntary context switch within RCU read-side critical section" (see
-`bench/findings/v3-modernization-reliability-findings.md`)
+Both v0 and the legacy `v3-updated-resctrl` lineage (the predecessor
+of today's v1; see `VERSIONS.md` for the rename map) tried to read
+uncore IMC counters and resctrl files from SystemTap embedded C in
+probe context. On kernel >= 5.15 this triggers "voluntary context
+switch within RCU read-side critical section" (see
+`bench/findings/v1-modernization-reliability-findings.md`)
 because `perf_event_create_kernel_counter`, `mutex_lock`, `kmalloc(GFP_KERNEL)`,
 `filp_open`, `kernel_write` and `kernel_read` can sleep, and probes hold an
 RCU read lock. The system hangs hard and only power-cycle recovers.
@@ -151,22 +157,21 @@ small file in `/tmp` from there is the supported pattern for stap-side
 data ingest and matches what legacy v3 did for occupancy (the only place
 the legacy v3 build got right). v1.1 keeps that pattern and removes the rest.
 
-## Open questions for review
+## Decisions taken at implementation time
 
-1. **Polling interval**: 1s matches the existing `timer.s(1)` in stap.
-   Higher rate would give better mbw resolution but more poll overhead.
-2. **Pattern matching**: `comm` (15-char limit) or full `cmdline`? `comm`
-   is faster but "stress-ng" workloads spawn child processes with the
-   same comm so it works. `cmdline` is more flexible.
-3. **Multiple workloads**: pattern is currently a single string. For
-   pairwise/cross-workload campaigns we may want multiple patterns or
-   a regex. For now, single pattern with substring match.
-4. **Fallback behavior**: if RDT is not available on the host, the
-   helper should report mbw and llcocc = 0 and *not* fail to start;
-   stap-side stays the same. Detected via `/proc/cpuinfo` flags.
-5. **Concurrent helpers**: only one `mon_groups/intp/` exists. Two
-   parallel campaigns would clash. Use a unique name (PID-suffixed) per
-   helper instance, or reject startup if directory already exists.
+1. **Polling interval**: 1s, matching the `timer.s(1)` in the stap
+   side. Override via `INTP_HELPER_INTERVAL_S`.
+2. **Pattern matching**: `comm` (`/proc/<pid>/comm`, 15-char limit).
+   Sufficient for stress-ng and the HiBench workloads in scope; full
+   `cmdline` matching remains a future extension.
+3. **Multiple workloads**: a single substring pattern is passed to
+   both helper and stap. Multi-pattern / regex support is out of scope.
+4. **Fallback behaviour**: if uncore IMC events fail to open, mbw is
+   reported as 0; if resctrl is unavailable, llcocc is reported as 0.
+   The helper still runs and writes whatever it can.
+5. **Concurrent helpers**: each helper creates a PID-suffixed
+   `mon_groups/intp-<pid>/` directory so parallel campaigns do not
+   clash on the same resctrl path.
 
 ## Implementation language
 

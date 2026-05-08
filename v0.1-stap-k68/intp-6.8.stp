@@ -564,11 +564,10 @@ function print_cache_report()
 
 function print_llc_report()
 {
-	// LLC occupancy monitoring disabled for kernel 6.8.0+
-	// The perf_rmid_read function is incompatible with new kernel
-	// TODO: Implement using resctrl interface (/sys/fs/resctrl/)
-
-	// Return 0 for now (metric disabled)
+	// LLC occupancy is intentionally disabled in V0.1 -- the kernel-6.8 CQM
+	// API (perf_rmid_read / cqm_rmid) was removed and reintroducing the
+	// metric would require leaving probe context (RCU-unsafe). The resctrl-
+	// based path lives in V1.1 (see v1.1-stap-helper/).
 	return 0
 }
 
