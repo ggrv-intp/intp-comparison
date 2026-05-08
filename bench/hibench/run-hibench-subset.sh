@@ -163,7 +163,9 @@ Usage: sudo $0 [options]
 
 Options:
   --variants CSV              IntP variants to run (default: v2,v3.1,v3)
-                              Supported: v1,v2,v3.1,v3
+                              Supported: v1,v1.1,v2,v3.1,v3
+                              Note: v1.1 stap-side runs in @system (system-wide)
+                              mode for HiBench — see _start_v1_1_profiler.
   --workloads CSV             Workloads to run (default: all)
                               Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight,dfsioe
   --size small|medium|large|huge|gigantic
@@ -193,7 +195,7 @@ Options:
 
 Examples:
   sudo $0 --variants v2,v3.1,v3 --size medium --profile both
-  sudo $0 --variants v1,v2,v3.1,v3 --size medium --profile standard
+  sudo $0 --variants v1,v1.1,v2,v3.1,v3 --size medium --profile standard
   INTP_BENCH_V3_DEEP_CLEANUP_EVERY=4 sudo $0 --variants v1 --size small
 EOF
 }
@@ -500,6 +502,15 @@ _start_v1_1_profiler() {
     # V1.1 = stap script + userspace helper. Helper owns the RCU-unsafe
     # operations (uncore IMC perf events, resctrl mon_group); the stap
     # script reads /tmp/intp-hw-data via a procfs read probe.
+    #
+    # HiBench-specific: the stap side runs in SYSTEM-WIDE mode (@1="@system"
+    # sentinel). HiBench's Spark Driver is launched AFTER stap attach, often
+    # inside netns intp-app, so per-process probes (process(@1).begin and
+    # [pid()] in mpids gates) miss it. The system-wide branch in intp-v1.1.stp
+    # drops all PID filtering and matches the semantics V2 / V3 / V3.1 already
+    # use for HiBench. The helper still receives the comm pattern (e.g. "java")
+    # because resctrl mon_group enrollment scans /proc/*/comm — that part
+    # works fine across netns since PID namespace is shared with the host.
     local outfile="$1"
 
     V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
@@ -511,7 +522,7 @@ _start_v1_1_profiler() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         {
-            printf '# variant=v1.1 hibench target=%s\n' "$STAP_TARGET"
+            printf '# variant=v1.1 hibench target=%s helper=%s mode=@system\n' "@system" "$STAP_TARGET"
             printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         } > "$outfile"
         STAP_PID=$$  # fake
@@ -537,7 +548,7 @@ _start_v1_1_profiler() {
         -DMAXSKIPPED=1000000 \
         -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
         -DSTP_OVERLOAD_INTERVAL=1000000000LL \
-        "$V1_1_STP" "$STAP_TARGET" > "$stap_log" 2>&1 &
+        "$V1_1_STP" "@system" > "$stap_log" 2>&1 &
     STAP_PID=$!
 
     local intestbench=""
@@ -560,7 +571,7 @@ _start_v1_1_profiler() {
     fi
 
     {
-        printf '# variant=v1.1 hibench target=%s\n' "$STAP_TARGET"
+        printf '# variant=v1.1 hibench mode=@system helper=%s\n' "$STAP_TARGET"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
     } > "$outfile"
 

@@ -102,44 +102,52 @@ After applying the patches above, the 7 metrics should be:
 
 For the SBAC-PAD campaign on Hetzner kernel 6.8:
 - V0, V0.1, V1 do not run (kernel ≥6.8 incompatibility)
-- **V1.1 is excluded from HiBench distributed-mode runs** — known limitation
-  documented below. Included for stress-ng full bench where target=stress-ng
-  is the workload's own parent process (PID filter resolves naturally).
-- V2, V3, V3.1 are the IntP successor variants used for HiBench
+- **V1.1 runs in two modes**: per-process for stress-ng (the workload IS its
+  own parent, so `process("stress-ng")` attach resolves naturally), and
+  **system-wide** for HiBench (Spark Driver launches after stap attach,
+  inside netns intp-app — the per-process attach can't reach it). Switched
+  via the `@1 = "@system"` sentinel in `intp-v1.1.stp`. See section below.
+- V2, V3, V3.1 are the IntP successor variants — system-wide by construction.
 
-### V1.1 distributed-mode HiBench limitation (excluded)
+### V1.1 dual-mode design (per-process + system-wide)
 
-V1.1's stap-based per-process probes (`process(@1).begin`, `block_rq_complete`,
-`perf.sw.cpu_clock`, `llc_load`) populate `mpids[]` at attach time by scanning
-`/proc` for processes matching the target name (e.g. "java"). Spark Driver
-in distributed mode launches **after** stap attach, **inside netns intp-app**,
-spawned by `ip netns exec`. Empirically:
+V1.1's stap-based per-process probes (`process(@1).begin`,
+`perf.type(3).config(...).process(@1)`, plus `[pid()] in mpids` filters on
+netfilter and scheduler probes) require `process(@1)` to attach to the
+workload binary. This works for stress-ng — the workload IS the binary
+named by the target — but fails for HiBench because the Spark Driver:
 
-- `process("java").begin` does not propagate to the Driver in this scenario
-  (uprobe attachment may not cross PID-namespace boundary cleanly, or the
-  process probe family doesn't match for the new exec).
-- The Driver's PID never enters `mpids`.
-- All `[pid()] in mpids` / `[tid() in mpids]`-gated probes (`block`, `cpu`,
-  `llc`) silently produce no data for Driver work.
-- Only `netfilter.ip.local_out` (which fires for the daemons that ARE in
-  `mpids`) captures aggregate `netp` (~28% in dfsioe smoke); other 6 metrics
-  remain at 0.
+- launches **after** stap attaches (via `spark-submit` invoked by the
+  HiBench runner), so the begin-probe uprobe has no instance to fire on
+  at attach time and depends on detecting the new exec;
+- runs **inside netns intp-app** (spawned by `ip netns exec`), where uprobe
+  attachment to `process("java")` does not propagate cleanly.
 
-This is a finding of the paper: stap-based PID-filtered profilers have a
-structural blindspot for dynamically-spawned workloads (Spark Driver, Java
-fork-and-exec, container-launched processes). eBPF (V3, V3.1) and procfs
-(V2) approaches are immune because they attach to kernel-wide tracepoints
-and procfs counters that don't depend on per-process attach.
+Result before the fix: the Driver's PID never enters `mpids`, all
+mpids-gated probes silently produce zero, only system-wide probes
+(`block_rq_complete`, `softirq.entry/exit`, helper-fed `mbw` / `llcocc`)
+captured Driver work.
 
-Tried fixes (insufficient in available time):
-- Replace V0's per-packet kprobes with `softirq.entry/exit` tapset for nets:
-  removes net stack PID dependency but doesn't help block / cpu / llc.
-- Add fork-tracking probe to propagate `mpids[]` from parent to child:
-  would require auditing every metric probe's filter — out of scope.
+The fix is to give V1.1 a **system-wide mode** matching V2 / V3 / V3.1
+semantics for HiBench. In `intp-v1.1.stp`, when `@1 == "@system"` the
+preprocessor selects:
 
-Workarounds (not pursued for SBAC-PAD):
-- Run V1.1 with target = "stress-ng" instead of "java" — works for stress-ng
-  full bench because stress-ng IS the target's parent. Implemented in
-  bench/run-intp-bench.sh's V1.1 dispatch.
-- Run V1.1 with target = full path matching Driver — requires HiBench
-  modification.
+- no `process(@1).begin / .end` probes (mpids stays empty; nprocs is
+  seeded to 1 in `probe begin` so all `nprocs > 0` gates open immediately);
+- `perf.type(3).config(0x000002)` and `0x010002` attach **without** a
+  `.process(...)` clause (system-wide LLC monitoring across every CPU);
+- `netfilter.ip.local_out / local_in` count all IP traffic (no
+  `[pid()] in mpids` gate, no flow whitelisting);
+- `scheduler.ctxswitch` records every task's CPU time, normalised
+  against `CPU_TOTAL_CORES * window_ns` (same denominator as per-process
+  mode, so the percentage scale is preserved).
+
+The userspace helper (`intp-helper`) is unchanged in either mode — its
+resctrl `mon_group` enrollment scans `/proc/*/comm` on the host PID
+namespace (which is shared with `intp-app`), so passing the actual comm
+pattern (e.g. `"java"`) keeps `mbw` and `llcocc` accurate for the
+Spark Driver. Only the stap side switches to `@system`.
+
+`bench/hibench/run-hibench-subset.sh` invokes stap with `"@system"` for
+v1.1 and the helper with the real comm pattern; `bench/run-intp-bench.sh`
+keeps the per-process path for stress-ng.

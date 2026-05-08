@@ -20,10 +20,34 @@
 #   helper's output file from the procfs read probe (user-task context,
 #   RCU-safe).
 #
+# Two probe-attach modes are supported via the @1 argument:
+#   - @1 = <comm-pattern>   per-process mode (stress-ng workloads): probes
+#                           are pinned to the workload's binary via
+#                           process(@1).{begin,thread.begin,end,...} and
+#                           perf events use .process(@1) for per-PID
+#                           attribution. mpids[] is populated by the begin
+#                           probes, and netfilter / scheduler filter on it.
+#   - @1 = "@system"        system-wide mode (HiBench / dynamically-spawned
+#                           workloads such as Spark Driver launched after
+#                           stap attach, possibly inside a netns): no
+#                           process(@1) probes are emitted, perf events
+#                           attach host-wide, and netfilter / scheduler
+#                           drop the mpids filter so all kernel events on
+#                           the host count toward the metric. Matches the
+#                           system-wide semantics V2 / V3 / V3.1 use for
+#                           HiBench, fixing the structural PID-filter
+#                           blindspot documented in METRICS-ALIGNMENT.md.
+#                           The helper still receives a real comm pattern
+#                           (e.g. "java") for its resctrl mon_group PID
+#                           enrollment; only the stap side switches.
+#
 # Build/Usage:
 #   1. cd v1.1-stap-helper && make
-#   2. sudo ./intp-helper <comm-pattern> &     # start helper first
-#   3. sudo stap -g -B CONFIG_MODVERSIONS=y intp-v1.1.stp <comm-pattern>
+#   2. sudo ./intp-helper <comm-pattern> &       # helper always uses comm
+#   3. # per-process (stress-ng):
+#      sudo stap -g -B CONFIG_MODVERSIONS=y intp-v1.1.stp <comm-pattern>
+#      # system-wide (HiBench / Spark):
+#      sudo stap -g -B CONFIG_MODVERSIONS=y intp-v1.1.stp '@system'
 #   4. (after run) kill the helper
 #
 # Output columns (unchanged from v0/v1): time_ms netp nets blk mbw llcmr llcocc cpu
@@ -33,7 +57,17 @@ global interval = 1
 probe begin
 {
 	printf("IntP v1.1 (stap + userspace helper)\n")
-	printf("Tracing processes named \"%s\"\n", @1)
+%( @1 == "@system" %?
+	printf("Mode: SYSTEM-WIDE (no PID filter; matches V2/V3/V3.1 semantics)\n")
+	/* Seed accounting state so every `nprocs > 0` gate opens immediately
+	 * and so initial_time / runtime_procfs flow without waiting for a
+	 * process(@1).begin we never installed. */
+	initial_time = gettimeofday_ns()
+	nprocs = 1
+	started = 1
+%:
+	printf("Mode: PER-PROCESS — tracing processes named \"%s\"\n", @1)
+%)
 	printf("NOTE: mbw and llcocc come from /tmp/intp-hw-data (helper must be running)\n\n")
 }
 
@@ -49,6 +83,10 @@ global exitcounter = 0
 global mpids
 global nprocs = 0
 
+%( @1 == "@system" %?
+	/* System-wide mode: no per-process attach. mpids[] stays empty;
+	 * nprocs is seeded to 1 in `probe begin` so all metric gates open. */
+%:
 probe process(@1).begin, process(@1).thread.begin {
 	if (initial_time == 0) {
 		initial_time = gettimeofday_ns();
@@ -91,6 +129,7 @@ probe process(@1).end, process(@1).thread.end {
 		}
 	}
 }
+%)
 
 ####
 #	Block IO call statistics
@@ -158,17 +197,29 @@ global net_tput
 global flows
 
 probe netfilter.ip.local_out {
+%( @1 == "@system" %?
+	if (length > 0) {
+		net_tput <<< length
+	}
+%:
 	if(([pid()] in mpids) && length > 0) {
 		net_tput <<< length
 		if(!([saddr,daddr,dport] in flows))
 			flows[saddr,daddr,dport] = pid()
 	}
+%)
 }
 
 probe netfilter.ip.local_in {
+%( @1 == "@system" %?
+	if (length > 0) {
+		net_tput <<< length
+	}
+%:
 	if(([daddr,saddr,sport] in flows) && length > 0) {
 		net_tput <<< length
 	}
+%)
 }
 
 /*
@@ -315,9 +366,16 @@ probe scheduler.ctxswitch
 			delete cpu_sched_in_ns[prev_pid]
 		}
 
+%( @1 == "@system" %?
+		/* Host-wide CPU accounting: every task entering the CPU is
+		 * counted, normalised against CPU_TOTAL_CORES * window_ns
+		 * by print_cpu_report (same denominator as per-process mode). */
+		cpu_sched_in_ns[next_pid] = now
+%:
 		if ([next_pid] in mpids) {
 			cpu_sched_in_ns[next_pid] = now
 		}
+%)
 	}
 }
 
@@ -368,8 +426,16 @@ function print_cpu_report()
 global llc_load, llc_load_misses
 global llc_load_t = 0, llc_load_misses_t = 0
 
+%( @1 == "@system" %?
+/* System-wide LLC monitoring: perf events attach on every CPU without a
+ * .process() filter, so misses on any task (including Spark Driver
+ * launched after stap attach or inside a netns) accumulate. */
+probe perf.type(3).config(0x000002) { llc_load <<< 1; llc_load_t += 1 }
+probe perf.type(3).config(0x010002) { llc_load_misses <<< 1; llc_load_misses_t += 1 }
+%:
 probe perf.type(3).config(0x000002).process(@1) { llc_load <<< 1; llc_load_t += 1 }
 probe perf.type(3).config(0x010002).process(@1) { llc_load_misses <<< 1; llc_load_misses_t += 1 }
+%)
 
 function print_cache_report()
 {
