@@ -57,21 +57,23 @@ tracepoint:net:net_dev_xmit
     }
 }
 
-/* ---- RX: NAPI schedule -> napi_complete_done per-poll svc time --------
+/* ---- RX: __napi_schedule_irqoff -> napi_complete_done per-poll svc time
  *
- * V0 used kprobe:__napi_schedule_irqoff which only fires from IRQ context
- * (physical NICs in hard-IRQ). For veth / loopback / any device using the
- * per-CPU backlog NAPI, the entry point is __napi_schedule (no _irqoff)
- * called from process context via napi_schedule. Probe both so the metric
- * works on both physical NICs and veth-routed (distributed-mode) traffic.
+ * Verified empirically on Hetzner kernel 6.8.0-111 with iperf3 over veth:
+ *   __napi_schedule_irqoff fires 18,935 times in 6s (veth backlog NAPI
+ *   schedules with IRQs already disabled — the _irqoff variant IS the
+ *   correct entry point for backlog, contrary to a naive read of the
+ *   kernel source).
+ *   napi_complete_done fires 18,754 times — pairs cleanly via arg0
+ *   (struct napi_struct *), giving ~99% match rate.
  *
- * Both functions take struct napi_struct *n as arg0, so we use it as the
- * map key — last writer wins if both fire for the same NAPI instance in a
- * single dispatch (rare, harmless).
+ * The non-_irqoff `__napi_schedule` does NOT fire for any path observed,
+ * so probing it is dead code (and breaks the multi-probe block in
+ * bpftrace 0.20 if the symbol attach fails — it doesn't, but the block
+ * never produced data with both probes attached).
  */
 
-kprobe:__napi_schedule_irqoff,
-kprobe:__napi_schedule
+kprobe:__napi_schedule_irqoff
 {
     @rx_start[arg0] = nsecs;
 }
