@@ -203,28 +203,33 @@ global net_rcv_req
 global net_rcv_lat
 global rx_softirq_start_t
 
-probe kernel.trace("irq_softirq_entry")?, kernel.trace("irq:softirq_entry")?
+/* Use the stap softirq tapset (softirq.entry / softirq.exit) — exposes
+ * vec_nr as a built-in variable. The raw kernel.trace("irq:softirq_entry")
+ * form is unreliable across kernels because $vec accessor visibility
+ * depends on the trace event format file having that field exposed. */
+
+probe softirq.entry
 {
 	if (nprocs > 0) {
-		if ($vec == 2) {
+		if (vec_nr == 2) {
 			tx_softirq_start_t[tid()] = gettimeofday_ns();
-		} else if ($vec == 3) {
+		} else if (vec_nr == 3) {
 			rx_softirq_start_t[tid()] = gettimeofday_ns();
 		}
 	}
 }
 
-probe kernel.trace("irq_softirq_exit")?, kernel.trace("irq:softirq_exit")?
+probe softirq.exit
 {
 	if (nprocs > 0) {
-		if ($vec == 2) {
+		if (vec_nr == 2) {
 			st = tx_softirq_start_t[tid()]
 			if (st) {
 				net_sent_lat <<< gettimeofday_ns() - st
 				net_sent_req += 1
 				delete tx_softirq_start_t[tid()]
 			}
-		} else if ($vec == 3) {
+		} else if (vec_nr == 3) {
 			st = rx_softirq_start_t[tid()]
 			if (st) {
 				net_rcv_lat <<< gettimeofday_ns() - st
