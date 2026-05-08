@@ -37,8 +37,8 @@ Legend:
 
 | Variant | Metric | Change | Commit |
 |---|---|---|---|
-| V3.1 | nets | Reverted `nets.bt` from `softirq:softirq_entry/exit` to per-packet service time using `net:net_dev_start_xmit`+`net:net_dev_xmit` (TX) and `kprobe:__napi_schedule_irqoff`+`kprobe:napi_complete_done` (RX) — matches V0's measurement principle exactly. | (pending) |
-| V3.1 | nets | Removed `× cpus` from `compute_nets` in aggregator.py — V0 sums per-event service times across all events on all CPUs without dividing by core count. | (pending) |
+| V3.1 | nets | `nets.bt` measures CPU time in NET_TX (vec=2) + NET_RX (vec=3) softirqs via `irq:softirq_entry/exit` tracepoints. **Diverges from V0's per-packet kprobe model** — empirically validated that on Hetzner kernel 6.8 + veth, V0's `__dev_queue_xmit` kprobe captures only driver xmit time (microseconds for veth), and `napi_complete_done` rarely fires under sustained load (backlog never empties). Softirq tracepoints capture actual CPU time in net bottom half — same signal as V2's procfs softirq backend, but in-kernel and finer granularity. | (pending) |
+| V3.1 | nets | Removed `× cpus` from `compute_nets` in aggregator.py — output is total CPU-seconds-in-stack across all CPUs (matches V0's "summed event-time" semantic in aggregate, not per-CPU normalized). | (pending) |
 | V2   | nets | Multiplied `softirq_pct` by `num_cores` in `softirq_read` (`/proc/stat` aggregates jiffies across CPUs already, so the resulting fraction was system-wide-normalized; multiplying recovers V0's "total CPU-seconds-in-stack" semantics). | (pending) |
 | V2   | nets | Removed `/num_cores` from `throughput_read` (was previously expressing as system-wide; now matches V0's cumulative-across-CPUs semantics). | (pending) |
 | V1.1 | blk  | Switched from `(svctm_ns / 1e8) × ops_per_sec` (10× under-amplified, blind port of V0) to `sum(svctm_ns) / (runtime × 1e9) × 100` — physical disk-busy fraction matching V3 / V3.1. V1.1 is the modern stap variant; alignment with V3/V3.1 prioritised over fidelity to V0's amplification quirk. | (pending) |
