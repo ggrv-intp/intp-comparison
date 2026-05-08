@@ -24,7 +24,13 @@
 #                                 vm-guest          workload + profiler INSIDE guest, results scp'd back
 #                               container-guest needs Docker; vm-guest needs cloud-localds + a qcow2
 #                               with sshd + cloud-init, ideally with IntP build deps preinstalled.
-#     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench/hibench
+#     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench
+#     HIBENCH_VARIANTS=$BENCH_VARIANTS    override profiler variants for HiBench
+#                                         segment when some variants don't capture
+#                                         in distributed mode (e.g. V1.1 has a
+#                                         PID-filter blindspot for Spark Driver
+#                                         in netns; include it in BENCH_VARIANTS
+#                                         for stress-ng but exclude from HiBench).
 #     BENCH_WORKLOADS=             comma-separated stress-ng workload IDs to keep
 #                                  (default: empty = all 15 apps from the catalog).
 #                                  Useful to skip workloads that misbehaved in a
@@ -111,6 +117,14 @@ COOLDOWN="${COOLDOWN:-10}"
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
 BENCH_VARIANTS="${BENCH_VARIANTS:-v1,v2,v3.1,v3}"
+# HIBENCH_VARIANTS defaults to BENCH_VARIANTS but can be overridden when a
+# variant works in stress-ng full bench but not in HiBench distributed mode.
+# Concrete example: V1.1 stap PID-filtered probes capture all metrics for
+# stress-ng (target="stress-ng" matches the workload's parent), but in
+# HiBench distributed mode the Spark Driver is launched inside netns after
+# stap attach so PID filter blocks block/cpu/llc capture for it. See
+# METRICS-ALIGNMENT.md "V1.1 distributed-mode HiBench limitation".
+HIBENCH_VARIANTS="${HIBENCH_VARIANTS:-$BENCH_VARIANTS}"
 BENCH_WORKLOADS="${BENCH_WORKLOADS:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"
@@ -182,7 +196,7 @@ echo "  duration=$DURATION  reps=$REPS  interval=$INTERVAL"
 echo "  warmup=$WARMUP  cooldown=$COOLDOWN"
 echo "  timeseries_duration=$TIMESERIES_DURATION  overhead_duration=$OVERHEAD_DURATION  overhead_warmup=$OVERHEAD_WARMUP  overhead_volpert=$OVERHEAD_VOLPERT  run_seed=${RUN_SEED:-<auto>}"
 echo "  bench_envs=$BENCH_ENVS"
-echo "  bench_variants=$BENCH_VARIANTS"
+echo "  bench_variants=$BENCH_VARIANTS  hibench_variants=$HIBENCH_VARIANTS"
 echo "  bench_workloads=${BENCH_WORKLOADS:-<all>}"
 echo "    container_image=$CONTAINER_IMAGE"
 echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
@@ -340,9 +354,9 @@ if [ "$RUN_HIBENCH" = "1" ]; then
   [ -n "$MEM_BW_MAX_BPS" ] && HIBENCH_EXTRA_ARGS+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
   [ -n "$NIC_SPEED_BPS"  ] && HIBENCH_EXTRA_ARGS+=(--nic-speed-bps  "$NIC_SPEED_BPS")
   [ -n "$LLC_SIZE_BYTES" ] && HIBENCH_EXTRA_ARGS+=(--llc-size-bytes "$LLC_SIZE_BYTES")
-  run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$BENCH_VARIANTS" \
+  run_step "hibench spark subset ($HIBENCH_PROFILE/$HIBENCH_SIZE) variants=$HIBENCH_VARIANTS" \
     bash bench/hibench/run-hibench-subset.sh \
-      --variants "$BENCH_VARIANTS" \
+      --variants "$HIBENCH_VARIANTS" \
       --workloads "$HIBENCH_WORKLOADS" \
       --size "$HIBENCH_SIZE" \
       --profile "$HIBENCH_PROFILE" \

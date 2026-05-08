@@ -99,6 +99,44 @@ After applying the patches above, the 7 metrics should be:
 
 For the SBAC-PAD campaign on Hetzner kernel 6.8:
 - V0, V0.1, V1 do not run (kernel ≥6.8 incompatibility)
-- V1.1 is the stap baseline
-- V2, V3, V3.1 are the IntP successor variants
-- All 4 share the same metric definitions per this matrix
+- **V1.1 is excluded from HiBench distributed-mode runs** — known limitation
+  documented below. Included for stress-ng full bench where target=stress-ng
+  is the workload's own parent process (PID filter resolves naturally).
+- V2, V3, V3.1 are the IntP successor variants used for HiBench
+
+### V1.1 distributed-mode HiBench limitation (excluded)
+
+V1.1's stap-based per-process probes (`process(@1).begin`, `block_rq_complete`,
+`perf.sw.cpu_clock`, `llc_load`) populate `mpids[]` at attach time by scanning
+`/proc` for processes matching the target name (e.g. "java"). Spark Driver
+in distributed mode launches **after** stap attach, **inside netns intp-app**,
+spawned by `ip netns exec`. Empirically:
+
+- `process("java").begin` does not propagate to the Driver in this scenario
+  (uprobe attachment may not cross PID-namespace boundary cleanly, or the
+  process probe family doesn't match for the new exec).
+- The Driver's PID never enters `mpids`.
+- All `[pid()] in mpids` / `[tid() in mpids]`-gated probes (`block`, `cpu`,
+  `llc`) silently produce no data for Driver work.
+- Only `netfilter.ip.local_out` (which fires for the daemons that ARE in
+  `mpids`) captures aggregate `netp` (~28% in dfsioe smoke); other 6 metrics
+  remain at 0.
+
+This is a finding of the paper: stap-based PID-filtered profilers have a
+structural blindspot for dynamically-spawned workloads (Spark Driver, Java
+fork-and-exec, container-launched processes). eBPF (V3, V3.1) and procfs
+(V2) approaches are immune because they attach to kernel-wide tracepoints
+and procfs counters that don't depend on per-process attach.
+
+Tried fixes (insufficient in available time):
+- Replace V0's per-packet kprobes with `softirq.entry/exit` tapset for nets:
+  removes net stack PID dependency but doesn't help block / cpu / llc.
+- Add fork-tracking probe to propagate `mpids[]` from parent to child:
+  would require auditing every metric probe's filter — out of scope.
+
+Workarounds (not pursued for SBAC-PAD):
+- Run V1.1 with target = "stress-ng" instead of "java" — works for stress-ng
+  full bench because stress-ng IS the target's parent. Implemented in
+  bench/run-intp-bench.sh's V1.1 dispatch.
+- Run V1.1 with target = full path matching Driver — requires HiBench
+  modification.

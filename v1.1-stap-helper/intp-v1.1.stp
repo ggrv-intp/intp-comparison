@@ -208,34 +208,49 @@ global rx_softirq_start_t
  * form is unreliable across kernels because $vec accessor visibility
  * depends on the trace event format file having that field exposed. */
 
+/* nets via softirq tracepoints — measures SYSTEM-WIDE NET_TX/NET_RX softirq
+ * service time. Intentionally NOT gated by `nprocs > 0` because softirqs
+ * are kernel-wide events (no per-process attribution); the metric represents
+ * total network stack utilization on the host, aligned with V2's procfs
+ * softirq backend and V3.1's bpftrace softirq tracepoint script.
+ *
+ * Diagnostic counters: increment on every probe fire so we can detect at
+ * shutdown whether the softirq tapset is actually attaching (some stap
+ * versions silently fail expansion). Printed in the END probe.
+ */
+global softirq_entry_fires = 0
+global softirq_exit_fires = 0
+global softirq_tx_seen = 0
+global softirq_rx_seen = 0
+
 probe softirq.entry
 {
-	if (nprocs > 0) {
-		if (vec_nr == 2) {
-			tx_softirq_start_t[tid()] = gettimeofday_ns();
-		} else if (vec_nr == 3) {
-			rx_softirq_start_t[tid()] = gettimeofday_ns();
-		}
+	softirq_entry_fires += 1
+	if (vec_nr == 2) {
+		softirq_tx_seen += 1
+		tx_softirq_start_t[tid()] = gettimeofday_ns();
+	} else if (vec_nr == 3) {
+		softirq_rx_seen += 1
+		rx_softirq_start_t[tid()] = gettimeofday_ns();
 	}
 }
 
 probe softirq.exit
 {
-	if (nprocs > 0) {
-		if (vec_nr == 2) {
-			st = tx_softirq_start_t[tid()]
-			if (st) {
-				net_sent_lat <<< gettimeofday_ns() - st
-				net_sent_req += 1
-				delete tx_softirq_start_t[tid()]
-			}
-		} else if (vec_nr == 3) {
-			st = rx_softirq_start_t[tid()]
-			if (st) {
-				net_rcv_lat <<< gettimeofday_ns() - st
-				net_rcv_req += 1
-				delete rx_softirq_start_t[tid()]
-			}
+	softirq_exit_fires += 1
+	if (vec_nr == 2) {
+		st = tx_softirq_start_t[tid()]
+		if (st) {
+			net_sent_lat <<< gettimeofday_ns() - st
+			net_sent_req += 1
+			delete tx_softirq_start_t[tid()]
+		}
+	} else if (vec_nr == 3) {
+		st = rx_softirq_start_t[tid()]
+		if (st) {
+			net_rcv_lat <<< gettimeofday_ns() - st
+			net_rcv_req += 1
+			delete rx_softirq_start_t[tid()]
 		}
 	}
 }
