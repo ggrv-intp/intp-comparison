@@ -1,6 +1,6 @@
 # IntP Comparison: Multi-Variant Interference Profiler
 
-![IntP Comparison — Linux interference profiler with multi-variant comparison of SystemTap, procfs, bpftrace, and eBPF/CO-RE instrumentation.](docs/images/intp-comparison.png)
+<img src="docs/images/intp-comparison.png" alt="IntP Comparison — Linux interference profiler with multi-variant comparison of SystemTap, procfs, bpftrace, and eBPF/CO-RE instrumentation." width="720" height="344">
 
 This repository contains seven implementation variants of IntP, an interference
 profiler that collects 7 metrics from the Linux kernel. The variants are
