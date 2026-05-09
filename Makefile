@@ -12,10 +12,11 @@
 #   v1-stap-native     — native stap module (parse check only)
 #
 # Common targets:
-#   make all       build every compileable variant + validate the rest
-#   make clean     clean every variant tree
-#   make smoke     quick 5s sanity invocation per variant (needs sudo)
-#   make help      this message
+#   make all        build every compileable variant + validate the rest
+#   make clean      clean every variant tree
+#   make smoke      quick 5s sanity invocation per variant (needs sudo)
+#   make preflight  host capability check (no installs); see shared/intp-preflight.sh
+#   make help       this message
 #
 # Per-variant targets (build/clean/smoke individually):
 #   make v1.1 v2 v3 v3.1
@@ -33,7 +34,7 @@ V0_STP  := $(ROOT)/v0-stap-classic/intp.stp
 V01_STP := $(ROOT)/v0.1-stap-k68/intp-6.8.stp
 V1_STP  := $(ROOT)/v1-stap-native/intp-resctrl.stp
 
-.PHONY: all clean smoke help \
+.PHONY: all clean smoke help preflight \
         v1.1 v2 v3 v3.1 \
         clean-v1.1 clean-v2 clean-v3 clean-v3.1 \
         smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1 \
@@ -41,6 +42,12 @@ V1_STP  := $(ROOT)/v1-stap-native/intp-resctrl.stp
 
 all: v1.1 v2 v3 v3.1 validate-v0 validate-v0.1 validate-v1
 	@echo "[intp] all variants built/validated"
+
+# ---- preflight (host capability check, no installs) -------------------------
+# Reports BUILD/RUN status for every variant + the 7-metric coverage map.
+# Pass arguments via PREFLIGHT_ARGS, e.g. `make preflight PREFLIGHT_ARGS="--variants v2,v3 --strict"`.
+preflight:
+	@bash $(ROOT)/shared/intp-preflight.sh $(PREFLIGHT_ARGS)
 
 # ---- compileable variants ----------------------------------------------------
 

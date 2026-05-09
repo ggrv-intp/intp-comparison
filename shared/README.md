@@ -4,6 +4,35 @@ This directory contains scripts and utilities used across multiple IntP variants
 
 ## Files
 
+### intp-preflight.sh
+
+Host capability checker. Verifies, without installing or mounting anything,
+that the machine has every hardware and software interface needed to build
+and run each IntP variant (V0, V0.1, V1, V1.1, V2, V3.1, V3) plus the bench
+harness in `bench/run-intp-bench.sh`. Output is a per-variant BUILD/RUN
+matrix and a 7-metric coverage map (netp / nets / blk / mbw / llcmr /
+llcocc / cpu).
+
+Usage:
+
+```bash
+./intp-preflight.sh                      # check every variant
+./intp-preflight.sh --variants v2,v3.1   # restrict to selected variants
+./intp-preflight.sh --json               # machine-readable summary
+./intp-preflight.sh --strict             # non-zero exit on DEGRADED, too
+./intp-preflight.sh --quiet              # only the final tables
+make preflight                           # convenience wrapper at repo root
+make preflight PREFLIGHT_ARGS="--strict --variants v3"
+```
+
+Exit codes: `0` if every selected variant is OK (or DEGRADED in non-strict
+mode), `2` if any selected variant has a MISSING required check.
+
+Each verdict aggregates the underlying checks (kernel version, RDT/PQoS
+flags, resctrl, BTF, perf_event_paranoid, NIC, debuginfo, toolchains,
+privileges) following the per-variant requirement matrix in
+`README.md` and `docs/HARDWARE-COMPATIBILITY.md`.
+
 ### intp-detect.sh
 
 Hardware capability detection script. Auto-detects NIC speed, LLC size, RDT/PQoS
