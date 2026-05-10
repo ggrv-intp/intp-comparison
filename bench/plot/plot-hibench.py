@@ -235,7 +235,11 @@ def load_profiler_tsv(path: Path) -> pd.DataFrame:
             if not line or line.startswith("#") or line.startswith("ts") or line.startswith("netp"):
                 continue
             parts = line.split()
-            if len(parts) == 8:
+            # 9 cols = ts + time_ms + 7 metrics (v1.1 leaks its internal time_ms
+            # past the runner's awk wrapper); drop the time_ms column.
+            if len(parts) == 9:
+                ts = parts[0]; vals = parts[2:]
+            elif len(parts) == 8:
                 ts = parts[0]; vals = parts[1:]
             elif len(parts) == 7:
                 ts = None; vals = parts

@@ -185,7 +185,10 @@ def load_profiler_tsv(path: Path) -> pd.DataFrame:
             parts = line.split()
             # Schema: ts netp nets blk mbw llcmr llcocc cpu  (8 cols)
             # or:     netp nets blk mbw llcmr llcocc cpu     (7 cols)
-            if len(parts) == 8:
+            # or:     ts time_ms netp nets blk mbw llcmr llcocc cpu  (9 cols, v1.1)
+            if len(parts) == 9:
+                ts = parts[0]; vals = parts[2:]
+            elif len(parts) == 8:
                 ts = parts[0]; vals = parts[1:]
             elif len(parts) == 7:
                 ts = None; vals = parts
