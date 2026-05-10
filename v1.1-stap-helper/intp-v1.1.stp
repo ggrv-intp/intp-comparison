@@ -140,17 +140,30 @@ global block_tput, block_cput
 
 global block_srv_time
 
+# Issue→complete service-time tracking. Match V3 (eBPF) semantics: take
+# both timestamps from the same clock (local_clock_ns) inside the probe
+# and store the issue ts in an associative array keyed by request pointer.
+# Earlier revision used `$rq->io_start_time_ns` (set by the kernel via
+# ktime_get_ns) and diffed against local_clock_ns/sched_clock — those are
+# different clock domains across CPUs on multi-socket hosts, so on a 48-
+# thread Sapphire Rapids box the `delta > 0 && delta < 10s` sanity gate
+# rejected ~all events and blk read 0% always. See METRICS-ALIGNMENT.md.
+# %[N] caps the array to bound memory under heavy I/O.
+global rq_issue_ns%[16384]
+
+probe kernel.trace("block_rq_issue")?, kernel.trace("block:block_rq_issue")? {
+	rq_issue_ns[$rq] = local_clock_ns()
+}
+
 probe kernel.trace("block_rq_complete")?, kernel.trace("block:block_rq_complete")? {
 	data_len = $rq->__data_len
 	block_tput <<< data_len
 	block_cput <<< data_len
 
 	if (data_len > 0) {
-		time = local_clock_ns()
-		io_start_time_ns = $rq->io_start_time_ns
-
-		if (io_start_time_ns > 0) {
-			delta = time - io_start_time_ns
+		if ($rq in rq_issue_ns) {
+			delta = local_clock_ns() - rq_issue_ns[$rq]
+			delete rq_issue_ns[$rq]
 			if (delta > 0 && delta < 10000000000) {
 				block_srv_time <<< delta
 			}

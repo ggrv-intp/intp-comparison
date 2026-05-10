@@ -10,22 +10,26 @@
 #          metadata.env, aggregate-means.tsv, and per-rep profiler.tsv files.
 #
 # Figures (paper reference in parens):
-#   fig01_fingerprint.png        per-(profile,variant) panel × workload metric bars
+#   fig00_canonical_intp_fig4_<P>.png (IntP Fig. 4 canonical) one PNG per
+#                                              profile, variants side-by-side
+#   fig01_fingerprint_<P>.png    one PNG per profile, variants side-by-side
 #   fig02_sensitivity_<P>.png    Δ(<P> − standard) per variant; one PNG per
 #                                non-standard profile present (under the
 #                                all-stress sweep this emits one per pressure
 #                                profile: cpu/mem/cache/disk/netp/nets-extreme)
-#   fig03_metric_compare.png     per-metric variant comparison across workloads
+#   fig03_metric_compare_<M>.png one PNG per metric, profiles side-by-side
 #   fig04_per_workload_bars.png  (IntP Fig. 4)  one panel per workload, bars =
 #                                              variants × metrics
 #   fig05_radar_fingerprint.png  (IntP Fig. 4 alt) per-workload radar
 #   fig06_pca_workloads.png      (IntP Fig. 5)  PCA of workloads per profile
 #   fig07_timeseries.png         (IntP Fig. 3 / IADA Fig. 5) smoothed traces
+#   fig08_hibench_coverage.png   (paper Fig. 6) per-variant normalized
+#                                metric coverage heatmap
 #   fig08_idi_bars.png           (IADA Fig. 6) Δ resource per profile
-#   fig00_canonical_intp_fig4.png (IntP Fig. 4 canonical) single-panel
-#                                              workload×metric bar chart
 #   fig09_resource_timeseries.png (IntP Fig. 8) resource-family lines
 #   fig10_variant_resource_heatmap.png (new)   variants × resources summary
+#   fig11_metric_availability.png (new) binary ✓/— availability per (variant,metric)
+#   fig12_workload_clustermap.png (new) Ward-linkage workload clustermap
 #
 # All output PNGs are sized so neither side exceeds ~1900 px (downstream
 # image readers reject ≥ 2000 px assets).
@@ -57,6 +61,14 @@ try:
 except ImportError:
     HAS_SKLEARN = False
     warnings.warn("scikit-learn not installed — PCA figure will be skipped")
+
+try:
+    from scipy.cluster.hierarchy import leaves_list, linkage
+    from matplotlib.colors import ListedColormap
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    warnings.warn("scipy not installed — workload clustermap will be skipped")
 
 # ---------------------------------------------------------------------------
 # Constants — palette aligned with IntP/IADA paper conventions
@@ -267,45 +279,48 @@ def _smooth(arr: np.ndarray, window: int = 9) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def fig_fingerprint(df: pd.DataFrame, outdir: Path) -> None:
+    """One figure per profile so each panel has room for readable labels.
+    Earlier revision crammed profiles × variants into a single dense grid;
+    that produced overlapping x-tick labels with 6+ workloads per axis."""
     profiles = _ordered_profiles(df["profile"].unique())
     variants = _ordered_variants(df["variant"].unique())
     workloads = _ordered_workloads(df["workload"].unique())
-
-    nrows, ncols = len(profiles), len(variants)
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=_clamp_figsize(4.2 * ncols, 3.2 * nrows),
-                             squeeze=False, sharey="row")
-
+    if not (profiles and variants and workloads):
+        return
     bar_w = 0.11
     x = np.arange(len(workloads))
-
-    for ri, profile in enumerate(profiles):
+    for profile in profiles:
+        ncols = len(variants)
+        fig, axes = plt.subplots(1, ncols,
+                                 figsize=_clamp_figsize(4.6 * ncols, 3.6),
+                                 squeeze=False, sharey=True)
         for ci, variant in enumerate(variants):
-            ax = axes[ri][ci]
-            sub = df[(df["profile"] == profile) & (df["variant"] == variant)]
-            sub = sub.set_index("workload").reindex(workloads)
+            ax = axes[0][ci]
+            sub = (df[(df["profile"] == profile) & (df["variant"] == variant)]
+                   .set_index("workload").reindex(workloads))
             for mi, m in enumerate(METRICS):
                 offset = (mi - (len(METRICS) - 1) / 2) * bar_w
                 vals = sub[m].fillna(0).values
                 ax.bar(x + offset, vals, width=bar_w,
                        label=METRIC_LABEL[m], color=METRIC_COLORS[m], alpha=0.92)
             ax.set_xticks(x)
-            ax.set_xticklabels(workloads, rotation=30, ha="right", fontsize=7.5)
-            ax.set_title(f"{VARIANT_LABELS.get(variant, variant)}\n({profile})", fontsize=9)
+            ax.set_xticklabels(workloads, rotation=35, ha="right", fontsize=8.5)
+            ax.set_title(VARIANT_LABELS.get(variant, variant), fontsize=10)
             if ci == 0:
                 ax.set_ylabel("metric value (%)")
             ymax = sub[METRICS].max().max() if not sub.empty else 1.0
             ax.set_ylim(0, max(1.0, ymax * 1.18))
-
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               bbox_to_anchor=(0.5, 1.02),
-               ncol=len(METRICS), frameon=False, fontsize=8.5)
-    fig.suptitle("HiBench: IntP metric fingerprint per variant × profile",
-                 fontsize=11, y=1.05)
-    fig.tight_layout()
-    _save(fig, outdir / "fig01_fingerprint.png", "fig01")
-
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.02),
+                   ncol=len(METRICS), frameon=False, fontsize=9)
+        fig.suptitle(f"HiBench: IntP metric fingerprint — profile={profile}",
+                     fontsize=11.5, y=1.06)
+        fig.tight_layout()
+        _save(fig, outdir / f"fig01_fingerprint_{profile}.png",
+              f"fig01[{profile}]")
+        plt.close(fig)
+    return
 
 # ---------------------------------------------------------------------------
 # Fig 02 — Sensitivity Δ(<pressure-profile> − standard) per variant
@@ -375,20 +390,23 @@ def fig_sensitivity(df: pd.DataFrame, outdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def fig_metric_compare(df: pd.DataFrame, outdir: Path) -> None:
+    """One PNG per metric. Earlier revision packed metrics × profiles into
+    a single 7×7 grid; the per-panel area was too small for legible labels."""
     profiles = _ordered_profiles(df["profile"].unique())
     variants = _ordered_variants(df["variant"].unique())
     workloads = _ordered_workloads(df["workload"].unique())
-    ncols = len(profiles)
-    nrows = len(METRICS)
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=_clamp_figsize(5.4 * ncols, 1.9 * nrows),
-                             squeeze=False, sharey="row")
+    if not (profiles and variants and workloads):
+        return
     bar_w = 0.8 / max(1, len(variants))
     x = np.arange(len(workloads))
-    for mi, metric in enumerate(METRICS):
+    for metric in METRICS:
         ymax_row = df[metric].max() if metric in df.columns else 1.0
+        ncols = len(profiles)
+        fig, axes = plt.subplots(1, ncols,
+                                 figsize=_clamp_figsize(4.0 * ncols, 3.4),
+                                 squeeze=False, sharey=True)
         for ci, profile in enumerate(profiles):
-            ax = axes[mi][ci]
+            ax = axes[0][ci]
             for vi, variant in enumerate(variants):
                 sub = (df[(df["profile"] == profile) & (df["variant"] == variant)]
                        .set_index("workload").reindex(workloads))
@@ -398,18 +416,21 @@ def fig_metric_compare(df: pd.DataFrame, outdir: Path) -> None:
                        label=VARIANT_LABELS.get(variant, variant),
                        color=VARIANT_COLORS.get(variant, f"C{vi}"), alpha=0.92)
             ax.set_xticks(x)
-            ax.set_xticklabels(workloads, rotation=30, ha="right", fontsize=7.5)
-            ax.set_title(f"{metric}  ({profile})", fontsize=9)
+            ax.set_xticklabels(workloads, rotation=35, ha="right", fontsize=8.5)
+            ax.set_title(profile, fontsize=10)
             if ci == 0:
-                ax.set_ylabel(metric)
+                ax.set_ylabel(f"{metric} (%)")
             ax.set_ylim(0, max(0.5, ymax_row * 1.15))
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center",
-               bbox_to_anchor=(0.5, 1.01),
-               ncol=len(variants), frameon=False, fontsize=8.5)
-    fig.suptitle("HiBench: per-metric variant comparison", fontsize=11, y=1.02)
-    fig.tight_layout()
-    _save(fig, outdir / "fig03_metric_compare.png", "fig03")
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.02),
+                   ncol=len(variants), frameon=False, fontsize=9)
+        fig.suptitle(f"HiBench: per-profile variant comparison — metric={metric}",
+                     fontsize=11.5, y=1.06)
+        fig.tight_layout()
+        _save(fig, outdir / f"fig03_metric_compare_{metric}.png",
+              f"fig03[{metric}]")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -730,49 +751,47 @@ CANONICAL_METRIC_COLORS = {
 
 
 def fig_canonical_intp_fig4(df: pd.DataFrame, outdir: Path) -> None:
+    """One PNG per profile (variants laid out in a row), so each panel has
+    enough horizontal space for the workload tick labels not to overlap."""
     profiles = _ordered_profiles(df["profile"].unique())
     variants = _ordered_variants(df["variant"].unique())
     workloads = _ordered_workloads(df["workload"].unique())
     if not (profiles and variants and workloads):
         return
-    pairs = [(p, v) for p in profiles for v in variants]
-    n = len(pairs)
-    cols = min(2, n)
-    rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(7.4 * cols, 3.4 * rows),
-                             squeeze=False, sharey=True)
-    last = -1
-    for idx, (profile, variant) in enumerate(pairs):
-        last = idx
-        ax = axes[idx // cols][idx % cols]
-        sub = (df[(df.profile == profile) & (df.variant == variant)]
-               .set_index("workload").reindex(workloads))
-        x = np.arange(len(sub))
-        bar_w = 0.8 / max(1, len(METRICS))
-        for mi, m in enumerate(METRICS):
-            offset = (mi - (len(METRICS) - 1) / 2) * bar_w
-            vals = sub[m].fillna(0).values
-            ax.bar(x + offset, vals, width=bar_w,
-                   color=CANONICAL_METRIC_COLORS.get(m, METRIC_COLORS[m]),
-                   edgecolor="white", linewidth=0.25,
-                   label=METRIC_LABEL[m] if idx == 0 else None)
-        ax.set_xticks(x)
-        ax.set_xticklabels(workloads, rotation=30, ha="right", fontsize=7.5)
-        ax.set_title(f"{VARIANT_LABELS.get(variant, variant)} · profile={profile}",
-                     fontsize=9.5)
-        ax.set_ylabel("interference (%)")
-    for j in range(last + 1, rows * cols):
-        axes[j // cols][j % cols].axis("off")
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02),
-                   ncol=len(METRICS), frameon=False, fontsize=8.5)
-    fig.suptitle("HiBench: IntP Fig. 4 (canonical view) — interference ratios "
-                 "per workload", y=1.05, fontsize=11)
-    fig.tight_layout()
-    _save(fig, outdir / "fig00_canonical_intp_fig4.png", "fig00")
+    x = np.arange(len(workloads))
+    bar_w = 0.8 / max(1, len(METRICS))
+    for profile in profiles:
+        ncols = len(variants)
+        fig, axes = plt.subplots(1, ncols,
+                                 figsize=_clamp_figsize(5.4 * ncols, 3.6),
+                                 squeeze=False, sharey=True)
+        for ci, variant in enumerate(variants):
+            ax = axes[0][ci]
+            sub = (df[(df.profile == profile) & (df.variant == variant)]
+                   .set_index("workload").reindex(workloads))
+            for mi, m in enumerate(METRICS):
+                offset = (mi - (len(METRICS) - 1) / 2) * bar_w
+                vals = sub[m].fillna(0).values
+                ax.bar(x + offset, vals, width=bar_w,
+                       color=CANONICAL_METRIC_COLORS.get(m, METRIC_COLORS[m]),
+                       edgecolor="white", linewidth=0.25,
+                       label=METRIC_LABEL[m] if ci == 0 else None)
+            ax.set_xticks(x)
+            ax.set_xticklabels(workloads, rotation=35, ha="right", fontsize=8.5)
+            ax.set_title(VARIANT_LABELS.get(variant, variant), fontsize=10)
+            if ci == 0:
+                ax.set_ylabel("interference (%)")
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center",
+                       bbox_to_anchor=(0.5, 1.02),
+                       ncol=len(METRICS), frameon=False, fontsize=9)
+        fig.suptitle(f"HiBench: IntP Fig. 4 — interference ratios per "
+                     f"workload  (profile={profile})", y=1.06, fontsize=11.5)
+        fig.tight_layout()
+        _save(fig, outdir / f"fig00_canonical_intp_fig4_{profile}.png",
+              f"fig00[{profile}]")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +942,195 @@ def fig_variant_resource_heatmap(df: pd.DataFrame, outdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fig 08 — HiBench coverage: normalized metric signal per variant.
+# Reproduces the paper draft's fig08_hibench_coverage. For each
+# (workload, metric), the reference value is the max across variants
+# (within the chosen profile). Each variant's cell renders that variant's
+# value divided by the reference, so 1.0 means "captures the strongest
+# signal seen", 0.0 means "did not surface this metric on this workload",
+# and intermediate values show degraded but non-zero capture. Layout:
+# one panel per variant; rows = workloads, cols = metrics.
+# ---------------------------------------------------------------------------
+
+def fig_hibench_coverage(df: pd.DataFrame, outdir: Path) -> None:
+    if df.empty:
+        return
+    profiles = _ordered_profiles(df["profile"].unique())
+    if not profiles:
+        return
+    profile = "standard" if "standard" in profiles else profiles[0]
+    sub = df[df.profile == profile]
+    variants = _ordered_variants(sub["variant"].unique())
+    workloads = _ordered_workloads(sub["workload"].unique())
+    if not (variants and workloads):
+        return
+
+    # Reference per (workload, metric): max across variants.
+    ref = (sub.groupby("workload")[METRICS].max()
+              .reindex(workloads).fillna(0))
+    rows: list[dict] = []
+    for variant in variants:
+        v_df = (sub[sub.variant == variant]
+                .set_index("workload")[METRICS]
+                .reindex(workloads).fillna(0))
+        for wl in workloads:
+            for m in METRICS:
+                r = ref.loc[wl, m]
+                v = v_df.loc[wl, m]
+                cov = (v / r) if r > 1e-9 else (1.0 if v > 1e-9 else np.nan)
+                rows.append(dict(variant=variant, workload=wl, metric=m,
+                                 value=float(v), reference=float(r),
+                                 coverage=cov))
+    cov_df = pd.DataFrame(rows)
+    cov_df.to_csv(outdir / "hibench_coverage.csv", index=False)
+
+    ncols = len(variants)
+    fig, axes = plt.subplots(1, ncols,
+                             figsize=_clamp_figsize(3.0 + 2.6 * ncols,
+                                                    0.5 * len(workloads) + 1.6),
+                             squeeze=False, sharey=True)
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad(color="#dddddd")
+    im = None
+    for ci, variant in enumerate(variants):
+        ax = axes[0][ci]
+        pivot = (cov_df[cov_df.variant == variant]
+                 .pivot_table(index="workload", columns="metric",
+                              values="coverage")
+                 .reindex(index=workloads, columns=METRICS))
+        masked = np.ma.masked_invalid(pivot.values)
+        im = ax.imshow(masked, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+        ax.set_xticks(range(len(METRICS)))
+        ax.set_xticklabels(METRICS, rotation=40, ha="right", fontsize=8.5)
+        if ci == 0:
+            ax.set_yticks(range(len(workloads)))
+            ax.set_yticklabels(workloads, fontsize=8.5)
+        ax.set_title(VARIANT_LABELS.get(variant, variant), fontsize=10)
+        for (yi, xi), v in np.ndenumerate(pivot.values):
+            if np.isnan(v):
+                ax.text(xi, yi, "—", ha="center", va="center",
+                        fontsize=8.5, color="#666")
+            elif v >= 0.995:
+                # cells at the reference don't need a label; the bright
+                # color already says "this is the best capture seen".
+                continue
+            else:
+                # magma: low=dark, high=bright; flip text accordingly.
+                ax.text(xi, yi, f"{v:.2f}", ha="center", va="center",
+                        fontsize=8, color="white" if v < 0.5 else "black")
+        ax.grid(False)
+    if im is not None:
+        fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.04, shrink=0.85,
+                     label="coverage = value / max(value across variants)")
+    fig.suptitle(f"HiBench Spark workloads — metric coverage per variant  "
+                 f"(profile={profile})", y=1.02, fontsize=11.5)
+    _save(fig, outdir / "fig08_hibench_coverage.png", "fig08")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Fig 11 — Metric availability per variant (binary).
+# Quick-scan companion to fig08: any non-zero reading anywhere in the
+# (variant, metric) slice across all profiles + workloads.
+# ---------------------------------------------------------------------------
+
+def fig_metric_availability(df: pd.DataFrame, outdir: Path) -> None:
+    if df.empty:
+        return
+    avail_rows = []
+    for variant in _ordered_variants(df["variant"].unique()):
+        sub = df[df.variant == variant]
+        for m in METRICS:
+            ok = sub[m].notna().any() and (sub[m].fillna(0).abs().sum() > 0)
+            avail_rows.append(dict(variant=variant, metric=m,
+                                   available=int(ok)))
+    avail_df = pd.DataFrame(avail_rows)
+    avail_df.to_csv(outdir / "metric_availability.csv", index=False)
+    pivot = (avail_df.pivot_table(index="variant", columns="metric",
+                                  values="available")
+             .reindex(index=_ordered_variants(avail_df["variant"].unique()),
+                      columns=METRICS))
+    fig, ax = plt.subplots(
+        figsize=_clamp_figsize(6.4, 0.55 * len(pivot) + 1.4))
+    cmap = ListedColormap(["#f4f4f4", "#2ca02c"])
+    ax.imshow(pivot.values, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+    ax.set_xticks(range(len(pivot.columns))); ax.set_xticklabels(pivot.columns)
+    ax.set_yticks(range(len(pivot.index)));   ax.set_yticklabels(pivot.index)
+    for (yi, xi), v in np.ndenumerate(pivot.values):
+        ax.text(xi, yi, "✓" if v else "—", ha="center", va="center",
+                fontsize=11, color="white" if v else "#666")
+    ax.set_title("HiBench: metric availability per variant "
+                 "(any non-zero reading)")
+    ax.grid(False)
+    fig.tight_layout()
+    _save(fig, outdir / "fig11_metric_availability.png", "fig11")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Fig 12 — Workload clustermap (Ward linkage), standard profile.
+# Mirrors plot-intp-bench.py fig10. Shows whether variants cluster
+# workloads similarly.
+# ---------------------------------------------------------------------------
+
+def fig_workload_clustermap(df: pd.DataFrame, outdir: Path) -> None:
+    if not HAS_SCIPY or df.empty:
+        return
+    profiles = _ordered_profiles(df["profile"].unique())
+    if not profiles:
+        return
+    profile = "standard" if "standard" in profiles else profiles[0]
+    sub = df[df.profile == profile]
+    variants = _ordered_variants(sub["variant"].unique())
+    if not variants:
+        return
+    cols = min(3, len(variants))
+    rows = (len(variants) + cols - 1) // cols
+    fig, axes = plt.subplots(
+        rows, cols,
+        figsize=_clamp_figsize(4.6 * cols,
+                               0.34 * sub["workload"].nunique() + 1.6),
+        squeeze=False)
+    last = -1
+    im = None
+    for idx, variant in enumerate(variants):
+        last = idx
+        ax = axes[idx // cols][idx % cols]
+        m = (sub[sub.variant == variant]
+             .groupby("workload")[METRICS].mean().fillna(0))
+        if m.shape[0] < 2:
+            ax.set_title(f"{variant} — too few workloads")
+            ax.axis("off")
+            continue
+        try:
+            Z = linkage(m.values, method="ward")
+            order = leaves_list(Z)
+        except Exception:
+            order = np.arange(len(m))
+        m = m.iloc[order]
+        im = ax.imshow(m.values, aspect="auto", cmap="viridis",
+                       vmin=0, vmax=100)
+        ax.set_xticks(range(len(METRICS)))
+        ax.set_xticklabels(METRICS, rotation=40, ha="right", fontsize=8)
+        ax.set_yticks(range(len(m.index)))
+        ax.set_yticklabels(m.index, fontsize=8)
+        ax.set_title(f"{VARIANT_LABELS.get(variant, variant)}  (Ward linkage)",
+                     fontsize=9.5)
+        ax.grid(False)
+    for j in range(last + 1, rows * cols):
+        axes[j // cols][j % cols].axis("off")
+    if im is None:
+        plt.close(fig)
+        return
+    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.7,
+                 label="metric value (%)")
+    fig.suptitle(f"HiBench: hierarchical workload clustermap — "
+                 f"profile={profile}", y=1.02, fontsize=11)
+    _save(fig, outdir / "fig12_workload_clustermap.png", "fig12")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -947,22 +1155,29 @@ def main() -> None:
 
     print(f"Loading hibench results from {hdir}")
     df, run_dirs = load_hibench_dir(hdir)
+    # aggregate-means.tsv has one row per rep; collapse to per-(profile,variant,
+    # workload) means so the figure functions can index on workload alone.
+    df = (df.groupby(["profile", "variant", "workload"], as_index=False)[METRICS]
+            .mean())
     print(f"  variants : {sorted(df['variant'].unique())}")
     print(f"  profiles : {sorted(df['profile'].unique())}")
     print(f"  workloads: {sorted(df['workload'].unique())}")
     df.to_csv(outdir / "combined-means.csv", index=False)
 
-    fig_canonical_intp_fig4(df, outdir)        # fig00  IntP Fig.4 canonical
-    fig_fingerprint(df, outdir)                # fig01
+    fig_canonical_intp_fig4(df, outdir)        # fig00  IntP Fig.4 canonical (per profile)
+    fig_fingerprint(df, outdir)                # fig01  (per profile)
     fig_sensitivity(df, outdir)                # fig02
-    fig_metric_compare(df, outdir)             # fig03
+    fig_metric_compare(df, outdir)             # fig03  (per metric)
     fig_per_workload_bars(df, outdir)          # fig04  IntP Fig.4 panels
     fig_radar(df, outdir)                      # fig05  IntP Fig.4 alt
     fig_pca(df, outdir)                        # fig06  IntP Fig.5
     fig_timeseries(run_dirs, outdir)           # fig07  IntP Fig.3 / IADA Fig.5
-    fig_idi_bars(df, outdir)                   # fig08  IADA Fig.6
+    fig_hibench_coverage(df, outdir)           # fig08  paper Fig.6 (coverage)
+    fig_idi_bars(df, outdir)                   # fig09a IADA Fig.6 (renamed)
     fig_resource_timeseries(run_dirs, outdir)  # fig09  IntP Fig.8
     fig_variant_resource_heatmap(df, outdir)   # fig10  new summary
+    fig_metric_availability(df, outdir)        # fig11  binary availability
+    fig_workload_clustermap(df, outdir)        # fig12  Ward linkage clustermap
 
     print(f"Done. Figures in {outdir}")
 

@@ -4,6 +4,13 @@
  *   netp_sysfs   /sys/class/net/<iface>/statistics/{rx,tx}_bytes (preferred)
  *   netp_procfs  /proc/net/dev (same data, less efficient parsing)
  *
+ * Default is multi-interface aggregation: sum tx_bytes+rx_bytes across all
+ * non-loopback interfaces. Matches v3's eBPF semantics (which excludes `lo`
+ * to avoid double-counting xmit+recv on the same packet) and unblocks the
+ * veth-routed workload setup, where traffic flows through `intp-veth-h`
+ * rather than the physical NIC. `--iface NAME` pins a single interface
+ * (legacy behavior); useful when you want to isolate a specific device.
+ *
  * Normalization: (rx+tx)/interval / nic_speed_bps * 100. NIC speed unknown
  * (link down or virtual iface) -> assume 1Gbps and mark DEGRADED.
  */
@@ -12,6 +19,7 @@
 #include "detect.h"
 #include "procutil.h"
 
+#include <dirent.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,23 +27,21 @@
 #include <time.h>
 
 #define DEFAULT_BPS (1000000000L / 8)
+#define MAX_IFACES  32
 
-static struct {
-    int                valid;
-    char               iface[64];
-    char               tx_path[256];
-    char               rx_path[256];
-    long               nic_speed_bps;
-    int                assumed_speed;
-    unsigned long long prev_tx;
-    unsigned long long prev_rx;
-} sf;
-
-static const char *resolve_iface(void)
+static int iface_skip(const char *name)
 {
-    const intp_target_t *t = intp_target_get();
-    if (t && t->iface && t->iface[0]) return t->iface;
-    return detect_default_iface();
+    return name[0] == '.' || strcmp(name, "lo") == 0;
+}
+
+static unsigned long long read_ull(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    unsigned long long v = 0;
+    if (fscanf(f, "%llu", &v) != 1) v = 0;
+    fclose(f);
+    return v;
 }
 
 long netp_resolve_speed(const char *iface, int *assumed_out)
@@ -56,50 +62,86 @@ long netp_resolve_speed(const char *iface, int *assumed_out)
     return bps;
 }
 
-static unsigned long long read_ull(const char *path)
+/* ---- sysfs backend (multi-iface aware) ---------------------------------- */
+
+static struct {
+    int                valid;
+    char               iface_override[64];   /* empty = aggregate non-lo */
+    long               nic_speed_bps;
+    int                assumed_speed;
+    unsigned long long prev_total;
+} sf;
+
+/* Sum tx_bytes+rx_bytes via sysfs. If iface_override is set, returns that
+ * one interface's bytes; otherwise sums across all non-lo entries under
+ * /sys/class/net/. Returns -1 if no interface produced a reading. */
+static int sysfs_total_bytes(const char *iface_override,
+                             unsigned long long *out_total)
 {
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    unsigned long long v = 0;
-    if (fscanf(f, "%llu", &v) != 1) v = 0;
-    fclose(f);
-    return v;
+    if (iface_override && iface_override[0]) {
+        char p[256];
+        snprintf(p, sizeof(p),
+                 "/sys/class/net/%.63s/statistics/tx_bytes", iface_override);
+        unsigned long long tx = read_ull(p);
+        snprintf(p, sizeof(p),
+                 "/sys/class/net/%.63s/statistics/rx_bytes", iface_override);
+        unsigned long long rx = read_ull(p);
+        *out_total = tx + rx;
+        return 0;
+    }
+    DIR *d = opendir("/sys/class/net/");
+    if (!d) return -1;
+    unsigned long long total = 0;
+    int counted = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (iface_skip(e->d_name)) continue;
+        char p[320];
+        snprintf(p, sizeof(p),
+                 "/sys/class/net/%.63s/statistics/tx_bytes", e->d_name);
+        total += read_ull(p);
+        snprintf(p, sizeof(p),
+                 "/sys/class/net/%.63s/statistics/rx_bytes", e->d_name);
+        total += read_ull(p);
+        counted++;
+    }
+    closedir(d);
+    if (counted == 0) return -1;
+    *out_total = total;
+    return 0;
 }
 
 static int sysfs_probe(void)
 {
-    const char *iface = resolve_iface();
-    char p[256];
-    snprintf(p, sizeof(p), "/sys/class/net/%.63s/statistics/tx_bytes", iface);
-    FILE *f = fopen(p, "r");
-    if (!f) return -1;
-    fclose(f);
+    DIR *d = opendir("/sys/class/net/");
+    if (!d) return -1;
+    closedir(d);
     return 0;
 }
 
 static int sysfs_init(void)
 {
-    const char *iface = resolve_iface();
-    snprintf(sf.iface, sizeof(sf.iface), "%s", iface);
-    snprintf(sf.tx_path, sizeof(sf.tx_path),
-             "/sys/class/net/%.63s/statistics/tx_bytes", sf.iface);
-    snprintf(sf.rx_path, sizeof(sf.rx_path),
-             "/sys/class/net/%.63s/statistics/rx_bytes", sf.iface);
-    sf.nic_speed_bps = netp_resolve_speed(sf.iface, &sf.assumed_speed);
-    sf.prev_tx = read_ull(sf.tx_path);
-    sf.prev_rx = read_ull(sf.rx_path);
-    sf.valid   = 1;
+    const intp_target_t *t = intp_target_get();
+    const char *override = (t && t->iface && t->iface[0]) ? t->iface : "";
+    snprintf(sf.iface_override, sizeof(sf.iface_override), "%s", override);
+
+    /* Speed denominator: use the explicit interface if pinned, otherwise
+     * the host's default-iface speed (matches v3's caps->nic_speed_bps). */
+    const char *speed_iface = override[0] ? override : detect_default_iface();
+    sf.nic_speed_bps = netp_resolve_speed(speed_iface, &sf.assumed_speed);
+
+    if (sysfs_total_bytes(sf.iface_override, &sf.prev_total) != 0) return -1;
+    sf.valid = 1;
     return 0;
 }
 
 static int sysfs_read(metric_sample_t *out, double interval_sec)
 {
     if (!sf.valid || interval_sec <= 0) return -1;
-    unsigned long long tx = read_ull(sf.tx_path);
-    unsigned long long rx = read_ull(sf.rx_path);
-    unsigned long long d  = (tx - sf.prev_tx) + (rx - sf.prev_rx);
-    sf.prev_tx = tx;
-    sf.prev_rx = rx;
+    unsigned long long total = 0;
+    if (sysfs_total_bytes(sf.iface_override, &total) != 0) return -1;
+    unsigned long long d = total - sf.prev_total;
+    sf.prev_total = total;
 
     double bps = (double)d / interval_sec;
     double v   = bps / (double)sf.nic_speed_bps * 100.0;
@@ -113,23 +155,44 @@ static int sysfs_read(metric_sample_t *out, double interval_sec)
         out->note   = "assumed_1gbps";
     } else {
         out->status = METRIC_STATUS_OK;
-        out->note   = NULL;
+        out->note   = sf.iface_override[0] ? NULL : "aggregate_non_lo";
     }
     return 0;
 }
 
 static void sysfs_cleanup(void) { sf.valid = 0; }
 
-/* ---- procfs fallback ---------------------------------------------------- */
+/* ---- procfs fallback (multi-iface aware) -------------------------------- */
 
 static struct {
     int                valid;
-    char               iface[64];
+    char               iface_override[64];
     long               nic_speed_bps;
     int                assumed_speed;
-    unsigned long long prev_tx;
-    unsigned long long prev_rx;
+    unsigned long long prev_total;
 } pf;
+
+static int procfs_total_bytes(const char *iface_override,
+                              unsigned long long *out_total)
+{
+    netdev_entry_t entries[MAX_IFACES];
+    int n = procutil_read_netdev(entries, MAX_IFACES);
+    if (n <= 0) return -1;
+    unsigned long long total = 0;
+    int counted = 0;
+    for (int i = 0; i < n; i++) {
+        if (iface_override && iface_override[0]) {
+            if (strcmp(entries[i].iface, iface_override) != 0) continue;
+        } else if (iface_skip(entries[i].iface)) {
+            continue;
+        }
+        total += entries[i].rx_bytes + entries[i].tx_bytes;
+        counted++;
+    }
+    if (counted == 0) return -1;
+    *out_total = total;
+    return 0;
+}
 
 static int procfs_probe(void)
 {
@@ -139,26 +202,16 @@ static int procfs_probe(void)
     return 0;
 }
 
-static int procfs_locate(unsigned long long *rx, unsigned long long *tx)
-{
-    netdev_entry_t entries[32];
-    int n = procutil_read_netdev(entries, 32);
-    if (n <= 0) return -1;
-    for (int i = 0; i < n; i++) {
-        if (strcmp(entries[i].iface, pf.iface) == 0) {
-            *rx = entries[i].rx_bytes;
-            *tx = entries[i].tx_bytes;
-            return 0;
-        }
-    }
-    return -1;
-}
-
 static int procfs_init(void)
 {
-    snprintf(pf.iface, sizeof(pf.iface), "%s", resolve_iface());
-    pf.nic_speed_bps = netp_resolve_speed(pf.iface, &pf.assumed_speed);
-    if (procfs_locate(&pf.prev_rx, &pf.prev_tx) != 0) return -1;
+    const intp_target_t *t = intp_target_get();
+    const char *override = (t && t->iface && t->iface[0]) ? t->iface : "";
+    snprintf(pf.iface_override, sizeof(pf.iface_override), "%s", override);
+
+    const char *speed_iface = override[0] ? override : detect_default_iface();
+    pf.nic_speed_bps = netp_resolve_speed(speed_iface, &pf.assumed_speed);
+
+    if (procfs_total_bytes(pf.iface_override, &pf.prev_total) != 0) return -1;
     pf.valid = 1;
     return 0;
 }
@@ -166,11 +219,10 @@ static int procfs_init(void)
 static int procfs_read(metric_sample_t *out, double interval_sec)
 {
     if (!pf.valid || interval_sec <= 0) return -1;
-    unsigned long long rx = 0, tx = 0;
-    if (procfs_locate(&rx, &tx) != 0) return -1;
-    unsigned long long d = (tx - pf.prev_tx) + (rx - pf.prev_rx);
-    pf.prev_tx = tx;
-    pf.prev_rx = rx;
+    unsigned long long total = 0;
+    if (procfs_total_bytes(pf.iface_override, &total) != 0) return -1;
+    unsigned long long d = total - pf.prev_total;
+    pf.prev_total = total;
 
     double bps = (double)d / interval_sec;
     double v   = bps / (double)pf.nic_speed_bps * 100.0;
@@ -179,9 +231,13 @@ static int procfs_read(metric_sample_t *out, double interval_sec)
 
     out->value      = v;
     out->backend_id = "procfs";
-    out->status     = pf.assumed_speed ? METRIC_STATUS_DEGRADED
-                                       : METRIC_STATUS_OK;
-    out->note       = pf.assumed_speed ? "assumed_1gbps" : NULL;
+    if (pf.assumed_speed) {
+        out->status = METRIC_STATUS_DEGRADED;
+        out->note   = "assumed_1gbps";
+    } else {
+        out->status = METRIC_STATUS_OK;
+        out->note   = pf.iface_override[0] ? NULL : "aggregate_non_lo";
+    }
     return 0;
 }
 
