@@ -235,6 +235,52 @@ def _ordered_envs(values) -> list[str]:
     return [e for e in ENV_ORDER if e in present]
 
 
+def _grid_dims(n: int) -> tuple[int, int]:
+    # Prefer square at n=4 (2x2 instead of 1x3 with a stranded last row)
+    # and avoid wide-strip layouts on small panel counts.
+    if n <= 0: return (1, 1)
+    if n == 1: return (1, 1)
+    if n == 2: return (1, 2)
+    if n == 3: return (1, 3)
+    if n == 4: return (2, 2)
+    cols = 5 if n >= 10 else 3
+    rows = (n + cols - 1) // cols
+    return (rows, cols)
+
+
+def _make_axes_grid(fig, n: int, sharey: bool = False, polar: bool = False,
+                    wspace: float = 0.9,
+                    hspace: float = 0.6) -> tuple[list, int, int]:
+    """Place n axes via gridspec; if the last row is partial, center it.
+    Returns (flat_axes, nrows, ncols). Use index = i directly to address
+    the i-th panel (no nested [r][c] indexing). wspace/hspace are gridspec
+    spacing in fractions of axis width/height; increase to give tick
+    labels in adjacent panels room."""
+    nrows, ncols = _grid_dims(n)
+    gs = fig.add_gridspec(nrows, 2 * ncols, wspace=wspace, hspace=hspace)
+    axes: list = []
+    base_y = None
+    for i in range(n):
+        r = i // ncols
+        c_in_row = i % ncols
+        last_row_n = n - r * ncols
+        if r == nrows - 1 and last_row_n < ncols:
+            offset = ncols - last_row_n  # pad both sides equally on 2x grid
+            col_start = offset + c_in_row * 2
+        else:
+            col_start = c_in_row * 2
+        kw: dict = {}
+        if polar:
+            kw["projection"] = "polar"
+        if sharey and base_y is not None:
+            kw["sharey"] = base_y
+        ax = fig.add_subplot(gs[r, col_start:col_start + 2], **kw)
+        if sharey and base_y is None:
+            base_y = ax
+        axes.append(ax)
+    return axes, nrows, ncols
+
+
 # ---------------------------------------------------------------------------
 # Fig 01 — IntP Fig. 4: per-workload panel grid, variants compared
 # ---------------------------------------------------------------------------
@@ -264,15 +310,13 @@ def fig_per_workload_bars(means: pd.DataFrame, outdir: Path) -> None:
         if sub_env.empty:
             continue
         n = len(workloads)
-        cols = 5 if n >= 10 else min(3, n)
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols,
-                                 figsize=_clamp_figsize(2.6 * cols, 2.0 * rows),
-                                 squeeze=False, sharey=True)
+        nrows, ncols = _grid_dims(n)
+        fig = plt.figure(figsize=_clamp_figsize(2.6 * ncols, 2.0 * nrows))
+        axes_flat, _, _ = _make_axes_grid(fig, n, sharey=True)
         x = np.arange(len(METRICS))
         bar_w = 0.8 / max(1, len(variants))
         for i, wl in enumerate(workloads):
-            ax = axes[i // cols][i % cols]
+            ax = axes_flat[i]
             for vi, variant in enumerate(variants):
                 row = sub_env[(sub_env.variant == variant) & (sub_env.workload == wl)]
                 vals = (row[METRICS].iloc[0].values if not row.empty
@@ -288,16 +332,12 @@ def fig_per_workload_bars(means: pd.DataFrame, outdir: Path) -> None:
             ymax = sub_env[METRICS].max().max()
             ax.set_ylim(0, max(1.0, float(ymax) * 1.10))
             ax.tick_params(axis="y", labelsize=7)
-        for j in range(n, rows * cols):
-            axes[j // cols][j % cols].axis("off")
-        # Y label on first column only
-        for r in range(rows):
-            axes[r][0].set_ylabel("interference (%)", fontsize=8)
-        # Single legend
+            if i % ncols == 0:
+                ax.set_ylabel("interference (%)", fontsize=8)
         handles = [plt.Rectangle((0, 0), 1, 1, color=VARIANT_COLORS.get(v, "C0"))
                    for v in variants]
         fig.legend(handles, variants, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02 if rows < 4 else 1.005),
+                   bbox_to_anchor=(0.5, 1.02 if nrows < 4 else 1.005),
                    ncol=len(variants), frameon=False, fontsize=8.5,
                    title="variant", title_fontsize=8.5)
         fig.suptitle(f"Per-workload variant fingerprint — env={env}  "
@@ -317,15 +357,11 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
     n = len(pairs)
     if n == 0:
         return
-    cols = min(3, n)
-    rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(6 * cols, 3.6 * rows),
-                             squeeze=False)
-    last_idx = -1
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(6 * ncols, 3.6 * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n)
     for idx, (env, variant) in enumerate(pairs):
-        last_idx = idx
-        ax = axes[idx // cols][idx % cols]
+        ax = axes_flat[idx]
         sub = grouped[(grouped.env == env) & (grouped.variant == variant)].copy()
         sub = sub.sort_values("workload")
         x = np.arange(len(sub))
@@ -338,9 +374,7 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
         ax.set_ylim(0, max(1.0, sub[METRICS].max().max() * 1.1))
         ax.set_title(f"{env} / {variant}")
         ax.set_ylabel("interference (%)")
-    for j in range(last_idx + 1, rows * cols):
-        axes[j // cols][j % cols].axis("off")
-    handles, labels = axes[0][0].get_legend_handles_labels()
+    handles, labels = axes_flat[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02),
                ncol=len(METRICS), frameon=False, fontsize=8)
     fig.suptitle("Per (env,variant) workload fingerprint", y=1.05)
@@ -361,14 +395,14 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
         return
     pairs = solo[["env", "variant"]].drop_duplicates().values.tolist()
     n = len(pairs)
-    cols = min(3, n)
-    rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(5.6 * cols, 4.4 * rows),
-                             squeeze=False)
+    if n == 0:
+        return
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(5.6 * ncols, 4.4 * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n)
     cluster_palette = plt.get_cmap("Set1")
     for idx, (env, variant) in enumerate(pairs):
-        ax = axes[idx // cols][idx % cols]
+        ax = axes_flat[idx]
         sub = (solo[(solo.env == env) & (solo.variant == variant)]
                .groupby("workload")[METRICS].mean().fillna(0))
         if len(sub) < 4:
@@ -400,11 +434,8 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
                      f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%", fontsize=9.5)
         ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
         ax.legend(loc="best", fontsize=7)
-    for j in range(idx + 1, rows * cols):
-        axes[j // cols][j % cols].axis("off")
     fig.suptitle("PCA + k-means clustering of workloads (IntP Fig. 5 reproduction)",
                  y=1.01, fontsize=11)
-    fig.tight_layout()
     _save(fig, outdir / "fig02_pca_kmeans.png", "fig02")
 
 
@@ -815,15 +846,15 @@ def fig_pairwise_heatmap(means: pd.DataFrame, outdir: Path) -> None:
         if sub_env.empty: continue
         variants = _ordered_variants(sub_env["variant"].unique())
         nv = len(variants)
-        cols = min(3, nv)
-        rows = (nv + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols,
-                                 figsize=_clamp_figsize(4.4 * cols, 0.30 * len(workloads) + 1.4),
-                                 squeeze=False, sharey=True)
-        last = -1
+        nrows, ncols = _grid_dims(nv)
+        fig = plt.figure(figsize=_clamp_figsize(
+            5.2 * ncols, (0.30 * len(workloads) + 1.4) * nrows))
+        # Long workload names ("cpu_v_cache", "tcp_v_tcp_veth") need extra
+        # horizontal gap to keep y-labels out of the adjacent panel.
+        axes_flat, _, _ = _make_axes_grid(fig, nv, sharey=True, wspace=1.4)
+        im = None
         for idx, variant in enumerate(variants):
-            last = idx
-            ax = axes[idx // cols][idx % cols]
+            ax = axes_flat[idx]
             data = np.zeros((len(workloads), len(METRICS)))
             for wi, w in enumerate(workloads):
                 row = sub_env[(sub_env.variant == variant) & (sub_env.workload == w)]
@@ -839,9 +870,8 @@ def fig_pairwise_heatmap(means: pd.DataFrame, outdir: Path) -> None:
             ax.set_yticks(range(len(workloads))); ax.set_yticklabels(workloads, fontsize=7)
             ax.set_title(f"variant={variant}", fontsize=9)
             ax.grid(False)
-        for j in range(last + 1, rows * cols):
-            axes[j // cols][j % cols].axis("off")
-        fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, label="interference (%)")
+        if im is not None:
+            fig.colorbar(im, ax=axes_flat, shrink=0.8, label="interference (%)")
         fig.suptitle(f"Pairwise interference signal — env={env}", y=1.02, fontsize=11)
         _save(fig, outdir / f"fig07_pairwise_heatmap_{env}.png", f"fig07-{env}")
 
@@ -902,16 +932,13 @@ def fig_radar_fingerprint(means: pd.DataFrame, outdir: Path) -> None:
     norms = {m: max(1e-9, grouped[m].max()) for m in METRICS}
 
     n = len(workloads)
-    # Cap panel grid to 4 cols so each polar plot has room for tick labels.
-    cols = 4 if n >= 8 else min(3, n)
-    rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(3.2 * cols, 3.0 * rows),
-                             subplot_kw=dict(polar=True), squeeze=False)
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(3.2 * ncols, 3.0 * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n, polar=True)
     angles = np.linspace(0, 2 * np.pi, len(METRICS), endpoint=False).tolist()
     angles += angles[:1]
     for i, wl in enumerate(workloads):
-        ax = axes[i // cols][i % cols]
+        ax = axes_flat[i]
         for variant in variants:
             row = grouped[(grouped.workload == wl) & (grouped.variant == variant)]
             if row.empty: continue
@@ -934,8 +961,6 @@ def fig_radar_fingerprint(means: pd.DataFrame, outdir: Path) -> None:
         ax.set_title(wl, fontsize=9, pad=10)
         ax.tick_params(axis="x", pad=2)
         ax.grid(linewidth=0.4, alpha=0.5)
-    for j in range(n, rows * cols):
-        axes[j // cols][j % cols].axis("off")
     handles = [plt.Line2D([0], [0], color=VARIANT_COLORS.get(v, "C0"),
                           linewidth=2.4, label=v) for v in variants]
     fig.legend(handles=handles, loc="upper center",
@@ -964,21 +989,20 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
     variants = _ordered_variants(sub["variant"].unique())
     if not variants:
         return
-    cols = min(3, len(variants))
-    rows = (len(variants) + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(4.5 * cols, 0.32 * sub["workload"].nunique() + 1.4),
-                             squeeze=False)
-    last = -1
+    n = len(variants)
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(5.4 * ncols,
+                                            0.32 * sub["workload"].nunique() + 1.4))
+    # Wide wspace: stress-ng workload labels are 12-18 chars and must not
+    # bleed into the adjacent panel's plot area.
+    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=1.6)
     im = None
     for idx, variant in enumerate(variants):
-        last = idx
-        ax = axes[idx // cols][idx % cols]
+        ax = axes_flat[idx]
         m = (sub[sub.variant == variant]
              .groupby("workload")[METRICS].mean().fillna(0))
         if m.shape[0] < 2:
             ax.set_title(f"variant={variant} — too few"); ax.axis("off"); continue
-        # Row order via hierarchical clustering on workload axis
         try:
             Z = linkage(m.values, method="ward")
             order = leaves_list(Z)
@@ -990,13 +1014,11 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
         ax.set_yticks(range(len(m.index))); ax.set_yticklabels(m.index, fontsize=7)
         ax.set_title(f"variant={variant} (Ward linkage)", fontsize=9)
         ax.grid(False)
-    for j in range(last + 1, rows * cols):
-        axes[j // cols][j % cols].axis("off")
     if im is None:
         print("[fig10] no variant had ≥2 workloads — skip clustermap")
         plt.close(fig)
         return
-    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.7, label="interference (%)")
+    fig.colorbar(im, ax=axes_flat, shrink=0.7, label="interference (%)")
     fig.suptitle(f"Hierarchical workload clustermap — env={env}", y=1.02, fontsize=11)
     _save(fig, outdir / "fig10_workload_clustermap.png", "fig10")
 

@@ -197,6 +197,47 @@ def _ordered_workloads(values) -> list[str]:
     return canonical + extra
 
 
+def _grid_dims(n: int) -> tuple[int, int]:
+    # Prefer square at n=4 (2x2 instead of 1x3 + stranded last row).
+    if n <= 0: return (1, 1)
+    if n == 1: return (1, 1)
+    if n == 2: return (1, 2)
+    if n == 3: return (1, 3)
+    if n == 4: return (2, 2)
+    cols = 5 if n >= 10 else 3
+    rows = (n + cols - 1) // cols
+    return (rows, cols)
+
+
+def _make_axes_grid(fig, n: int, sharey: bool = False, polar: bool = False,
+                    wspace: float = 0.9,
+                    hspace: float = 0.6) -> tuple[list, int, int]:
+    """Place n axes via gridspec; if the last row is partial, center it."""
+    nrows, ncols = _grid_dims(n)
+    gs = fig.add_gridspec(nrows, 2 * ncols, wspace=wspace, hspace=hspace)
+    axes: list = []
+    base_y = None
+    for i in range(n):
+        r = i // ncols
+        c_in_row = i % ncols
+        last_row_n = n - r * ncols
+        if r == nrows - 1 and last_row_n < ncols:
+            offset = ncols - last_row_n
+            col_start = offset + c_in_row * 2
+        else:
+            col_start = c_in_row * 2
+        kw: dict = {}
+        if polar:
+            kw["projection"] = "polar"
+        if sharey and base_y is not None:
+            kw["sharey"] = base_y
+        ax = fig.add_subplot(gs[r, col_start:col_start + 2], **kw)
+        if sharey and base_y is None:
+            base_y = ax
+        axes.append(ax)
+    return axes, nrows, ncols
+
+
 def _ordered_profiles(values) -> list[str]:
     present = set(values)
     return [p for p in PROFILE_ORDER if p in present]
@@ -289,13 +330,13 @@ def fig_fingerprint(df: pd.DataFrame, outdir: Path) -> None:
         return
     bar_w = 0.11
     x = np.arange(len(workloads))
+    n = len(variants)
     for profile in profiles:
-        ncols = len(variants)
-        fig, axes = plt.subplots(1, ncols,
-                                 figsize=_clamp_figsize(4.6 * ncols, 3.6),
-                                 squeeze=False, sharey=True)
+        nrows, ncols = _grid_dims(n)
+        fig = plt.figure(figsize=_clamp_figsize(4.6 * ncols, 3.6 * nrows))
+        axes_flat, _, _ = _make_axes_grid(fig, n, sharey=True)
         for ci, variant in enumerate(variants):
-            ax = axes[0][ci]
+            ax = axes_flat[ci]
             sub = (df[(df["profile"] == profile) & (df["variant"] == variant)]
                    .set_index("workload").reindex(workloads))
             for mi, m in enumerate(METRICS):
@@ -306,11 +347,11 @@ def fig_fingerprint(df: pd.DataFrame, outdir: Path) -> None:
             ax.set_xticks(x)
             ax.set_xticklabels(workloads, rotation=35, ha="right", fontsize=8.5)
             ax.set_title(VARIANT_LABELS.get(variant, variant), fontsize=10)
-            if ci == 0:
+            if ci % ncols == 0:
                 ax.set_ylabel("metric value (%)")
             ymax = sub[METRICS].max().max() if not sub.empty else 1.0
             ax.set_ylim(0, max(1.0, ymax * 1.18))
-        handles, labels = axes[0][0].get_legend_handles_labels()
+        handles, labels = axes_flat[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="upper center",
                    bbox_to_anchor=(0.5, 1.02),
                    ncol=len(METRICS), frameon=False, fontsize=9)
@@ -446,15 +487,13 @@ def fig_per_workload_bars(df: pd.DataFrame, outdir: Path) -> None:
     for profile in profiles:
         sub_p = df[df.profile == profile]
         n = len(workloads)
-        cols = min(5, n)
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols,
-                                 figsize=_clamp_figsize(2.7 * cols, 2.0 * rows),
-                                 squeeze=False, sharey=True)
+        nrows, ncols = _grid_dims(n)
+        fig = plt.figure(figsize=_clamp_figsize(2.7 * ncols, 2.0 * nrows))
+        axes_flat, _, _ = _make_axes_grid(fig, n, sharey=True)
         x = np.arange(len(METRICS))
         bar_w = 0.8 / max(1, len(variants))
         for i, wl in enumerate(workloads):
-            ax = axes[i // cols][i % cols]
+            ax = axes_flat[i]
             for vi, variant in enumerate(variants):
                 row = sub_p[(sub_p.workload == wl) & (sub_p.variant == variant)]
                 vals = (row[METRICS].iloc[0].values if not row.empty
@@ -470,10 +509,8 @@ def fig_per_workload_bars(df: pd.DataFrame, outdir: Path) -> None:
             ymax = sub_p[METRICS].max().max()
             ax.set_ylim(0, max(1.0, float(ymax) * 1.10))
             ax.tick_params(axis="y", labelsize=7)
-        for j in range(n, rows * cols):
-            axes[j // cols][j % cols].axis("off")
-        for r in range(rows):
-            axes[r][0].set_ylabel("metric value (%)", fontsize=8)
+            if i % ncols == 0:
+                ax.set_ylabel("metric value (%)", fontsize=8)
         handles = [plt.Rectangle((0, 0), 1, 1, color=VARIANT_COLORS.get(v, "C0"))
                    for v in variants]
         fig.legend(handles, variants, loc="upper center",
@@ -485,6 +522,7 @@ def fig_per_workload_bars(df: pd.DataFrame, outdir: Path) -> None:
         fig.tight_layout()
         suffix = f"_{profile}" if len(profiles) > 1 else ""
         _save(fig, outdir / f"fig04_per_workload_bars{suffix}.png", f"fig04-{profile}")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -502,15 +540,13 @@ def fig_radar(df: pd.DataFrame, outdir: Path) -> None:
     profile = "standard" if "standard" in profiles else profiles[0]
     sub_p = df[df.profile == profile]
     n = len(workloads)
-    cols = 4 if n >= 4 else n
-    rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols,
-                             figsize=_clamp_figsize(3.2 * cols, 3.0 * rows),
-                             subplot_kw=dict(polar=True), squeeze=False)
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(3.2 * ncols, 3.0 * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n, polar=True)
     angles = np.linspace(0, 2 * np.pi, len(METRICS), endpoint=False).tolist()
     angles += angles[:1]
     for i, wl in enumerate(workloads):
-        ax = axes[i // cols][i % cols]
+        ax = axes_flat[i]
         for variant in variants:
             row = sub_p[(sub_p.workload == wl) & (sub_p.variant == variant)]
             if row.empty: continue
@@ -531,8 +567,6 @@ def fig_radar(df: pd.DataFrame, outdir: Path) -> None:
         ax.set_ylim(0, 1.05)
         ax.set_title(wl, fontsize=9, pad=10)
         ax.grid(linewidth=0.4, alpha=0.5)
-    for j in range(n, rows * cols):
-        axes[j // cols][j % cols].axis("off")
     handles = [plt.Line2D([0], [0], color=VARIANT_COLORS.get(v, "C0"),
                           linewidth=2.4, label=v) for v in variants]
     fig.legend(handles=handles, loc="upper center",
@@ -760,13 +794,13 @@ def fig_canonical_intp_fig4(df: pd.DataFrame, outdir: Path) -> None:
         return
     x = np.arange(len(workloads))
     bar_w = 0.8 / max(1, len(METRICS))
+    n = len(variants)
     for profile in profiles:
-        ncols = len(variants)
-        fig, axes = plt.subplots(1, ncols,
-                                 figsize=_clamp_figsize(5.4 * ncols, 3.6),
-                                 squeeze=False, sharey=True)
+        nrows, ncols = _grid_dims(n)
+        fig = plt.figure(figsize=_clamp_figsize(5.4 * ncols, 3.6 * nrows))
+        axes_flat, _, _ = _make_axes_grid(fig, n, sharey=True)
         for ci, variant in enumerate(variants):
-            ax = axes[0][ci]
+            ax = axes_flat[ci]
             sub = (df[(df.profile == profile) & (df.variant == variant)]
                    .set_index("workload").reindex(workloads))
             for mi, m in enumerate(METRICS):
@@ -779,9 +813,9 @@ def fig_canonical_intp_fig4(df: pd.DataFrame, outdir: Path) -> None:
             ax.set_xticks(x)
             ax.set_xticklabels(workloads, rotation=35, ha="right", fontsize=8.5)
             ax.set_title(VARIANT_LABELS.get(variant, variant), fontsize=10)
-            if ci == 0:
+            if ci % ncols == 0:
                 ax.set_ylabel("interference (%)")
-        handles, labels = axes[0][0].get_legend_handles_labels()
+        handles, labels = axes_flat[0].get_legend_handles_labels()
         if handles:
             fig.legend(handles, labels, loc="upper center",
                        bbox_to_anchor=(0.5, 1.02),
@@ -1084,18 +1118,14 @@ def fig_workload_clustermap(df: pd.DataFrame, outdir: Path) -> None:
     variants = _ordered_variants(sub["variant"].unique())
     if not variants:
         return
-    cols = min(3, len(variants))
-    rows = (len(variants) + cols - 1) // cols
-    fig, axes = plt.subplots(
-        rows, cols,
-        figsize=_clamp_figsize(4.6 * cols,
-                               0.34 * sub["workload"].nunique() + 1.6),
-        squeeze=False)
-    last = -1
+    n = len(variants)
+    nrows, ncols = _grid_dims(n)
+    fig = plt.figure(figsize=_clamp_figsize(
+        4.6 * ncols, 0.34 * sub["workload"].nunique() + 1.6))
+    axes_flat, _, _ = _make_axes_grid(fig, n)
     im = None
     for idx, variant in enumerate(variants):
-        last = idx
-        ax = axes[idx // cols][idx % cols]
+        ax = axes_flat[idx]
         m = (sub[sub.variant == variant]
              .groupby("workload")[METRICS].mean().fillna(0))
         if m.shape[0] < 2:
@@ -1117,12 +1147,10 @@ def fig_workload_clustermap(df: pd.DataFrame, outdir: Path) -> None:
         ax.set_title(f"{VARIANT_LABELS.get(variant, variant)}  (Ward linkage)",
                      fontsize=9.5)
         ax.grid(False)
-    for j in range(last + 1, rows * cols):
-        axes[j // cols][j % cols].axis("off")
     if im is None:
         plt.close(fig)
         return
-    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.7,
+    fig.colorbar(im, ax=axes_flat, shrink=0.7,
                  label="metric value (%)")
     fig.suptitle(f"HiBench: hierarchical workload clustermap — "
                  f"profile={profile}", y=1.02, fontsize=11)
