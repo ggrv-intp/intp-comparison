@@ -81,7 +81,9 @@
 
 set -u -o pipefail
 
-ROOT=/root/intp
+# Derived from script location so the campaign survives repo path changes
+# (e.g. the historical intp → intp-comparison rename).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resume support: set RESUME_DIR to an existing big-batch output directory to
 # skip runs whose profiler.tsv already has samples (idempotent re-execution).
 # If unset, a fresh timestamped directory is created.

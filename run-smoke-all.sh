@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u -o pipefail
 
-ROOT=/root/intp
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="$ROOT/results/smoke-$TS"
 mkdir -p "$OUT"
