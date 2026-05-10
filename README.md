@@ -192,6 +192,8 @@ Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
 - [Metrics Deep Dive](docs/METRICS-DEEP-DIVE.md) -- Kernel probe points, formulas, constants
 - [Portability Roadmap](docs/PORTABILITY-ROADMAP.md) -- Cross-kernel, cross-arch analysis
 - [Variant Comparison](docs/VARIANT-COMPARISON.md) -- Detailed rationale for each variant
+- [Experiment Strategy](docs/EXPERIMENT-STRATEGY.md) -- Operational gotchas, run discipline, workload→metric stress map
+- [Paper Cross-References](docs/PAPER-CROSS-REFERENCES.md) -- Maps each `[TODO: ...]` in the paper draft to the repo doc carrying the material
 - [Bench Findings Index](bench/findings/README.md) -- Centralized empirical findings (V0 baseline diagnosis, V1 reliability notes)
 
 ## References

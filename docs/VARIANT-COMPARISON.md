@@ -217,6 +217,13 @@ file write). Stap side same as V1 plus a single `kernel_read` of a
 3. *Comm-prefix matching* via `/proc/<pid>/comm` (15 chars). Workloads
    that mask their `comm` would need the helper extended to read
    `cmdline` instead.
+4. *blk clock-domain bug* (fixed 2026-05-10 in commit `7fd557f`):
+   `intp-v1.1.stp` previously rejected nearly all `block_rq_issue`
+   events on kernel ≥ 6.8, leaving the blk column at zero across
+   stress-ng and HiBench campaigns. The fix adds an alternative
+   `kernel.trace("block:block_rq_issue")` tapset and a clock-domain
+   correction. Campaigns produced before this commit need re-collection
+   for v1.1/blk. See `docs/EXPERIMENT-STRATEGY.md` § V1.1.
 
 **Relationship to other variants.** V1.1 demonstrates that adding a
 userspace co-process to a SystemTap-based design recovers full
@@ -378,6 +385,13 @@ parse + verifier load for five scripts in parallel).
    aggregator. The orchestrator must keep them in sync; lost stdout
    on a script means a missing column.
 3. *Sampled hardware events.* See llcmr fidelity note above.
+4. *Forked-descendant tracking bug* (fixed 2026-05-08): same root cause
+   as V3's bug above — bpftrace scripts now follow
+   `tracepoint:sched:sched_process_fork` and propagate filtration to
+   the whole process tree. Pre-fix V3.1 data on multi-process workloads
+   (stress-ng, HiBench Spark) under-reports every metric that depends
+   on event capture from forked children. See
+   `docs/EXPERIMENT-STRATEGY.md` § V3.1.
 
 **Relationship to other variants.** V3.1 is the pragmatic middle ground
 between V1 (SystemTap + resctrl) and V3 (full C eBPF + resctrl). It
@@ -468,6 +482,22 @@ the userspace binary is a normal native build.
    preferring tracepoints over kprobes wherever possible and by
    degrading gracefully (zero output) rather than crashing on missing
    symbols.
+4. *LLC miss ratio context handling bug* (fixed 2026-05-08): the
+   `BPF_PROG_TYPE_PERF_EVENT` reader was reading the wrong context
+   field, causing llcmr to report zero even when the hardware counter
+   was incrementing correctly. The fix uses the proper
+   `bpf_perf_event_read_value` call site. Campaigns prior to the fix
+   under-report v3/llcmr; data from the in-flight veth campaign is the
+   first clean source.
+5. *Forked-descendant tracking bug* (fixed 2026-05-08): the previous
+   build kept a single-entry PID array and never re-checked for forks.
+   `stress-ng --cpu 24` (or any workload that forks N stressors at
+   launch) ran with the BPF programs filtering out every fork
+   descendant — parent stayed in the array, children did the work, no
+   events captured. The fix follows `sched_process_fork` and adds
+   descendant PIDs to the target set. blk and cpu under-reporting in
+   pre-fix campaigns was traced to this. See
+   `docs/EXPERIMENT-STRATEGY.md` § V3.
 
 **Relationship to other variants.** V3 sits at the "native eBPF" end
 of the spectrum: same safety guarantees as V3.1, same cross-kernel
