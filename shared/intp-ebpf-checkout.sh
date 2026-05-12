@@ -169,29 +169,47 @@ for ref in ref_cpu ref_disk ref_stream; do
 
       sleep $WARMUP   # let stress-ng reach steady state
 
+      # Ground-truth context-switches and run-queue stats via vmstat (1Hz, independent
+      # of perf+BPF interaction). Captured in BOTH arms for an apples-to-apples delta.
+      vmstat 1 $DURATION > "$run_dir/vmstat.txt" 2>&1 &
+      VMSTAT_PID=$!
+
+      EBPF_PID=""
       if [ "$arm" = "with_profiler" ]; then
         sudo "$INTP_EBPF_BIN" --interval 1.0 --duration $DURATION --output tsv \
           > "$run_dir/intp.tsv" 2> "$run_dir/intp.err" &
         INTP_LAUNCHER_PID=$!
-        sleep 1
-        EBPF_PID=$(pgrep -nf "$(basename "$INTP_EBPF_BIN")" || echo "")
+        # Poll up to 5s for the real intp-ebpf process to appear. -nx matches the exact
+        # comm name (basename), so it skips the "sudo" wrapper which also has "intp-ebpf"
+        # in its full command line. The previous -nf was catching the sudo PID, making
+        # pidstat/perf-stat unable to find threads ("Problems finding threads of monitor").
+        EBPF_BASENAME="$(basename "$INTP_EBPF_BIN")"
+        for _ in $(seq 1 10); do
+          EBPF_PID=$(pgrep -nx "$EBPF_BASENAME" 2>/dev/null || true)
+          [ -n "$EBPF_PID" ] && break
+          sleep 0.5
+        done
         if [ -n "$EBPF_PID" ]; then
+          echo "    intp-ebpf consumer PID=$EBPF_PID"
           pidstat -p "$EBPF_PID" -u 1 $DURATION > "$run_dir/pidstat.txt" 2>&1 &
           PIDSTAT_PID=$!
           sudo perf stat -p "$EBPF_PID" -e context-switches,task-clock,cpu-migrations \
             -- sleep $DURATION 2> "$run_dir/perf_consumer.txt" &
           PERF_C_PID=$!
         else
-          echo "  WARN: intp-ebpf PID not found; consumer-side measurements skipped"
+          echo "  WARN: intp-ebpf PID not found after 5s; consumer-side measurements skipped"
         fi
       fi
 
-      # System-wide sched_switch for the same 90s window
+      # System-wide sched_switch for the same 90s window (kernel perf counter — may be
+      # suppressed when BPF programs attach to sched:sched_switch; vmstat above is the
+      # independent ground-truth).
       sudo perf stat -a -e sched:sched_switch \
         -- sleep $DURATION 2> "$run_dir/perf_system.txt" &
       PERF_S_PID=$!
 
       wait $PERF_S_PID 2>/dev/null || true
+      wait $VMSTAT_PID 2>/dev/null || true
       if [ "$arm" = "with_profiler" ]; then
         wait ${PIDSTAT_PID:-} 2>/dev/null || true
         wait ${PERF_C_PID:-}  2>/dev/null || true
@@ -230,35 +248,60 @@ def parse_pidstat_cpu(path):
             except (ValueError, IndexError): pass
     return vs
 
+def parse_vmstat_cs(path):
+    # vmstat default 'cs' column is the 12th field on data rows.
+    # Layout (vmstat 1 N): two header lines then N+1 data rows; first data row is
+    # boot-time averages (discard), rows 2..N+1 are 1-second samples.
+    try: text = Path(path).read_text(errors='ignore')
+    except (FileNotFoundError, OSError): return []
+    data = []
+    for line in text.splitlines():
+        parts = line.split()
+        # Data rows start with integer 'r' (runnable proc count); skip headers + 'procs' line.
+        if len(parts) >= 17 and parts[0].isdigit():
+            try: data.append(int(parts[11]))   # cs = column index 11 (0-based)
+            except (ValueError, IndexError): pass
+    return data[1:] if len(data) > 1 else []   # discard first row (boot-time average)
+
 root = Path(os.environ["OUT_DIR"]) / "ringbuf_pidstat"
 print()
 print("Experiment #5 -- composite mechanism summary:")
-print(f"  {'ref':<11} {'sched_sw baseline':>20} {'sched_sw with_v3':>20} "
-      f"{'delta':>12} {'consumer ctx-sw':>18} {'consumer CPU%':>16}")
+print(f"  {'ref':<11} {'perf sched_sw base':>20} {'perf sched_sw v3':>20} {'delta':>10}  "
+      f"{'vmstat cs base':>16} {'vmstat cs v3':>14} {'cs delta':>10}  "
+      f"{'consumer ctx-sw':>16} {'consumer CPU%':>14}")
 for ref in ['ref_cpu','ref_disk','ref_stream']:
-    base = [parse_perf_one(p, 'sched:sched_switch')
-            for p in glob.glob(str(root/ref/'baseline'/'rep*'/'perf_system.txt'))]
-    withp = [parse_perf_one(p, 'sched:sched_switch')
-             for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_system.txt'))]
-    cons = [parse_perf_one(p, 'context-switches')
-            for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_consumer.txt'))]
+    pbase  = [v for v in (parse_perf_one(p, 'sched:sched_switch') for p in sorted(glob.glob(str(root/ref/'baseline'/'rep*'/'perf_system.txt')))) if v]
+    pwithp = [v for v in (parse_perf_one(p, 'sched:sched_switch') for p in sorted(glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_system.txt')))) if v]
+    cons   = [v for v in (parse_perf_one(p, 'context-switches')   for p in sorted(glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_consumer.txt')))) if v]
+    # vmstat 'cs' values are per-second; sum over the 90s window to compare against perf counter.
+    vbase  = [sum(parse_vmstat_cs(p)) for p in sorted(glob.glob(str(root/ref/'baseline'/'rep*'/'vmstat.txt')))]
+    vwithp = [sum(parse_vmstat_cs(p)) for p in sorted(glob.glob(str(root/ref/'with_profiler'/'rep*'/'vmstat.txt')))]
+    vbase  = [v for v in vbase  if v]
+    vwithp = [v for v in vwithp if v]
     cpus = []
-    for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'pidstat.txt')):
+    for p in sorted(glob.glob(str(root/ref/'with_profiler'/'rep*'/'pidstat.txt'))):
         vs = parse_pidstat_cpu(p)
         if vs: cpus.append(st.mean(vs))
-    base  = [b for b in base if b]
-    withp = [b for b in withp if b]
-    cons  = [c for c in cons if c]
-    mb = st.mean(base)  if base  else 0
-    mw = st.mean(withp) if withp else 0
-    mc = st.mean(cons)  if cons  else 0
-    mcpu = st.mean(cpus) if cpus  else 0
-    print(f"  {ref:<11} {mb:>20,.0f} {mw:>20,.0f} {mw-mb:>12,.0f} {mc:>18,.0f} {mcpu:>15.2f}%")
+
+    mpb  = st.mean(pbase)  if pbase  else 0
+    mpw  = st.mean(pwithp) if pwithp else 0
+    mvb  = st.mean(vbase)  if vbase  else 0
+    mvw  = st.mean(vwithp) if vwithp else 0
+    mc   = st.mean(cons)   if cons   else 0
+    mcpu = st.mean(cpus)   if cpus   else 0
+    print(f"  {ref:<11} {mpb:>20,.0f} {mpw:>20,.0f} {mpw-mpb:>+10,.0f}  "
+          f"{mvb:>16,.0f} {mvw:>14,.0f} {mvw-mvb:>+10,.0f}  "
+          f"{mc:>16,.0f} {mcpu:>13.2f}%")
 print()
 print("Reading:")
-print("  - 'delta' negative on ref_cpu/ref_stream by ~40k confirms the existing paper figure.")
-print("  - 'consumer ctx-sw' ~ |delta| on ref_cpu/ref_stream  => mechanism #1 (adaptive wakeup) dominates.")
-print("  - On ref_disk, |delta| >> consumer ctx-sw           => mechanism #2 (CPU stealing) dominates.")
+print("  - Compare 'perf sched_sw delta' (kernel counter on sched:sched_switch tracepoint) vs")
+print("    'vmstat cs delta' (independent /proc/stat-derived context-switch counter).")
+print("  - If perf-delta is large but vmstat-delta is small => perf counter is suppressed by")
+print("    the V3 BPF program attached to the same tracepoint (measurement artefact, NOT")
+print("    composite mechanism).")
+print("  - If BOTH deltas are large and negative => V3 genuinely reduces ctx-sw in the system.")
+print("  - 'consumer ctx-sw' ~ |vmstat cs delta| on ref_cpu/ref_stream => mechanism #1 (adaptive wakeup) dominates.")
+print("  - On ref_disk, |vmstat cs delta| >> consumer ctx-sw          => mechanism #2 (CPU stealing) dominates.")
 print("  - consumer CPU% * 90s * (CLK_TCK=100) ~= jiffies axis from existing fig:overhead-jiffies.")
 PY
 
