@@ -1,15 +1,43 @@
 # V0 -- Original IntP (SystemTap, kernel ≤6.6)
 
 Reference baseline used for portability and metric-fidelity comparison.
-This directory contains only the canonical V0 script (`intp.stp`, 660
-lines) preserved unchanged from the 2022 IntP paper. It is **not built
-or run** in current campaigns; it exists so that:
+This directory holds the canonical V0 script (`intp.stp`, 660 lines)
+preserved unchanged from the 2022 IntP paper, plus the template and
+generator that recalibrate it for any host other than the original
+PUCRS dev machine.
 
-- the Makefile can parse-check it (`make validate-v0`),
-- `docs/METRICS-DEEP-DIVE.md` and `docs/VARIANT-COMPARISON.md` can cite
+The canonical script also remains useful for:
+
+- the Makefile to parse-check it (`make validate-v0`),
+- `docs/METRICS-DEEP-DIVE.md` and `docs/VARIANT-COMPARISON.md` to cite
   exact line numbers, and
-- `bench/findings/v0-baseline-failure-diagnosis.md` documents why this
-  script no longer compiles on kernel ≥6.8.
+- `bench/findings/v0-baseline-failure-diagnosis.md` to document why
+  this script no longer compiles on kernel ≥6.8.
+
+## Workflow
+
+V0 is measured on Ubuntu 22.04 + kernel 5.15 in the legacy-V0 campaign:
+
+```
+shared/intp-detect.sh                  hardware values from sysfs
+        │
+        ▼
+v0-stap-classic/intp.stp.template      placeholder script (read-only)
+        │
+        ▼  generate-stp.sh substitutes placeholders + logs KEY=VALUE
+        │
+        ▼
+v0-stap-classic/intp.recal.stp         what stap actually loads
+                                       (gitignored, regenerated per run)
+```
+
+`intp.stp` itself is **never modified** — it is the byte-faithful copy
+of the 2022 paper script. All host adaptation flows through the
+template and the generator. `bench/run-intp-bench.sh`
+(`run_profiler_systemtap_v0`) calls the generator before every stap
+invocation and saves the KV log next to the rep TSV as
+`v0-calibration.kv`. `bench/v0-stall-monitor.sh` runs alongside the
+profiler and captures forensic snapshots on stall indicators.
 
 ## Files
 

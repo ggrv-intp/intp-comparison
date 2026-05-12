@@ -22,6 +22,28 @@ findings in:
 
 ### V0 -- Original IntP (SystemTap, kernel <= 6.6)
 
+**Status.** *Measured baseline on Ubuntu 22.04 + kernel 5.15 GA* for
+the legacy-V0 campaign. V0 was previously listed as "not built or run";
+it is now the V0-side of the measured comparison. Two scoping
+constraints carry into the runs: V0 is excluded from the HiBench
+segment (sustained-load runs trigger the systemd-logind /
+`stap_*` module-accumulation cliff documented in
+`bench/findings/v0-baseline-failure-diagnosis.md`), and every V0 rep
+runs under `bench/v0-stall-monitor.sh` so forensic evidence is
+captured before the host stops accepting new SSH sessions.
+
+**Recalibration.** `v0-stap-classic/intp.stp` stays read-only (paper
+contract). Host adaptation flows through `intp.stp.template` (the same
+script with hardware constants replaced by `@@PLACEHOLDER@@` tokens)
+and `generate-stp.sh`, which sources `shared/intp-detect.sh` to
+populate NIC line-rate, LLC size, peak memory bandwidth, the IMC PMU
+type, and the CMT scale factor at the start of every rep. The
+generated script is written to `intp.recal.stp` (gitignored) and the
+substituted values are saved next to the rep's TSV as
+`v0-calibration.kv` for audit. See
+[`v0-stap-classic/README.md`](../v0-stap-classic/README.md) for the
+constants table.
+
 **Architecture summary.** V0 is the unmodified 2022 baseline by
 Xavier and De Rose (PUCRS), published as "IntP: Quantifying
 cross-application interference via system-level instrumentation"
@@ -326,6 +348,15 @@ loading, at the cost of kernel-internal counters that are only exposed
 through tracepoints.
 
 ### V3.1 -- bpftrace (eBPF scripts)
+
+**Status.** *Implemented; measurement out of scope for this campaign.*
+The implementation under `v3.1-bpftrace/` is unchanged and remains
+runnable via `BENCH_VARIANTS="...,v3.1"`. The legacy-V0 campaign
+compares V0's recalibrated baseline against the operationally robust
+variants (V1, V1.1, V2, V3); V3.1 is held out of the default matrix
+as a scoping decision, not a quality judgement. See
+[`docs/EXPERIMENT-STRATEGY.md`](EXPERIMENT-STRATEGY.md) §
+"V3.1 -- out of scope for this campaign".
 
 **Architecture summary.** V3.1 is bpftrace what V0 is to SystemTap: a
 high-level DSL for kernel instrumentation, with the safety of the BPF

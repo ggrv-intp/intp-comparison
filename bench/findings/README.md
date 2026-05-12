@@ -17,6 +17,26 @@ benchmark campaign.
     LAD Skylake-SP host (microcode + erratum), affecting `mbw` and
     `llcocc` on every variant that depends on RDT.
 
+## Legacy-V0 campaign reports (Ubuntu 22.04 + kernel 5.15)
+
+Reports from the legacy-V0 campaign land here once the operator
+completes them on the U22 host. Expected filenames:
+
+- `u22-preflight-<host>-<YYYYMMDD>.md` — output of
+  `shared/intp-preflight.sh` after the U22 reboot, plus
+  `shared/intp-detect.sh` output and the human verification notes
+  (kernel version, debuginfo+headers package state, RDT flags,
+  `/sys/devices/uncore_imc*` enumeration, `/sys/devices/intel_cqm/`
+  presence). Documents the host's actual recalibration inputs.
+- `u22-v0-smoke-<host>-<YYYYMMDD>.md` — first V0 rep on the U22 host:
+  `v0-calibration.kv` values, generator log, `stap -p4` outcome, the
+  profiler TSV first/last rows, any `stall-monitor/stall-dump-*`
+  bundles produced during the smoke test, and an outcome verdict
+  (`pass` / `fail-with-evidence`).
+
+These stubs are placeholders for the operator's human-authored reports;
+do not auto-generate them.
+
 ## V0 stall captures
 
 V0 on Ubuntu 22.04 + kernel 5.15 GA hits stalls that are not symbolic
