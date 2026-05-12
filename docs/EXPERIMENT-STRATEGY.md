@@ -84,23 +84,65 @@ cliffs" section.
 
 ---
 
-## V0 / V0.1 — legacy reference only
+## V0 — legacy baseline on Ubuntu 22.04 + kernel 5.15
 
-These variants are not run in the modern campaign. Their role in the
-evaluation is to establish the portability cliff:
+The legacy-V0 campaign runs V0 against the modern variants on a host
+booted into Ubuntu 22.04 + kernel 5.15 GA. V0.1 remains *legacy
+reference only* (see next section).
 
-- V0 fails to compile on kernel 6.0+ due to `cqm_rmid` removal.
-- V0.1 compiles but drops `llcocc`.
+### What's in scope
 
-If you absolutely need to run them for a "historical baseline" experiment
-(option (c) in the email of 2026-05-08), use a separate disk with Ubuntu
-22.04 + kernel 5.15. The tarball image of the configured Ubuntu 24 host is
-in `bench/deploy/`; an equivalent 22.04 image needs to be built once and
-then can be cloned per-machine.
+- **Recalibration via template/generator.** `intp.stp` stays read-only
+  (paper contract); `intp.stp.template` + `v0-stap-classic/generate-stp.sh`
+  substitute hardware constants from `shared/intp-detect.sh` (NIC line
+  rate, LLC size, peak memory bandwidth, IMC PMU type, CMT scale
+  factor). The substituted values are saved per rep as
+  `v0-calibration.kv` next to the profiler TSV. See
+  `v0-stap-classic/README.md` for the constants table.
+- **Forensic stall watchdog.** Every V0 rep is wrapped by
+  `bench/v0-stall-monitor.sh`, which heartbeats every `POLL_INTERVAL`
+  seconds and writes a full evidence bundle into
+  `<rep>/stall-monitor/stall-dump-<epoch>/` the moment any of five
+  detectors fires (loadavg > 50, D-state > 8, RCU stall / soft lockup /
+  hung_task / BUG: in fresh dmesg, target PID in D-state > 30s,
+  `Failed to create session` in journal). See
+  `bench/findings/README.md` § "V0 stall captures" for the bundle
+  schema.
+- **Reduced reps.** Start with `REPS=5` (down from the modern 30) until
+  the per-rep failure rate is measured. Adjust upward only if the
+  stall-monitor reports no dumps across a full pass. The bench dispatch
+  uses `INTP_BENCH_V0_DEEP_CLEANUP_EVERY=1` (8 s pause + module sweep
+  every rep) because V0 is at least as fragile as V1.
+- **HiBench excluded for V0.** Sustained-load HiBench on 5.15 with
+  classic stap triggers the systemd-logind / `stap_*` module-accumulation
+  cliff documented in `bench/findings/v0-baseline-failure-diagnosis.md`;
+  recovery is reboot-level. V0 runs only in the stress-ng segment of
+  `run-big-batch.sh`. The HiBench knob defaults exclude V0
+  automatically; opt-in explicitly with `HIBENCH_VARIANTS="v0,..."`
+  if and only if the host has already survived a full stress-ng pass.
 
-Validation step: both variants succeed at `stap -p4` (compile) and produce
-a non-empty `profiler.tsv` whose llcocc column matches the variant's
-documented coverage (V0 = full, V0.1 = zero).
+### Validation step
+
+- `bash v0-stap-classic/generate-stp.sh` prints a `KEY=VALUE` log and
+  exits 0; `grep '@@' v0-stap-classic/intp.recal.stp` is empty.
+- `stap -p4 v0-stap-classic/intp.recal.stp <comm>` compiles to a `.ko`.
+- A single rep produces both `profiler.tsv` (non-empty, 7 columns) and
+  `stall-monitor/heartbeat-*.txt` files; absence of any
+  `stall-dump-*/` subdir indicates the watchdog saw no stalls during
+  that rep.
+
+---
+
+## V0.1 — legacy reference only
+
+V0.1 (`v0.1-stap-k68/intp-6.8.stp`) is not part of the legacy-V0
+measured campaign. It exists as the minimal-patch demonstration: V0
+with `cqm_rmid` removed and `llcocc` hard-zeroed, intended only to
+document the portability cliff on kernel 6.8+. Its role in the
+evaluation is *citation*, not measurement.
+
+Validation step: `stap -p4` succeeds and a sample run produces a non-empty
+`profiler.tsv` whose `llcocc` column is zero by construction.
 
 ---
 
@@ -329,7 +371,24 @@ zeros.
 
 ---
 
-## V3.1 — bpftrace + Python orchestration, 7/7 metrics
+## V3.1 — out of scope for this campaign
+
+V3.1 (`v3.1-bpftrace/`) is fully implemented and operational, but
+*not measured* in the legacy-V0 campaign. The campaign's contrast
+axis is V0's recalibrated SystemTap baseline against the operationally
+robust variants (V1, V1.1, V2, V3); V3.1 sits between V1 and V3 on the
+implementation axis and would not add a discriminating data point for
+that comparison. This is a scoping decision, not a quality judgement
+on V3.1.
+
+Opting V3.1 back in for any specific question is trivial:
+
+```bash
+BENCH_VARIANTS="v0,v1,v1.1,v2,v3,v3.1" ./run-big-batch.sh
+HIBENCH_VARIANTS="v1,v1.1,v2,v3,v3.1" ./run-big-batch.sh   # or override
+```
+
+The operational notes below remain accurate for those opt-in runs.
 
 ### Same fork bug as V3 — also fixed
 

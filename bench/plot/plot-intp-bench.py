@@ -116,9 +116,26 @@ VARIANT_COLORS = {
     "v1":   "#17becf",
     "v1.1": "#aec7e8",
     "v2":   "#1f77b4",
-    "v3.1": "#ff7f0e",
     "v3":   "#2ca02c",
 }
+# Default plotted-variant set for the legacy-v0 campaign. The 2x2 panel grid
+# in _grid_dims expects 4. If <results_dir>/variants.manifest exists, it
+# overrides this default (one variant per line, '#' comments allowed).
+DEFAULT_PLOTTED_VARIANTS = ["v0", "v1.1", "v2", "v3"]
+
+
+def _load_plotted_variants(results_dir) -> list[str]:
+    from pathlib import Path as _P
+    manifest = _P(results_dir) / "variants.manifest"
+    if manifest.exists():
+        out: list[str] = []
+        for line in manifest.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                out.append(line)
+        if out:
+            return out
+    return list(DEFAULT_PLOTTED_VARIANTS)
 ENV_ORDER = [
     "bare",
     "container", "container-guest", "container-full",
@@ -1362,6 +1379,14 @@ def main() -> None:
     means = collect_means(args.results_dir)
     if means.empty:
         sys.exit("No profiler.tsv files found.")
+    plotted = _load_plotted_variants(args.results_dir)
+    pre = len(means)
+    means = means[means["variant"].isin(plotted)].copy()
+    if means.empty:
+        sys.exit(f"No runs match plotted variants {plotted}. "
+                 f"Place variants.manifest in results_dir to override.")
+    print(f"Plotted-variants filter: keeping {plotted} "
+          f"({len(means)}/{pre} rows after filter)")
     means.to_csv(outdir / "aggregate-means.csv", index=False)
     print(f"Loaded {len(means)} runs across "
           f"{means['env'].nunique()} envs, {means['variant'].nunique()} variants, "
