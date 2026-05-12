@@ -81,6 +81,27 @@ if [ "${SMOKE_VM_GUEST:-0}" = "1" ]; then
       --duration 15 --reps 1 \
       --output-dir "$OUT/bench-quick-vg"
 fi
+# SMOKE_CROSS_ENV=1   exercises the bare/container/vm-guest cross-env path
+#                     and the plot-cross-environment.py consumer in one shot.
+#                     Picks vm-guest (not plain vm) because cross-env analysis
+#                     is most useful when all three envs report per-process
+#                     metrics; the host-observer vm mode would zero out
+#                     several columns for vm and degrade the comparison.
+if [ "${SMOKE_CROSS_ENV:-0}" = "1" ]; then
+  : "${VM_IMAGE:?SMOKE_CROSS_ENV=1 requires VM_IMAGE pointing to a qcow2}"
+  run_step "cross-env smoke (v2,v3.1 in bare,container,vm-guest)" \
+    bash bench/run-intp-bench.sh \
+      --stage detect,solo,report \
+      --variants v2,v3.1 \
+      --env bare,container,vm-guest \
+      --workloads app01_ml_llc \
+      --duration 20 --reps 2 \
+      --bench-cpus 4 --bench-mem 8G \
+      --output-dir "$OUT/bench-cross-env-smoke"
+  run_step "cross-env comparison plot" \
+    python3 bench/plot/plot-cross-environment.py \
+      "$OUT/bench-cross-env-smoke"
+fi
 
 echo
 echo "Smoke finished. PASS=$ok FAIL=$fail"
