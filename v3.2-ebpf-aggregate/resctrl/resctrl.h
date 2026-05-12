@@ -1,18 +1,22 @@
 /*
- * resctrl.h -- resctrl helper for V3.
+ * resctrl.h -- resctrl helper for V3.2.
  *
- * V3 collects software metrics through eBPF, but hardware metrics (mbw,
- * llcocc) must go through the resctrl filesystem: eBPF cannot touch the
- * RDT/MPAM MSRs under the kernel verifier. The helper here creates a
- * mon_group, assigns PIDs into it, and sums counter files across all
- * mon_L3_* domains at every sample.
+ * V3.2 collects software metrics via in-kernel eBPF aggregation, but
+ * hardware metrics (mbw, llcocc) still go through the resctrl
+ * filesystem: eBPF cannot touch the RDT/MPAM MSRs under the kernel
+ * verifier. Same operational model as V3 (one mon_group per run, PIDs
+ * written into tasks file, counters summed across mon_L3_* domains).
  *
- * API shape mirrors what the V3 spec asks for:
- *   resctrl_create_group()      -- allocate a handle + mon_group dir
- *   resctrl_assign_pids()       -- push PIDs into the group's tasks file
- *   resctrl_read_mbm_delta()    -- normalized utilization %, delta since last call
- *   resctrl_read_llcocc()       -- normalized occupancy %, current reading
- *   resctrl_destroy_group()     -- rmdir + free
+ * V3.2 deltas vs. V3:
+ *   - resctrl_read_mbm_pct_and_raw() reads both percent AND raw MB/s
+ *     in a single counter step, so the userspace caller can emit both
+ *     the normalized column (clipped or unclipped per --clip-mbw) and
+ *     the new mbw_raw_mbps trailing column without double-advancing
+ *     the prev_mbm_bytes counter.
+ *   - The clip-at-100 behavior is OPT-IN (clip_at_100 flag), not the
+ *     hard default the V3 helper hard-codes. The paper documents
+ *     (section IV-E) that V3's silent clip is what produces the bimodal
+ *     discrete pattern 96/80/64/48/32/16/0 -- not measurement.
  */
 
 #ifndef INTP_V3_RESCTRL_H
@@ -56,10 +60,28 @@ int resctrl_assign_pid_threads(resctrl_group_t *g,
  *   returned value: (delta_bytes / interval_sec) / max_bw_bps * 100
  * On first call returns 0.0 (no previous sample to diff against).
  * interval_sec is the wall-clock interval since the last call by the caller.
- * caps is used for max bandwidth and whether MBM is available. */
+ * caps is used for max bandwidth and whether MBM is available.
+ *
+ * Hard-clips at 100% for backwards compatibility with V3 consumers.
+ * V3.2 prefers resctrl_read_mbm_pct_and_raw() instead. */
 double resctrl_read_mbm_delta(resctrl_group_t *g,
                               const system_capabilities_t *caps,
                               double interval_sec);
+
+/* V3.2 combined reader: computes BOTH the percent (clipped or unclipped
+ * per the clip_at_100 flag) and the raw MB/s in a single counter step,
+ * so callers can emit both columns without double-advancing the
+ * prev_mbm_bytes counter.
+ *
+ * Returns 0 on success; *out_pct and *out_mbps are written.
+ * Returns -1 on failure (e.g., MBM unavailable). On first call after
+ * group creation *out_pct = 0.0 and *out_mbps = 0.0 (no diff yet). */
+int resctrl_read_mbm_pct_and_raw(resctrl_group_t *g,
+                                 const system_capabilities_t *caps,
+                                 double interval_sec,
+                                 int clip_at_100,
+                                 double *out_pct,
+                                 double *out_mbps);
 
 /* Current LLC occupancy as percentage of LLC size in caps. Returns 0.0
  * if llcocc is unavailable. */

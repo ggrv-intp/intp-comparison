@@ -317,7 +317,8 @@ static void compute_sample(const struct intp_counters *d,
 
 static void emit_tsv_header(FILE *out,
                             const system_capabilities_t *caps,
-                            int no_perf, int no_resctrl)
+                            int no_perf, int no_resctrl,
+                            int no_raw_mbw, int clip_mbw)
 {
     fprintf(out,
         "# v3.2 ebpf-aggregate -- netp:tracepoint nets:softirq blk:tracepoint"
@@ -329,13 +330,22 @@ static void emit_tsv_header(FILE *out,
             caps->kernel_major, caps->kernel_minor,
             caps->env == ENV_CONTAINER ? "container" :
             caps->env == ENV_VM        ? "vm" : "bare-metal");
-    fprintf(out, "netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n");
+    fprintf(out, "# mbw_pct = (mbm_total_bytes_delta / interval) / "
+                 "mem_bw_max_bps * 100  (clip_mbw=%s)\n",
+            clip_mbw ? "on (legacy V3 cap-at-99)" : "off (raw, may exceed 100)");
+    if (!no_raw_mbw)
+        fprintf(out, "# mbw_raw_mbps = (mbm_total_bytes_delta / interval) "
+                     "/ 1e6  (diagnostic, see paper IV-E)\n");
+    if (no_raw_mbw)
+        fprintf(out, "netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n");
+    else
+        fprintf(out, "netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\tmbw_raw_mbps\n");
     fflush(out);
 }
 
-static void emit_tsv(FILE *out, const intp_sample_t *s)
+static void emit_tsv(FILE *out, const intp_sample_t *s, int no_raw_mbw)
 {
-    fprintf(out, "%02d\t%02d\t%02d\t%02d\t%02d\t%02d\t%02d\n",
+    fprintf(out, "%02d\t%02d\t%02d\t%02d\t%02d\t%02d\t%02d",
             (int)(s->netp   + 0.5),
             (int)(s->nets   + 0.5),
             (int)(s->blk    + 0.5),
@@ -343,19 +353,26 @@ static void emit_tsv(FILE *out, const intp_sample_t *s)
             (int)(s->llcmr  + 0.5),
             (int)(s->llcocc + 0.5),
             (int)(s->cpu    + 0.5));
+    if (!no_raw_mbw)
+        fprintf(out, "\t%.0f", s->mbw_raw_mbps);
+    fputc('\n', out);
     fflush(out);
 }
 
-static void emit_json(FILE *out, const intp_sample_t *s, double t_sec)
+static void emit_json(FILE *out, const intp_sample_t *s, double t_sec,
+                      int no_raw_mbw)
 {
     fprintf(out,
         "{\"t\":%.3f,\"netp\":%.2f,\"nets\":%.2f,\"blk\":%.2f,"
-        "\"mbw\":%.2f,\"llcmr\":%.2f,\"llcocc\":%.2f,\"cpu\":%.2f}\n",
+        "\"mbw\":%.2f,\"llcmr\":%.2f,\"llcocc\":%.2f,\"cpu\":%.2f",
         t_sec, s->netp, s->nets, s->blk, s->mbw, s->llcmr, s->llcocc, s->cpu);
+    if (!no_raw_mbw)
+        fprintf(out, ",\"mbw_raw_mbps\":%.2f", s->mbw_raw_mbps);
+    fprintf(out, "}\n");
     fflush(out);
 }
 
-static void emit_prometheus(FILE *out, const intp_sample_t *s)
+static void emit_prometheus(FILE *out, const intp_sample_t *s, int no_raw_mbw)
 {
     fprintf(out,
         "intp_v3_2{metric=\"netp\"} %.2f\n"
@@ -366,6 +383,9 @@ static void emit_prometheus(FILE *out, const intp_sample_t *s)
         "intp_v3_2{metric=\"llcocc\"} %.2f\n"
         "intp_v3_2{metric=\"cpu\"} %.2f\n",
         s->netp, s->nets, s->blk, s->mbw, s->llcmr, s->llcocc, s->cpu);
+    if (!no_raw_mbw)
+        fprintf(out, "intp_v3_2{metric=\"mbw_raw_mbps\"} %.2f\n",
+                s->mbw_raw_mbps);
     fflush(out);
 }
 
@@ -509,13 +529,15 @@ int main(int argc, char **argv)
     int is_json = strcmp(args.output_fmt, "json") == 0;
     int is_prom = strcmp(args.output_fmt, "prometheus") == 0;
     if (is_tsv && args.want_header)
-        emit_tsv_header(stdout, &caps, args.no_perf_events, args.no_resctrl);
+        emit_tsv_header(stdout, &caps, args.no_perf_events, args.no_resctrl,
+                        args.no_raw_mbw, args.clip_mbw);
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     /* ------- main polling loop ------- */
+    int mbw_warned = 0;
     struct intp_counters prev = {0}, cur = {0};
     if (read_global_aggregate(skel, &prev) != 0) {
         fprintf(stderr, "failed to read agg_global: %s\n", strerror(errno));
@@ -552,17 +574,39 @@ int main(int argc, char **argv)
         compute_sample(&delta, &caps, interval_real, caps.num_cores, &sample);
 
         if (rg) {
-            sample.mbw    = resctrl_read_mbm_delta(rg, &caps, interval_real);
-            sample.llcocc = resctrl_read_llcocc(rg, &caps);
+            double pct = 0.0, raw = 0.0;
+            resctrl_read_mbm_pct_and_raw(rg, &caps, interval_real,
+                                         args.clip_mbw, &pct, &raw);
+            sample.mbw          = pct;
+            sample.mbw_raw_mbps = raw;
+            sample.llcocc       = resctrl_read_llcocc(rg, &caps);
+
+            /* Warn-once when the unclipped percent exceeds 100. Either
+             * mem_bw_max_bps is misconfigured (the systematic V3 bug
+             * documented in paper IV-E) or sustained DDR throughput is
+             * genuinely above the configured ceiling. Either way the
+             * analyst needs to recheck --mem-bw-max-bps; we keep
+             * emitting the raw value so they can. */
+            if (!args.clip_mbw && pct > 100.0 && !mbw_warned) {
+                fprintf(stderr,
+                    "warn: mbw exceeded ceiling at t=%.2fs "
+                    "(raw=%.0f MB/s, ceiling=%ld MB/s) "
+                    "-- recheck --mem-bw-max-bps\n",
+                    (double)(now_t.tv_sec - start.tv_sec) +
+                    (double)(now_t.tv_nsec - start.tv_nsec) / 1e9,
+                    raw,
+                    caps.mem_bw_max_bps / 1000000L);
+                mbw_warned = 1;
+            }
         }
 
-        if (is_tsv)  emit_tsv(stdout, &sample);
+        if (is_tsv)  emit_tsv(stdout, &sample, args.no_raw_mbw);
         if (is_json) {
             double t = (double)(now_t.tv_sec  - start.tv_sec)
                      + (double)(now_t.tv_nsec - start.tv_nsec) / 1e9;
-            emit_json(stdout, &sample, t);
+            emit_json(stdout, &sample, t, args.no_raw_mbw);
         }
-        if (is_prom) emit_prometheus(stdout, &sample);
+        if (is_prom) emit_prometheus(stdout, &sample, args.no_raw_mbw);
 
         prev   = cur;
         prev_t = now_t;

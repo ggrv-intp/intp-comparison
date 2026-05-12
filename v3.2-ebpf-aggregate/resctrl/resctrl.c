@@ -284,6 +284,49 @@ double resctrl_read_mbm_delta(resctrl_group_t *g,
     return util;
 }
 
+int resctrl_read_mbm_pct_and_raw(resctrl_group_t *g,
+                                 const system_capabilities_t *caps,
+                                 double interval_sec,
+                                 int clip_at_100,
+                                 double *out_pct,
+                                 double *out_mbps)
+{
+    if (!g || !caps || !out_pct || !out_mbps) return -1;
+    *out_pct  = 0.0;
+    *out_mbps = 0.0;
+
+    if (!caps->has_rdt_mbm && !caps->has_amd_qos && !caps->has_arm_mpam)
+        return -1;
+    if (interval_sec <= 0.0) return -1;
+
+    long now = sum_counter(g, "mbm_total_bytes");
+    if (now < 0) return -1;
+
+    if (g->prev_mbm_bytes < 0) {
+        g->prev_mbm_bytes = now;
+        return 0;        /* first call: no diff yet */
+    }
+
+    long long delta = now - g->prev_mbm_bytes;
+    g->prev_mbm_bytes = now;
+    if (delta < 0) return 0;       /* counter wrap */
+
+    double bw_bps = (double)delta / interval_sec;
+    *out_mbps = bw_bps / 1e6;
+
+    if (caps->mem_bw_max_bps > 0) {
+        double pct = bw_bps / (double)caps->mem_bw_max_bps * 100.0;
+        if (pct < 0.0) pct = 0.0;
+        /* V3.2: only cap when clip_at_100 is explicitly set (--clip-mbw).
+         * Default is unclipped so analysts see the real reading. The
+         * legacy cap value is 99 (not 100) to preserve the V3 behavior
+         * exactly when --clip-mbw is requested. */
+        if (clip_at_100 && pct > 100.0) pct = 99.0;
+        *out_pct = pct;
+    }
+    return 0;
+}
+
 double resctrl_read_llcocc(resctrl_group_t *g,
                            const system_capabilities_t *caps)
 {
