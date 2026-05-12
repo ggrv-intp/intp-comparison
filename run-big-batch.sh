@@ -24,13 +24,20 @@
 #                                 vm-guest          workload + profiler INSIDE guest, results scp'd back
 #                               container-guest needs Docker; vm-guest needs cloud-localds + a qcow2
 #                               with sshd + cloud-init, ideally with IntP build deps preinstalled.
-#     BENCH_VARIANTS=v1,v2,v3.1,v3 comma-separated profiler variants for full bench
-#     HIBENCH_VARIANTS=$BENCH_VARIANTS    override profiler variants for HiBench
-#                                         segment. Defaults to BENCH_VARIANTS;
-#                                         exposed as a separate knob so a
-#                                         specific campaign can drop a variant
-#                                         that's flaky on the target host
-#                                         without touching the stress-ng list.
+#     BENCH_VARIANTS=v0,v1,v1.1,v2,v3  comma-separated profiler variants for full bench
+#                                   (V0 re-enabled as measured baseline since
+#                                   2026-05-11; V3.1 still implemented and
+#                                   selectable via BENCH_VARIANTS=...,v3.1).
+#     HIBENCH_VARIANTS=<BENCH_VARIANTS minus v0>    override profiler variants
+#                                         for HiBench. Defaults to BENCH_VARIANTS
+#                                         with v0 stripped (sustained-load HiBench
+#                                         on kernel 5.15 with stap has high
+#                                         operational risk; V0 runs only on the
+#                                         stress-ng layer). Exposed as a separate
+#                                         knob so a specific campaign can drop a
+#                                         variant that's flaky on the target
+#                                         host without touching the stress-ng
+#                                         list.
 #     BENCH_WORKLOADS=             comma-separated stress-ng workload IDs to keep
 #                                  (default: empty = all 15 apps from the catalog).
 #                                  Useful to skip workloads that misbehaved in a

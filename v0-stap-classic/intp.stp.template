@@ -1,4 +1,34 @@
 #!/usr/bin/stap
+# -----------------------------------------------------------------------------
+# v0 — intp.stp.template
+#
+# Paper-faithful 2022 baseline (Xavier and De Rose, SBAC-PAD 2022) with the
+# host-specific calibration constants extracted as placeholder tokens of the
+# form '<at><at>NAME<at><at>'. v0-stap-classic/generate-stp.sh sources
+# shared/intp-detect.sh, substitutes the placeholders listed below, and
+# writes v0-stap-classic/intp.recal.stp; stap loads the recalibrated copy.
+# The original intp.stp stays read-only by contract with the paper.
+#
+# Recalibration constants
+#
+#   Placeholder                  | Unit               | Detect source                  | Why hardcoded in 2022
+#   -----------------------------+--------------------+--------------------------------+--------------------------------
+#   @@NIC_BYTES_PER_SEC@@        | bytes/sec          | INTP_NIC_SPEED_MBPS * 125000   | 1 GbE on the original dev box
+#   @@LLC_BYTES@@                | bytes              | INTP_LLC_SIZE_KB * 1024        | 34 MB on the original dev box
+#   @@MEM_BW_BYTES_PER_SEC@@     | bytes/sec          | INTP_MEM_BW_MBPS * 125000      | 34 GB/s on the original dev box
+#   @@IMC_PMU_TYPE@@             | uncore PMU type id | INTP_IMC_PMU_TYPE              | 14 on the original kernel
+#   @@CMT_SCALE_FACTOR@@         | bytes per RMID llc | INTP_CMT_SCALE_FACTOR          | 49152 on the original kernel
+#                                |    occupancy unit  | (fallback if sysfs unreadable) |
+#
+# Two related host knobs are NOT placeholders:
+#   - INTP_IMC_CHANNEL_COUNT: the script samples CPUs 0 and 1 only (paper
+#     baseline). generate-stp.sh emits a warn if the host has >2 IMC
+#     channels — measured mbw will be a lower bound. Fixing this requires
+#     a code change, not a substitution, and is intentionally out of scope
+#     for the calibration generator.
+#   - default NIC interface and block device: passed at runtime via stap
+#     argument @1, not embedded in the script.
+# -----------------------------------------------------------------------------
 
 global interval = 1
 

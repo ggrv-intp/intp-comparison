@@ -140,6 +140,62 @@ implementation to read from resctrl rather than from `cqm_rmid`. V0.1
 is rarely the best deployment choice in practice but has a clear
 pedagogical role in the dissertation.
 
+### V0.2 -- V0 semantics + userspace helper (target: kernel 5.15 GA, U22)
+
+**Status.** *Active (legacy-V0 campaign).* Scaffolded 2026-05-11;
+pending operator-side smoke validation on a U22 host.
+
+**Architecture summary.** V0.2 keeps the paper-faithful V0 stap probe
+set for `netp`, `nets`, `blk`, `llcmr`, and `cpu` (all RCU-safe) and
+moves the two RCU-unsafe operations -- uncore IMC perf events
+(`mbw`) and `cqm_rmid`-based LLC occupancy (`llcocc`) -- into a small
+userspace daemon (`v0.2-stap-helper/intp-helper.c`). The helper writes
+the latest values atomically to `/tmp/intp-v0.2-hw-data`; the stap
+script reads that file from a `procfs.read` probe via the same
+RCU-safe `filp_open + kernel_read` pattern V1.1 uses. Target kernel
+is **5.15 GA (Ubuntu 22.04)**; the variant is explicitly gated to the
+window `5.10 ≤ k < 6.0` because on 6.x V1.1 is the right variant
+(same helper pattern, but with V1's probe set).
+
+**Backend / probe map.** Identical to V0 for the 5 RCU-safe metrics.
+For mbw and llcocc, the data path is: helper opens IMC events via
+`perf_event_open(2)` and reads `llc_occupancy` via the resctrl
+mon_groups filesystem; the stap script reads the helper's output file
+from a procfs read probe. No `perf_event_create_kernel_counter()` and
+no `on_each_cpu_mask()` from probe context.
+
+**Measurement fidelity.** Same envelope as V0 for the 5 RCU-safe
+metrics. For mbw and llcocc, fidelity matches V1.1's helper output
+(percentage normalized against host DRAM bandwidth and L3 size; the
+bench launcher passes `INTP_HELPER_DRAM_BW_MBPS`, `INTP_HELPER_L3_SIZE_KB`,
+and `INTP_HELPER_IMC_PMU_TYPE` from `shared/intp-detect.sh`).
+
+**Recalibration.** `v0.2-stap-helper/intp.stp.template` carries only one
+placeholder (`@@NIC_BYTES_PER_SEC@@`); all other host knobs flow
+through helper environment variables and are read at helper startup.
+`v0-stap-classic/intp.stp` is unchanged.
+
+**Deployment requirements.** Kernel 5.10..6.0, SystemTap 5.0+,
+matching kernel headers + debuginfo, root (for stap), and resctrl
+with `L3_MON` enabled (for `llcocc`). Without resctrl L3_MON, the
+helper warns at startup and reports llcocc=0; the rest of the metrics
+continue to work.
+
+**Known limitations.** Same as V1.1's helper architecture: per-PID
+attribution depends on the helper scanning `/proc` once per second
+and adding new matches to the mon_group `tasks` file -- short-lived
+PIDs that complete inside a poll interval will be missed. Helper
+boots empty for ~1 s on each rep, during which mbw and llcocc read
+as 0; the bench harness sleeps 0.3 s before starting the stap run to
+let the helper write its first line.
+
+**Relationship to other variants.** V0 -> V0.2 is a kernel-era port:
+keep V0's probes where they are RCU-safe, replace the two RCU-unsafe
+ones with a userspace path. V0.2 -> V1.1 is the same architecture
+applied to a different stap probe set (V1's modern set vs V0's paper
+set). V0.2 and V1.1 do not coexist in the same campaign by intent --
+they target different kernels.
+
 ### V1 -- Stap-native (kernel 6.8+, 5/7 metrics, no helper)
 
 **Architecture summary.** V1 is the result of restoring the legacy

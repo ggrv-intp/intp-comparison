@@ -87,6 +87,10 @@ V0_TEMPLATE="$REPO_ROOT/v0-stap-classic/intp.stp.template"
 V0_GENERATOR="$REPO_ROOT/v0-stap-classic/generate-stp.sh"
 V0_RECAL_STP="$REPO_ROOT/v0-stap-classic/intp.recal.stp"
 V0_1_STP="$REPO_ROOT/v0.1-stap-k68/intp-6.8.stp"
+V0_2_TEMPLATE="$REPO_ROOT/v0.2-stap-helper/intp.stp.template"
+V0_2_GENERATOR="$REPO_ROOT/v0.2-stap-helper/generate-stp.sh"
+V0_2_RECAL_STP="$REPO_ROOT/v0.2-stap-helper/intp.recal.stp"
+V0_2_HELPER="$REPO_ROOT/v0.2-stap-helper/intp-helper"
 V1_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
 V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
 V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
@@ -633,6 +637,7 @@ write_metadata() {
             case "$v" in
                 v0) p="$V0_STP" ;;
                 v0.1) p="$V0_1_STP" ;;
+                v0.2) p="$V0_2_TEMPLATE" ;;
                 v1) p="$V1_STP" ;;
                 v1.1) p="$V1_1_STP" ;;
                 v2) p="$V2_BIN" ;;
@@ -672,10 +677,16 @@ stage_build() {
         log "Building v1.1 helper..."
         run_or_dry make -C "$REPO_ROOT/v1.1-stap-helper"
     fi
+    if variant_selected v0.2 && [ ! -x "$V0_2_HELPER" ]; then
+        log "Building v0.2 helper..."
+        run_or_dry make -C "$REPO_ROOT/v0.2-stap-helper"
+    fi
     if variant_selected v0 && [ ! -f "$V0_STP" ]; then warn "v0 selected but $V0_STP missing"; fi
     if variant_selected v0 && [ ! -f "$V0_TEMPLATE" ]; then warn "v0 selected but $V0_TEMPLATE missing"; fi
     if variant_selected v0 && [ ! -x "$V0_GENERATOR" ]; then warn "v0 selected but $V0_GENERATOR not executable"; fi
     if variant_selected v0.1 && [ ! -f "$V0_1_STP" ]; then warn "v0.1 selected but $V0_1_STP missing"; fi
+    if variant_selected v0.2 && [ ! -f "$V0_2_TEMPLATE" ]; then warn "v0.2 selected but $V0_2_TEMPLATE missing"; fi
+    if variant_selected v0.2 && [ ! -x "$V0_2_GENERATOR" ]; then warn "v0.2 selected but $V0_2_GENERATOR not executable"; fi
     if variant_selected v1 && [ ! -f "$V1_STP" ]; then warn "v1 selected but $V1_STP missing"; fi
     if variant_selected v1.1 && [ ! -f "$V1_1_STP" ]; then warn "v1.1 selected but $V1_1_STP missing"; fi
     if variant_selected v3.1 && [ ! -x "$V3_1_RUNNER" ]; then warn "v3.1 selected but runner $V3_1_RUNNER not executable"; fi
@@ -719,6 +730,16 @@ variant_kernel_ok() {
         v0.1)
             # Kernel-6.8 port of v0; same 4.19 floor.
             if _kernel_lt 4 19; then warn "v0.1 needs kernel ≥4.19 (have $k)"; return 1; fi
+            ;;
+        v0.2)
+            # V0 semantics with userspace helper for the RCU-unsafe IMC/RDT
+            # operations. Target kernel is 5.15 GA (Ubuntu 22.04). On kernel
+            # ≥6.8 cqm_rmid is gone -- but v0.2 doesn't use cqm_rmid (resctrl
+            # path via the helper), so technically it could run there. Cap at
+            # <6.0 anyway: the entire point of v0.2 is to be the U22/5.15 leg
+            # of the experiment; on 6.x v1.1 is the right variant.
+            if _kernel_lt 5 10; then warn "v0.2 needs kernel ≥5.10 (have $k)"; return 1; fi
+            if _kernel_ge 6 0;  then warn "v0.2 targets U22/5.15 GA; on kernel ≥6.0 use v1.1"; return 1; fi
             ;;
         v1)
             # Native SystemTap module; same floor as v0, same ceiling.
@@ -777,7 +798,7 @@ variant_env_ok() {
             # need kernel-headers in guest -- skip unless explicitly opted
             # via INTP_VMG_ALLOW_STAP=1.
             case "$variant" in
-                v0|v0.1|v1)
+                v0|v0.1|v0.2|v1)
                     if [ "${INTP_VMG_ALLOW_STAP:-0}" != "1" ]; then
                         warn "$variant on vm-guest needs guest-side stap+headers; "\
 "set INTP_VMG_ALLOW_STAP=1 if your qcow2 has them"
@@ -1871,6 +1892,106 @@ run_profiler_systemtap_v0() {
     return $rc
 }
 
+run_profiler_systemtap_v0_2() {
+    # v0.2 = V0-faithful stap + userspace helper, targeting kernel 5.15 GA.
+    # The stap script keeps V0's probe set for netp/nets/blk/llcmr/cpu and
+    # reads mbw/llcocc from /tmp/intp-v0.2-hw-data which intp-helper writes
+    # once per second via perf_event_open(2) + resctrl mon_groups -- bypassing
+    # V0's RCU-unsafe in-probe operations that destabilise stap on Ubuntu
+    # 22.04's 5.15 kernel.
+    #
+    # This wrapper combines V0's per-rep recalibration + stall watchdog with
+    # V1.1's helper-launch pattern. Helper env knobs (DRAM_BW_MBPS, L3_SIZE_KB,
+    # IMC_PMU_TYPE) come from shared/intp-detect.sh output captured into the
+    # calibration KV log.
+    local outfile="$1" duration="$2" pid="$3"
+    local kv_log="${outfile%.tsv}.v0.2-calibration.kv"
+    local helper_log="${outfile%.tsv}.helper.log"
+    local monitor_dir
+    monitor_dir="$(dirname -- "$outfile")/stall-monitor"
+    local monitor_pid=""
+    local helper_pid=""
+
+    _v0_2_stop_monitor() {
+        if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
+            kill -TERM "$monitor_pid" 2>/dev/null || true
+            wait "$monitor_pid" 2>/dev/null || true
+        fi
+    }
+    _v0_2_stop_helper() {
+        if [ -n "$helper_pid" ] && kill -0 "$helper_pid" 2>/dev/null; then
+            kill -TERM "$helper_pid" 2>/dev/null || true
+            local _try
+            for _try in 1 2 3 4 5; do
+                kill -0 "$helper_pid" 2>/dev/null || break
+                sleep 0.5
+            done
+            kill -KILL "$helper_pid" 2>/dev/null || true
+        fi
+        wait "$helper_pid" 2>/dev/null || true
+    }
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: $V0_2_GENERATOR -> $V0_2_RECAL_STP ; $V0_2_HELPER <target> & ; v0-stall-monitor.sh -> $monitor_dir ; stap $V0_2_RECAL_STP <target> for ${duration}s -> $outfile"
+        : > "$kv_log"
+        run_profiler_systemtap v0.2 "$V0_2_RECAL_STP" "$outfile" "$duration" "$pid"
+        return $?
+    fi
+
+    if [ ! -x "$V0_2_GENERATOR" ]; then
+        warn "[v0.2] generator not executable ($V0_2_GENERATOR)"
+        return 1
+    fi
+    if [ ! -x "$V0_2_HELPER" ]; then
+        warn "[v0.2] helper not built ($V0_2_HELPER); run 'make -C $REPO_ROOT/v0.2-stap-helper'"
+        return 1
+    fi
+    if ! "$V0_2_GENERATOR" > "$kv_log" 2>"${kv_log%.kv}.err"; then
+        warn "[v0.2] generate-stp.sh failed (rc=$?); see ${kv_log%.kv}.err"
+        cat "${kv_log%.kv}.err" >&2 || true
+        return 1
+    fi
+
+    # Pipe the matching subset of intp-detect.sh output to the helper via env.
+    # Variables already eval'd above by generate-stp.sh; re-source here so we
+    # can pass DRAM_BW, L3_SIZE, IMC_PMU_TYPE that the .stp side does not need.
+    local detect_out
+    detect_out="$("$REPO_ROOT/shared/intp-detect.sh" 2>/dev/null || true)"
+    # shellcheck disable=SC2046
+    eval "$(echo "$detect_out" | grep -E '^INTP_[A-Z0-9_]+=' || true)"
+
+    local target
+    target=$(_detect_stap_target "$pid")
+
+    mkdir -p "$monitor_dir"
+    if [ -x "$REPO_ROOT/bench/v0-stall-monitor.sh" ]; then
+        OUT_DIR="$monitor_dir" TARGET_PID=AUTO \
+            "$REPO_ROOT/bench/v0-stall-monitor.sh" \
+            >"$monitor_dir/monitor.log" 2>&1 &
+        monitor_pid=$!
+    else
+        warn "[v0.2] v0-stall-monitor.sh missing/not exec; running without forensic capture"
+    fi
+
+    rm -f /tmp/intp-v0.2-hw-data
+    INTP_HELPER_DRAM_BW_MBPS="${INTP_MEM_BW_MBPS:-}" \
+    INTP_HELPER_L3_SIZE_KB="${INTP_LLC_SIZE_KB:-}" \
+    INTP_HELPER_IMC_PMU_TYPE="${INTP_IMC_PMU_TYPE:-}" \
+    INTP_HELPER_DATA_FILE="/tmp/intp-v0.2-hw-data" \
+        "$V0_2_HELPER" "$target" >"$helper_log" 2>&1 &
+    helper_pid=$!
+    sleep 0.3
+
+    # Reap helper + monitor on any exit path.
+    trap '_v0_2_stop_helper; _v0_2_stop_monitor' EXIT
+    run_profiler_systemtap v0.2 "$V0_2_RECAL_STP" "$outfile" "$duration" "$pid"
+    local rc=$?
+    _v0_2_stop_helper
+    _v0_2_stop_monitor
+    trap - EXIT
+    return $rc
+}
+
 run_profiler_systemtap_v1_1() {
     # v1.1 = stap script + userspace helper. Helper owns the RCU-unsafe
     # operations (uncore IMC perf events, resctrl mon_group); the stap
@@ -2123,6 +2244,7 @@ run_profiler() {
     case "$variant" in
         v0) run_profiler_systemtap_v0 "$outfile" "$duration" "$pid" ;;
         v0.1) run_profiler_systemtap v0.1 "$V0_1_STP" "$outfile" "$duration" "$pid" ;;
+        v0.2) run_profiler_systemtap_v0_2 "$outfile" "$duration" "$pid" ;;
         v1) run_profiler_systemtap v1 "$V1_STP" "$outfile" "$duration" "$pid" ;;
         v1.1) run_profiler_systemtap_v1_1 "$outfile" "$duration" "$pid" ;;
         v2) run_profiler_v2 "$outfile" "$duration" "$pid" "$cgroup_path" ;;

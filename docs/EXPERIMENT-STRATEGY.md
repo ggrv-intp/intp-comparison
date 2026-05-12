@@ -184,6 +184,57 @@ Validation step: `stap -p4` succeeds and a sample run produces a non-empty
 
 ---
 
+## V0.2 — V0 semantics with userspace helper (U22 / 5.15 GA), 7/7 metrics
+
+V0.2 (`v0.2-stap-helper/`) is a new variant scaffolded for the legacy-V0
+campaign. It keeps V0's probe set for the five RCU-safe metrics and
+moves the two RCU-unsafe ones (mbw via uncore IMC, llcocc via cqm_rmid)
+into a userspace helper that talks to the kernel via `perf_event_open(2)`
+and the resctrl mon_groups filesystem. Target kernel is **5.15 GA**;
+the variant is gated to the window `5.10 ≤ k < 6.0` by both
+`variant_kernel_ok` in the bench harness and the `kernel_v02 era`
+verdict in `shared/intp-preflight.sh`. On kernel 6.x V1.1 is the
+right variant (same helper pattern, modern probe set).
+
+### What to expect
+
+- All 7 metrics non-zero on a host with resctrl L3_MON enabled.
+- mbw / llcocc fidelity matches V1.1's helper output.
+- No V0-style fragility cascade: no `perf_event_create_kernel_counter()`
+  from probe context, no `on_each_cpu_mask()` from probe context.
+
+### What goes wrong
+
+1. **Helper not running** when the procfs read probe fires → mbw=0
+   and llcocc=0 (graceful; the file is missing). The bench launcher
+   brackets helper and stap together via the per-rep wrapper
+   (`run_profiler_systemtap_v0_2`).
+2. **resctrl L3_MON unavailable** (some virtualised hosts) → helper
+   warns at startup, llcocc=0; the rest of the metrics still work.
+3. **Helper IMC PMU type wrong** (host has multiple `uncore_imc_*`
+   types that the single-type default doesn't cover) → mbw=0. Override
+   with `INTP_HELPER_IMC_PMU_TYPE_FIRST` / `..._LAST` for a range. The
+   bench launcher passes `INTP_IMC_PMU_TYPE` from `intp-detect.sh`
+   by default.
+
+### Validation step
+
+```bash
+# Build helper
+make -C v0.2-stap-helper
+
+# Verify the helper produces a data file (root):
+sudo INTP_HELPER_IMC_PMU_TYPE=14 ./v0.2-stap-helper/intp-helper stress-ng &
+sleep 2
+test -s /tmp/intp-v0.2-hw-data || echo "helper not writing"
+```
+
+A `profiler.tsv` from a real rep should show non-zero values in all 7
+columns for a workload that actually stresses each subsystem (see the
+workload-to-metric map in V1's section).
+
+---
+
 ## V1 — stap-native, 5/7 metrics, *fragile*
 
 ### What to expect

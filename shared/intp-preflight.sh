@@ -29,7 +29,7 @@ set -u
 # CLI
 # -----------------------------------------------------------------------------
 
-ALL_VARIANTS=(v0 v0.1 v1 v1.1 v2 v3.1 v3 bench)
+ALL_VARIANTS=(v0 v0.1 v0.2 v1 v1.1 v2 v3.1 v3 bench)
 SELECTED=()
 JSON=0
 STRICT=0
@@ -571,6 +571,32 @@ if want_variant v0.1; then
         debuginfo:vmlinux:required \
         debuginfo:headers:required \
         kernel:tracefs:required \
+        priv:root:required
+fi
+
+# v0.2 -- stap + userspace helper, kernel 5.15 GA (U22), full 7 metrics
+if want_variant v0.2; then
+    # Window matches variant_kernel_ok in bench/run-intp-bench.sh: 5.10 ≤ k < 6.0.
+    if kernel_ge 5 10 && ! kernel_ge 6 0; then
+        record kernel_v02 era OK "kernel $KREL in [5.10, 6.0) -- v0.2 target window"
+    elif ! kernel_ge 5 10; then
+        record kernel_v02 era MISSING "kernel $KREL < 5.10 -- below v0.2 floor"
+    else
+        record kernel_v02 era MISSING "kernel $KREL >= 6.0 -- on 6.x use v1.1 (same helper pattern)"
+    fi
+    verdict v0.2 BUILD \
+        tools:stap:required \
+        tools:gcc:required \
+        tools:make:required \
+        debuginfo:vmlinux:required \
+        debuginfo:headers:required
+    verdict v0.2 RUN \
+        kernel_v02:era:required \
+        tools:stap:required \
+        debuginfo:vmlinux:required \
+        debuginfo:headers:required \
+        kernel:tracefs:required \
+        rdt:resctrl_l3_mon:required \
         priv:root:required
 fi
 
