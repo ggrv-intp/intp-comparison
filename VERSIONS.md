@@ -10,8 +10,10 @@ git tag) and the current naming (used everywhere else).
 Major version groups variants by *paradigm*; minor version distinguishes
 implementations within the same paradigm.
 
-- **v0.x** -- legacy SystemTap (kept for reference and reproducibility of
-  the original paper). Not maintained.
+- **v0.x** -- legacy SystemTap. v0 / v0.1 are kept read-only for paper
+  reproducibility; v0.2 (new) ports the V0 semantics to a userspace-helper
+  pattern so the U22 / kernel 5.15 GA leg is runnable without the V0
+  fragility cliff.
 - **v1.x** -- modern SystemTap. Active.
 - **v2.x** -- userspace C using stable kernel ABIs (procfs, perf_event_open,
   resctrl). Active.
@@ -23,6 +25,7 @@ implementations within the same paradigm.
 |---------|--------|-----------|----------|--------|
 | v0      | v1     | `v0-stap-classic/`        | Original IntP paper, SystemTap + embedded C, MSR-direct RDT, kernel 4.x baseline | Reference only |
 | v0.1    | v2     | `v0.1-stap-k68/`          | v0 patched for kernel 6.8: removes `cqm_rmid` access and conflicting MSR redefinitions; LLC occupancy disabled | Reference only |
+| v0.2    | (new)  | `v0.2-stap-helper/`       | V0 probe set (paper-faithful for netp/nets/blk/llcmr/cpu) + userspace helper for the two RCU-unsafe operations (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Target kernel **5.15 GA / Ubuntu 22.04**; same helper pattern v1.1 uses on 6.8+ | Active (legacy-V0 campaign) |
 | v1      | v3*    | `v1-stap-native/`         | Stap-only, native probes (`probe perf.type(3).config(...).process(@1)`); no embedded C creating perf events; mbw and llcocc reported as 0 | Active |
 | v1.1    | (new)  | `v1.1-stap-helper/`       | New build: stap for software metrics + userspace helper for hardware metrics (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Helper architecture isolates RCU-unsafe operations from probe context | Active |
 | v2      | v4     | `v2-c-stable-abi/`        | Pure C (no framework): procfs polling, `perf_event_open` syscall, resctrl filesystem. Runtime-adaptive backend hierarchy | Active |
@@ -69,3 +72,22 @@ to avoid the RCU-unsafe pattern, recovering the full 7-metric coverage.
   before the kernel hung) was retired in favour of the post-rename
   campaign on Hetzner Sapphire Rapids (`results/bench-full/`, dated
   2026-05-07), which covers v1.1, v2, v3, and v3.1.
+
+## Status after legacy-V0 + cross-env campaigns (2026-05-11)
+
+- v0 was re-enabled as the default measured baseline in
+  `bench/run-intp-bench.sh`; v3.1 was swapped out of the default measured
+  set but remains routable via `BENCH_VARIANTS=...,v3.1`. See
+  `docs/EXPERIMENT-STRATEGY.md` for the rationale.
+- v0.2 (new) was scaffolded as the U22 / kernel 5.15 leg of the
+  legacy-V0 campaign. It uses the same userspace-helper pattern v1.1
+  uses, but targets kernel 5.15 GA so the U22 leg of the experiment
+  doesn't trip V0's stability cliff. Gated by `variant_kernel_ok` to
+  `5.10 ≤ k < 6.0`; on 6.x v1.1 is the right variant. Not yet
+  validated on a real U22 host -- pending the operator-side smoke
+  test.
+- Cross-environment campaign infrastructure (BENCH_CPUS/BENCH_MEM
+  parity knobs, orphan-qemu PID reaping, Kruskal-Wallis + Mann-Whitney
+  + Cliff's delta analysis over `aggregate-means.tsv`) is integrated
+  in `bench/run-intp-bench.sh` and `bench/plot/plot-cross-environment.py`;
+  see `docs/CROSS-ENV-CAMPAIGN.md`.
