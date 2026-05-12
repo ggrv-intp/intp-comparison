@@ -13,7 +13,46 @@ or run** in current campaigns; it exists so that:
 
 ## Files
 
-- `intp.stp` -- the canonical V0 SystemTap script. Read-only; do not modify.
+- `intp.stp` -- the canonical V0 SystemTap script. **Read-only**; do not
+  modify. Contract with the 2022 paper baseline.
+- `intp.stp.template` -- byte-for-byte copy of `intp.stp` with hardware
+  constants replaced by `@@PLACEHOLDER@@` tokens. Edited only when the
+  recalibration set itself changes.
+- `generate-stp.sh` -- sources `shared/intp-detect.sh`, substitutes
+  placeholders, writes `intp.recal.stp`. Prints a `KEY=VALUE` calibration log
+  on stdout (captured per-rep as `<rep>/...v0-calibration.kv`).
+- `intp.recal.stp` -- the recalibrated script actually loaded by `stap`.
+  Gitignored; regenerated on every V0 run.
+
+## Recalibration constants
+
+The original `intp.stp` embeds calibrated constants from the 2022 PUCRS dev
+machine. Five of them must be recomputed per-host or normalisation produces
+the wrong percentage. `intp.stp.template` carries the placeholders below;
+`generate-stp.sh` fills them from `shared/intp-detect.sh`.
+
+| Placeholder                  | Source variable             | Unit (template)   | Original value     | Source                                                          |
+|------------------------------|-----------------------------|-------------------|--------------------|-----------------------------------------------------------------|
+| `@@NIC_BYTES_PER_SEC@@`      | `INTP_NIC_SPEED_MBPS`       | bytes/sec (×125k) | `125000000` (1GbE) | `/sys/class/net/<iface>/speed`                                  |
+| `@@LLC_BYTES@@`              | `INTP_LLC_SIZE_KB`          | bytes (×1024)     | `34000000` (~34MB) | `/sys/devices/system/cpu/cpu0/cache/index*/size`                |
+| `@@MEM_BW_BYTES_PER_SEC@@`   | `INTP_MEM_BW_MBPS`          | bytes/sec (×125k) | `34000000000`      | dmidecode (root) or DDR4-2666 dual-channel default              |
+| `@@IMC_PMU_TYPE@@`           | `INTP_IMC_PMU_TYPE`         | integer           | `14`               | `/sys/devices/uncore_imc/type` or `/sys/devices/uncore_imc_0/type` |
+| `@@CMT_SCALE_FACTOR@@`       | `INTP_CMT_SCALE_FACTOR`     | bytes/RMID-tick   | `49152`            | `/sys/devices/intel_cqm/format/event` (fallback: 49152)         |
+
+Constants **not** placed via the template:
+
+- **IMC channel count.** `intp.stp` registers events on CPUs 0 and 1
+  (two channels). Sapphire Rapids exposes up to 8 channels per socket
+  (`uncore_imc_0..7`). The generator warns when
+  `INTP_IMC_CHANNEL_COUNT > 2`; measured `mbw` is a lower bound until
+  the script is extended.
+- **CMT IPI cpumask.** The embedded C block IPIs CPUs 0 and 1 to read
+  `MSR_IA32_QM_CTR`. On dual-socket hosts the second CPU should live on
+  socket 1. Single-socket Sapphire Rapids is unaffected.
+- **NIC iface / block dev.** Not hardcoded in `intp.stp` -- the netfilter
+  and `kernel.trace("block_rq_complete")` probes are system-wide.
+  `INTP_DEFAULT_NIC_IFACE` / `INTP_DEFAULT_BLOCK_DEV` are exported for
+  launcher-side filtering, not for substitution.
 
 ## Status
 

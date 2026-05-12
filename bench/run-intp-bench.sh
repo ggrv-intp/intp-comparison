@@ -83,6 +83,9 @@ DETECT_SH="$SHARED_DIR/intp-detect.sh"
 RESCTRL_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
 
 V0_STP="$REPO_ROOT/v0-stap-classic/intp.stp"
+V0_TEMPLATE="$REPO_ROOT/v0-stap-classic/intp.stp.template"
+V0_GENERATOR="$REPO_ROOT/v0-stap-classic/generate-stp.sh"
+V0_RECAL_STP="$REPO_ROOT/v0-stap-classic/intp.recal.stp"
 V0_1_STP="$REPO_ROOT/v0.1-stap-k68/intp-6.8.stp"
 V1_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
 V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
@@ -168,6 +171,11 @@ CURRENT_WORKLOAD_CGROUP=""
 # over a long campaign and eventually stall all new logins).
 V3_RUN_COUNT=0
 V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
+# V0 (legacy classic stap) is at least as fragile as V1 — module accumulation
+# and stapio orphans destabilise systemd-logind faster on 5.15 GA. Default to
+# the periodic deep pause every rep (override with INTP_BENCH_V0_DEEP_CLEANUP_EVERY).
+V0_RUN_COUNT=0
+V0_DEEP_CLEANUP_EVERY="${INTP_BENCH_V0_DEEP_CLEANUP_EVERY:-1}"
 _ORIG_GOVERNORS=""
 _ORIG_AUTOGROUP=""
 
@@ -603,6 +611,8 @@ stage_build() {
         run_or_dry make -C "$REPO_ROOT/v1.1-stap-helper"
     fi
     if variant_selected v0 && [ ! -f "$V0_STP" ]; then warn "v0 selected but $V0_STP missing"; fi
+    if variant_selected v0 && [ ! -f "$V0_TEMPLATE" ]; then warn "v0 selected but $V0_TEMPLATE missing"; fi
+    if variant_selected v0 && [ ! -x "$V0_GENERATOR" ]; then warn "v0 selected but $V0_GENERATOR not executable"; fi
     if variant_selected v0.1 && [ ! -f "$V0_1_STP" ]; then warn "v0.1 selected but $V0_1_STP missing"; fi
     if variant_selected v1 && [ ! -f "$V1_STP" ]; then warn "v1 selected but $V1_STP missing"; fi
     if variant_selected v1.1 && [ ! -f "$V1_1_STP" ]; then warn "v1.1 selected but $V1_1_STP missing"; fi
@@ -1547,7 +1557,15 @@ run_profiler_systemtap() {
     # Applies to all stap-based variants (v0, v0.1, v1, v1.1) since any of them can
     # leak modules under load if a stapio orphan survives.
     case "$variant" in
-        v0|v0.1|v1|v1.1)
+        v0)
+            V0_RUN_COUNT=$((V0_RUN_COUNT + 1))
+            stap_deep_cleanup "pre-run-${variant}-${V0_RUN_COUNT}"
+            if [ "$V0_RUN_COUNT" -gt 1 ] && [ $(( (V0_RUN_COUNT - 1) % V0_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+                log "[$variant] periodic deep pause at run ${V0_RUN_COUNT} (every ${V0_DEEP_CLEANUP_EVERY} runs) — sleeping 8s"
+                sleep 8
+            fi
+            ;;
+        v0.1|v1|v1.1)
             V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
             stap_deep_cleanup "pre-run-${variant}-${V3_RUN_COUNT}"
             if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
@@ -1610,6 +1628,35 @@ run_profiler_systemtap() {
     stap_deep_cleanup "post-run"
 
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
+}
+
+run_profiler_systemtap_v0() {
+    # V0 wraps run_profiler_systemtap with a per-run recalibration step.
+    # The 2022 baseline embeds NIC/LLC/IMC/CMT/MEM-BW constants for the
+    # original PUCRS dev machine; on any other host they would produce
+    # garbage normalisation. generate-stp.sh sources shared/intp-detect.sh,
+    # substitutes placeholders in intp.stp.template, and writes intp.recal.stp.
+    local outfile="$1" duration="$2" pid="$3"
+    local kv_log="${outfile%.tsv}.v0-calibration.kv"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY: $V0_GENERATOR -> $V0_RECAL_STP ; stap $V0_RECAL_STP <target> for ${duration}s -> $outfile"
+        : > "$kv_log"
+        run_profiler_systemtap v0 "$V0_RECAL_STP" "$outfile" "$duration" "$pid"
+        return $?
+    fi
+
+    if [ ! -x "$V0_GENERATOR" ]; then
+        warn "[v0] generator not executable ($V0_GENERATOR)"
+        return 1
+    fi
+    if ! "$V0_GENERATOR" > "$kv_log" 2>"${kv_log%.kv}.err"; then
+        warn "[v0] generate-stp.sh failed (rc=$?); see ${kv_log%.kv}.err"
+        cat "${kv_log%.kv}.err" >&2 || true
+        return 1
+    fi
+
+    run_profiler_systemtap v0 "$V0_RECAL_STP" "$outfile" "$duration" "$pid"
 }
 
 run_profiler_systemtap_v1_1() {
@@ -1862,7 +1909,7 @@ run_profiler() {
             ;;
     esac
     case "$variant" in
-        v0) run_profiler_systemtap v0 "$V0_STP" "$outfile" "$duration" "$pid" ;;
+        v0) run_profiler_systemtap_v0 "$outfile" "$duration" "$pid" ;;
         v0.1) run_profiler_systemtap v0.1 "$V0_1_STP" "$outfile" "$duration" "$pid" ;;
         v1) run_profiler_systemtap v1 "$V1_STP" "$outfile" "$duration" "$pid" ;;
         v1.1) run_profiler_systemtap_v1_1 "$outfile" "$duration" "$pid" ;;

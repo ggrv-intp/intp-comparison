@@ -49,11 +49,13 @@ detect_nic() {
 
     if [ -z "${iface:-}" ]; then
         echo "INTP_NIC_IFACE=none"
+        echo "INTP_DEFAULT_NIC_IFACE=none"
         echo "INTP_NIC_SPEED_MBPS=1000"
         return
     fi
 
     echo "INTP_NIC_IFACE=$iface"
+    echo "INTP_DEFAULT_NIC_IFACE=$iface"
 
     speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null) || speed=""
     if [ -n "$speed" ] && [ "$speed" -gt 0 ] 2>/dev/null; then
@@ -246,6 +248,110 @@ detect_btf() {
     fi
 }
 
+# -- IMC PMU type detection ---------------------------------------------------
+# V0 needs the perf_event_attr.type value of the uncore IMC PMU. Modern Intel
+# hosts expose this under /sys/devices/uncore_imc/type (single-channel naming)
+# or /sys/devices/uncore_imc_<N>/type (per-channel, e.g. Sapphire Rapids 0..7).
+# OPERATOR: validate against actual host output; the template assumes a single
+# shared type across channels, but real Sapphire Rapids may expose a different
+# type per channel — confirm with `cat /sys/devices/uncore_imc_*/type`.
+
+detect_imc() {
+    local first_type=""
+    local channel_count=0
+
+    if [ -d /sys/devices/uncore_imc ] && [ -f /sys/devices/uncore_imc/type ]; then
+        first_type=$(cat /sys/devices/uncore_imc/type 2>/dev/null) || first_type=""
+        channel_count=1
+    fi
+
+    if [ -z "$first_type" ] || [ "$channel_count" -eq 0 ]; then
+        local d
+        for d in /sys/devices/uncore_imc_*; do
+            [ -d "$d" ] || continue
+            [ -f "$d/type" ] || continue
+            if [ -z "$first_type" ]; then
+                first_type=$(cat "$d/type" 2>/dev/null) || first_type=""
+            fi
+            channel_count=$(( channel_count + 1 ))
+        done
+    fi
+
+    if [ -z "$first_type" ]; then
+        echo "INTP_IMC_PMU_TYPE=0"
+        echo "INTP_IMC_CHANNEL_COUNT=0"
+        return
+    fi
+
+    echo "INTP_IMC_PMU_TYPE=$first_type"
+    echo "INTP_IMC_CHANNEL_COUNT=$channel_count"
+}
+
+# -- CMT (Cache Monitoring Technology) scale factor ---------------------------
+# V0 multiplies RMID readings by a per-tick byte count to get LLC occupancy in
+# bytes. The kernel exposes this via the intel_cqm PMU's format/scale file on
+# kernels that still ship intel_cqm (pre-6.8). Fall back to the 2022 value with
+# a flag so the launcher logs the fallback explicitly.
+
+detect_cmt_scale() {
+    local val=""
+
+    if [ -f /sys/devices/intel_cqm/format/event ]; then
+        val=$(cat /sys/devices/intel_cqm/format/event 2>/dev/null) || val=""
+    fi
+    if [ -z "$val" ] && [ -f /sys/bus/event_source/devices/intel_cqm/format/scale ]; then
+        val=$(cat /sys/bus/event_source/devices/intel_cqm/format/scale 2>/dev/null) || val=""
+    fi
+
+    # Strip any trailing whitespace / units; only keep leading integer.
+    if [ -n "$val" ]; then
+        val=$(echo "$val" | grep -oE '^[0-9]+' | head -1)
+    fi
+
+    if [ -n "$val" ] && [ "$val" -gt 0 ] 2>/dev/null; then
+        echo "INTP_CMT_SCALE_FACTOR=$val"
+        echo "INTP_CMT_SCALE_FACTOR_FALLBACK=0"
+    else
+        echo "INTP_CMT_SCALE_FACTOR=49152"
+        echo "INTP_CMT_SCALE_FACTOR_FALLBACK=1"
+    fi
+}
+
+# -- Default block device -----------------------------------------------------
+# Pick the block device backing /. Used by launchers that need a default
+# target for block-IO filtering (V0 itself probes system-wide).
+
+detect_default_block() {
+    local dev=""
+
+    if command -v findmnt >/dev/null 2>&1; then
+        dev=$(findmnt -no SOURCE / 2>/dev/null) || dev=""
+        # Strip /dev/ prefix and any partition suffix to get the parent disk.
+        dev=${dev#/dev/}
+        # For nvmeXnYpZ -> nvmeXnY ; for sdaN -> sda ; leave loop/dm-* alone.
+        case "$dev" in
+            nvme*p*) dev=$(echo "$dev" | sed -E 's/p[0-9]+$//') ;;
+            sd[a-z]*[0-9]) dev=$(echo "$dev" | sed -E 's/[0-9]+$//') ;;
+        esac
+    fi
+
+    if [ -z "$dev" ]; then
+        # Fallback: first non-loop, non-ram block device.
+        local b
+        for b in /sys/block/*/; do
+            local name
+            name=$(basename "$b")
+            case "$name" in
+                loop*|ram*|sr*) continue ;;
+            esac
+            dev="$name"
+            break
+        done
+    fi
+
+    echo "INTP_DEFAULT_BLOCK_DEV=${dev:-sda}"
+}
+
 # -- Main output ---------------------------------------------------------------
 
 echo "# IntP hardware detection -- generated $(date -Iseconds)"
@@ -259,3 +365,6 @@ detect_cpu_vendor
 detect_sockets
 detect_memory_bw
 detect_btf
+detect_imc
+detect_cmt_scale
+detect_default_block
