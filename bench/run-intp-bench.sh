@@ -1002,12 +1002,60 @@ launch_workload_container() {
 # Cleaned by _vm_cleanup_tmpdirs (registered as EXIT trap by parse_args).
 VM_TMPDIRS=()
 
+# Tracks host-side qemu PIDs spawned by launch_workload_vm*.
+# Drained by stop_workload (normal path) and reaped by
+# _vm_kill_orphan_qpids on EXIT/INT/TERM (safety net).
+# OPERATOR: validate trap under real SIGINT mid-rep
+VM_HOST_PIDS=()
+
 _vm_cleanup_tmpdirs() {
     local d
     for d in "${VM_TMPDIRS[@]:-}"; do
         [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d" 2>/dev/null
     done
     VM_TMPDIRS=()
+}
+
+_vm_forget_host_pid() {
+    # Filter $1 out of VM_HOST_PIDS in-place. O(n) but n is small (one entry
+    # per concurrent VM workload). No-op if the pid is not tracked.
+    local target="$1" p
+    local -a kept=()
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        [ "$p" = "$target" ] && continue
+        kept+=("$p")
+    done
+    VM_HOST_PIDS=("${kept[@]:-}")
+}
+
+_vm_kill_orphan_qpids() {
+    # Reap any qemu host PIDs still alive at trap time. Idempotent.
+    local p
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        kill -0 "$p" 2>/dev/null || continue
+        # Soft kill first; SIGTERM gives qemu a chance to flush.
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    # Wait up to 5 s for SIGTERM to take effect.
+    local i any_alive
+    for i in 1 2 3 4 5; do
+        any_alive=0
+        for p in "${VM_HOST_PIDS[@]:-}"; do
+            [ -z "$p" ] && continue
+            kill -0 "$p" 2>/dev/null && { any_alive=1; break; }
+        done
+        [ "$any_alive" -eq 0 ] && break
+        sleep 1
+    done
+    # Hard kill any survivor.
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        kill -0 "$p" 2>/dev/null || continue
+        kill -KILL "$p" 2>/dev/null || true
+    done
+    VM_HOST_PIDS=()
 }
 
 launch_workload_container_guest() {
@@ -1147,7 +1195,9 @@ EOF
         -drive "file=$tmpdir/seed.iso,if=virtio,format=raw" \
         -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
-    echo $!
+    local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
+    echo "$qpid"
 }
 
 # Tracks ephemeral SSH keys + per-VM ports for vm-guest cleanup.
@@ -1239,6 +1289,7 @@ EOF
         -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
     local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
 
     # Wait up to 120 s for sshd. Cloud images usually boot in 30-60 s.
     local i
@@ -1384,6 +1435,7 @@ EOF
         -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
     local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
 
     # Wait for sshd
     local i
@@ -1440,6 +1492,7 @@ stop_workload() {
             ;;
         vm|vm-full)
             terminate_pid_gracefully "$pid" "stop_workload/$env/$name"
+            _vm_forget_host_pid "$pid"
             ;;
         vm-guest)
             # Best-effort guest-side cleanup before host-side qemu kill.
@@ -1454,6 +1507,7 @@ stop_workload() {
             fi
             sleep 2
             terminate_pid_gracefully "$pid" "stop_workload/vm-guest/$name"
+            _vm_forget_host_pid "$pid"
             ;;
     esac
 }
@@ -2529,7 +2583,7 @@ main() {
     prepare_output_dir
     write_metadata
 
-    trap 'restore_cpu_env; stop_resctrl_helper; _vm_cleanup_tmpdirs; _vm_guest_cleanup' EXIT INT TERM
+    trap 'restore_cpu_env; stop_resctrl_helper; _vm_kill_orphan_qpids; _vm_cleanup_tmpdirs; _vm_guest_cleanup' EXIT INT TERM
 
     log "== intp-bench =="
     log "output: $OUTPUT_DIR"
