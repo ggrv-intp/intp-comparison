@@ -27,11 +27,14 @@
 #include <bpf/libbpf.h>
 #include <dirent.h>
 #include <errno.h>
+#include <linux/perf_event.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -98,6 +101,87 @@ static int seed_descendants_from_proc(int map_fd, pid_t root_pid, int verbose)
         closedir(td);
     }
     return written;
+}
+
+/* ------------------------------------------------------------------ perf_event for llcmr */
+
+typedef struct {
+    int *fds;
+    int  n_fds;
+    struct bpf_link **links;
+} perf_attach_t;
+
+static long sys_perf_event_open(struct perf_event_attr *a,
+                                pid_t pid, int cpu, int group_fd,
+                                unsigned long flags)
+{
+    return syscall(__NR_perf_event_open, a, pid, cpu, group_fd, flags);
+}
+
+static int open_cache_counters(struct bpf_program *prog,
+                               unsigned long cache_result,
+                               perf_attach_t *out,
+                               int n_cpus, int verbose)
+{
+    out->fds   = calloc((size_t)n_cpus, sizeof(int));
+    out->links = calloc((size_t)n_cpus, sizeof(struct bpf_link *));
+    out->n_fds = 0;
+    if (!out->fds || !out->links) return -1;
+
+    struct perf_event_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type   = PERF_TYPE_HW_CACHE;
+    attr.size   = sizeof(attr);
+    attr.config = (PERF_COUNT_HW_CACHE_LL)
+                | (PERF_COUNT_HW_CACHE_OP_READ << 8)
+                | (cache_result << 16);
+    /* Match V3: sample_period 1000 so even ~1k LLC events/sec trigger
+     * at least one BPF invocation per interval. Accumulator scales by
+     * sample_period in the kernel-side increment, so the absolute count
+     * stays correct. */
+    attr.sample_period = 1000;
+    attr.wakeup_events = 1;
+    attr.disabled      = 0;
+
+    int opened = 0;
+    for (int cpu = 0; cpu < n_cpus; cpu++) {
+        int fd = (int)sys_perf_event_open(&attr, -1, cpu, -1, 0UL);
+        if (fd < 0) {
+            if (verbose)
+                fprintf(stderr,
+                        "warn: perf_event_open on cpu %d failed: %s\n",
+                        cpu, strerror(errno));
+            continue;
+        }
+        struct bpf_link *link = bpf_program__attach_perf_event(prog, fd);
+        if (!link) {
+            if (verbose)
+                fprintf(stderr,
+                        "warn: attach perf_event on cpu %d failed: %s\n",
+                        cpu, strerror(errno));
+            close(fd);
+            continue;
+        }
+        out->fds[opened]   = fd;
+        out->links[opened] = link;
+        opened++;
+    }
+    out->n_fds = opened;
+    return opened > 0 ? 0 : -1;
+}
+
+static void close_cache_counters(perf_attach_t *p)
+{
+    if (!p) return;
+    for (int i = 0; i < p->n_fds; i++) {
+        if (p->links[i]) bpf_link__destroy(p->links[i]);
+        if (p->fds[i] >= 0) close(p->fds[i]);
+    }
+    free(p->fds);
+    free(p->links);
+    p->fds = NULL;
+    p->links = NULL;
+    p->n_fds = 0;
 }
 
 /* ------------------------------------------------------------------ cgroup -> PID list */
@@ -334,6 +418,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (args.no_perf_events) {
+        bpf_program__set_autoload(skel->progs.perf_llc_refs,   false);
+        bpf_program__set_autoload(skel->progs.perf_llc_misses, false);
+    }
+
     if (intp_agg_bpf__load(skel)) {
         fprintf(stderr, "failed to load BPF: %s\n", strerror(errno));
         intp_agg_bpf__destroy(skel);
@@ -362,6 +451,24 @@ int main(int argc, char **argv)
         fprintf(stderr, "failed to attach BPF programs: %s\n", strerror(errno));
         intp_agg_bpf__destroy(skel);
         return 1;
+    }
+
+    /* ------- perf_event programs for llcmr ------- */
+    perf_attach_t perf_refs = {0}, perf_miss = {0};
+    if (!args.no_perf_events) {
+        int n_cpus = detect_num_cores();
+        if (open_cache_counters(skel->progs.perf_llc_refs,
+                                PERF_COUNT_HW_CACHE_RESULT_ACCESS,
+                                &perf_refs, n_cpus, args.verbose) != 0
+            && args.verbose) {
+            fprintf(stderr, "warn: no LLC-refs counters opened\n");
+        }
+        if (open_cache_counters(skel->progs.perf_llc_misses,
+                                PERF_COUNT_HW_CACHE_RESULT_MISS,
+                                &perf_miss, n_cpus, args.verbose) != 0
+            && args.verbose) {
+            fprintf(stderr, "warn: no LLC-miss counters opened\n");
+        }
     }
 
     /* ------- seed descendant_tgids from /proc ------- */
@@ -468,6 +575,8 @@ int main(int argc, char **argv)
     }
 
     /* ------- cleanup ------- */
+    close_cache_counters(&perf_refs);
+    close_cache_counters(&perf_miss);
     resctrl_destroy_group(rg);
     intp_agg_bpf__destroy(skel);
     return 0;

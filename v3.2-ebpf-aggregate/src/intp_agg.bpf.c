@@ -69,6 +69,23 @@ struct {
     __type(value, struct intp_counters);
 } agg_zero SEC(".maps");
 
+/* Per-request issue timestamp, keyed by (dev<<32)|sector for block
+ * svctm. Same shape as V3. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);
+    __type(value, __u64);
+} rq_start SEC(".maps");
+
+/* Per-task on-CPU start timestamp, keyed by tid. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 32768);
+    __type(key, __u32);
+    __type(value, __u64);
+} task_oncpu_start SEC(".maps");
+
 /* Dynamically-tracked TGIDs of processes descended from any of the
  * configured target PIDs. Populated from two places:
  *
@@ -224,6 +241,145 @@ int tp_netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
         __u32 tgid = bpf_get_current_pid_tgid() >> 32;
         struct intp_counters *p = agg_per_pid_slot(tgid);
         if (p) __sync_fetch_and_add(&p->netp_rx_bytes, len);
+    }
+    return 0;
+}
+
+/* =====================================================================
+ * blk -- block I/O utilization
+ *
+ * issue stashes the start ts keyed by (dev<<32)|sector; complete looks
+ * it up and increments svctm_sum / blk_ops / blk_bytes. Same probe sites
+ * and same in-flight key as V3 -- only the destination of the closed
+ * event changes.
+ * ===================================================================== */
+
+SEC("tracepoint/block/block_rq_issue")
+int tp_block_rq_issue(struct trace_event_raw_block_rq *ctx)
+{
+    __u64 dev_sec = ((__u64)BPF_CORE_READ(ctx, dev) << 32)
+                   | BPF_CORE_READ(ctx, sector);
+    __u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&rq_start, &dev_sec, &ts, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/block/block_rq_complete")
+int tp_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx)
+{
+    if (!should_monitor_current()) return 0;
+
+    __u64 dev_sec = ((__u64)BPF_CORE_READ(ctx, dev) << 32)
+                   | BPF_CORE_READ(ctx, sector);
+    __u64 now = bpf_ktime_get_ns();
+    __u64 svctm = 0;
+    __u64 *start_ts = bpf_map_lookup_elem(&rq_start, &dev_sec);
+    if (start_ts) {
+        svctm = now - *start_ts;
+        bpf_map_delete_elem(&rq_start, &dev_sec);
+    }
+
+    __u32 bytes = BPF_CORE_READ(ctx, nr_sector) * 512;
+
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+    __sync_fetch_and_add(&g->blk_svctm_ns_sum, svctm);
+    __sync_fetch_and_add(&g->blk_ops, 1);
+    __sync_fetch_and_add(&g->blk_bytes, bytes);
+
+    if (!is_system_wide()) {
+        __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+        struct intp_counters *p = agg_per_pid_slot(tgid);
+        if (p) {
+            __sync_fetch_and_add(&p->blk_svctm_ns_sum, svctm);
+            __sync_fetch_and_add(&p->blk_ops, 1);
+            __sync_fetch_and_add(&p->blk_bytes, bytes);
+        }
+    }
+    return 0;
+}
+
+/* =====================================================================
+ * cpu -- CPU utilization via sched_switch
+ *
+ * On every sched_switch we close the outgoing task's on-CPU interval
+ * (delta = now - task_oncpu_start[prev_pid]) and start the incoming
+ * task's interval (task_oncpu_start[next_pid] = now). The delta lands
+ * in cpu_on_ns_sum.
+ * ===================================================================== */
+
+SEC("tracepoint/sched/sched_switch")
+int tp_sched_switch(struct trace_event_raw_sched_switch *ctx)
+{
+    struct intp_config *cfg = intp_cfg();
+
+    __u32 prev_pid = BPF_CORE_READ(ctx, prev_pid);
+    __u32 next_pid = BPF_CORE_READ(ctx, next_pid);
+    __u64 now      = bpf_ktime_get_ns();
+
+    __u64 *start_ts = bpf_map_lookup_elem(&task_oncpu_start, &prev_pid);
+    if (start_ts && pid_in_filter(cfg, prev_pid)) {
+        __u64 delta = now - *start_ts;
+        struct intp_counters *g = agg_global_slot();
+        if (g) __sync_fetch_and_add(&g->cpu_on_ns_sum, delta);
+
+        if (!cfg || !cfg->system_wide) {
+            struct intp_counters *p = agg_per_pid_slot(prev_pid);
+            if (p) __sync_fetch_and_add(&p->cpu_on_ns_sum, delta);
+        }
+    }
+    if (start_ts)
+        bpf_map_delete_elem(&task_oncpu_start, &prev_pid);
+
+    if (next_pid != 0)
+        bpf_map_update_elem(&task_oncpu_start, &next_pid, &now, BPF_ANY);
+    return 0;
+}
+
+/* =====================================================================
+ * llcmr -- LLC miss ratio via perf_event BPF programs
+ *
+ * Userspace opens two perf_event counters (HW_CACHE_L3 references and
+ * misses) per CPU with a sample period and attaches these programs to
+ * each. Each overflow increments llc_refs (or llc_misses) by
+ * sample_period, so the ratio stays correct regardless of the period.
+ *
+ * NOTE on reading sample_period from ctx: BPF_CORE_READ() on
+ * bpf_perf_event_data hits the wrong offset and returns 0 (verified
+ * on V3 / Sapphire Rapids / kernel 6.8). Direct field access is the
+ * verifier-blessed path.
+ * ===================================================================== */
+
+SEC("perf_event")
+int perf_llc_refs(struct bpf_perf_event_data *ctx)
+{
+    if (!should_monitor_current()) return 0;
+
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+    __sync_fetch_and_add(&g->llc_refs, ctx->sample_period);
+
+    if (!is_system_wide()) {
+        __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+        struct intp_counters *p = agg_per_pid_slot(tgid);
+        if (p) __sync_fetch_and_add(&p->llc_refs, ctx->sample_period);
+    }
+    return 0;
+}
+
+SEC("perf_event")
+int perf_llc_misses(struct bpf_perf_event_data *ctx)
+{
+    if (!should_monitor_current()) return 0;
+
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+    __sync_fetch_and_add(&g->llc_misses, ctx->sample_period);
+
+    if (!is_system_wide()) {
+        __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+        struct intp_counters *p = agg_per_pid_slot(tgid);
+        if (p) __sync_fetch_and_add(&p->llc_misses, ctx->sample_period);
     }
     return 0;
 }
