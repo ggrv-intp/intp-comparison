@@ -5,14 +5,14 @@ architectures, and deployment environments.
 
 ## 1. Variant Summary
 
-| Aspect | V2 hybrid-procfs | V3.1 bpftrace | V3 eBPF/CO-RE |
-|--------|:-----------------:|:-----------:|:-------------:|
-| Language | C11 | bpftrace DSL + Python 3 | C11 + eBPF C |
-| Framework | None (procfs/sysfs/perf_event) | bpftrace runtime | libbpf + CO-RE |
-| Build tool | gcc + make | None (interpreted) | clang + gcc + bpftool + make |
-| Binary portability | Recompile per target | Runs anywhere with bpftrace | CO-RE: compile once, run on 5.8+ |
-| Startup time | < 100 ms | 1-3 s | ~ 500 ms |
-| Root required | Partial (perf + resctrl) | Yes (BPF + tracing) | Yes (BPF + tracing) |
+| Aspect | V2 hybrid-procfs | V3.1 bpftrace | V3 eBPF/CO-RE | V3.2 eBPF in-kernel agg |
+|--------|:-----------------:|:-----------:|:-------------:|:----------------:|
+| Language | C11 | bpftrace DSL + Python 3 | C11 + eBPF C | C11 + eBPF C |
+| Framework | None (procfs/sysfs/perf_event) | bpftrace runtime | libbpf + CO-RE | libbpf + CO-RE |
+| Build tool | gcc + make | None (interpreted) | clang + gcc + bpftool + make | clang + gcc + bpftool + make |
+| Binary portability | Recompile per target | Runs anywhere with bpftrace | CO-RE: compile once, run on 5.8+ | CO-RE: compile once, run on 5.8+ |
+| Startup time | < 100 ms | 1-3 s | ~ 500 ms | ~ 500 ms |
+| Root required | Partial (perf + resctrl) | Yes (BPF + tracing) | Yes (BPF + tracing) | Yes (BPF + tracing) |
 
 ---
 
@@ -57,6 +57,24 @@ kernels ≥ 5.8 without recompilation. The libbpf loader reads the target
 kernel's BTF at load time and relocates struct field accesses. However,
 `vmlinux.h` generation (`bpftool btf dump`) should ideally be done on
 the build machine's kernel; CO-RE handles the delta.
+
+### 2.4 V3.2 — eBPF in-kernel aggregation
+
+Same kernel constraints as V3 (BTF + CO-RE + CAP_BPF) — V3.2 uses the
+same `intp.bpf.o`-style compiled bytecode and the same libbpf
+relocation path. The map types V3.2 relies on
+(`BPF_MAP_TYPE_PERCPU_ARRAY`, `BPF_MAP_TYPE_HASH`,
+`BPF_PROG_TYPE_PERF_EVENT`) have been available since the 4.x series,
+so the kernel floor is set by the BTF requirement, not the maps.
+
+| Kernel | Status | Notes |
+|--------|--------|-------|
+| < 5.2 | ✗ | No CO-RE support |
+| 5.2–5.7 | Partial | CO-RE available but no CAP_BPF |
+| 5.8+ | ✓ | Full support |
+| 6.x+ | ✓ | Tested; CO-RE relocations handle struct changes |
+
+**Minimum:** 5.8 with `CONFIG_DEBUG_INFO_BTF=y`, same as V3.
 
 ---
 
