@@ -2,14 +2,15 @@
 
 <img src="docs/images/intp-comparison.png" alt="IntP Comparison — Linux interference profiler with multi-variant comparison of SystemTap, procfs, bpftrace, and eBPF/CO-RE instrumentation." width="720">
 
-This repository contains seven implementation variants of IntP, an interference
+This repository contains eight implementation variants of IntP, an interference
 profiler that collects 7 metrics from the Linux kernel. The variants are
 organized for systematic comparison as part of a Master's dissertation on
 kernel instrumentation for interference profiling (PPGCC/PUCRS, advisor
 Prof. Cesar De Rose). The research compares the original SystemTap-based IntP
-across kernel eras and an RCU-safe stap+helper hybrid against modern
-instrumentation approaches (procfs polling, bpftrace, eBPF/CO-RE) to evaluate
-portability, safety, and measurement fidelity tradeoffs.
+across kernel eras (V0 / V0.1 / V0.2), an RCU-safe stap+helper hybrid (V1.1),
+and modern instrumentation approaches (procfs polling — V2; bpftrace — V3.1;
+eBPF/CO-RE — V3) to evaluate portability, safety, and measurement fidelity
+tradeoffs.
 
 ## About
 
@@ -33,9 +34,9 @@ the original SystemTap approach across kernel versions and hardware architecture
 ### Research Goals
 
 1. Reproduce the original IntP baseline (V0) and document breakage on kernel 6.8+.
-2. Develop minimal patches to restore functionality on current kernels (V0.1, V1) and a stap+helper hybrid (V1.1) that recovers full metric coverage without RCU-unsafe operations.
+2. Develop minimal patches to restore functionality on current kernels (V0.1, V1) and stap+helper hybrids that recover full metric coverage without RCU-unsafe operations: V0.2 on kernel 5.15 GA (Ubuntu 22.04, paper-faithful V0 semantics) and V1.1 on kernel 6.8+.
 3. Implement kernel-module-free alternatives using procfs/perf_event (V2), bpftrace (V3.1), and eBPF/CO-RE (V3).
-4. Compare all seven variants across portability, safety, deployment complexity, and measurement fidelity dimensions.
+4. Compare all eight variants across portability, safety, deployment complexity, and measurement fidelity dimensions.
 
 ### Status
 
@@ -43,6 +44,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 | --------- | -------- |
 | V0 -- Original (SystemTap, <=6.6) | Complete (baseline; runs on Ubuntu 22.04 + kernel 6.5 HWE only) |
 | V0.1 -- Updated (SystemTap, 6.8+, LLC disabled) | Complete |
+| V0.2 -- Stap + userspace helper (SystemTap, 5.15 GA, V0-faithful, RCU-safe) | Scaffolded (helper + .stp template + generator complete; pending operator-side smoke test on a real U22 host) |
 | V1 -- Stap-native (SystemTap, 6.8+, mbw/llcocc disabled) | Complete |
 | V1.1 -- Stap + userspace helper (SystemTap, 6.8+, full metrics, RCU-safe) | Complete (helper, `.stp`, and bench integration done; HiBench distributed-mode limitation documented in METRICS-ALIGNMENT.md) |
 | V2 -- C / procfs / perf_event / resctrl | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
@@ -57,23 +59,23 @@ If you use this software in your research, please cite it using the metadata in
 
 ## Variant Comparison
 
-| Feature                  | V0 classic | V0.1 k68 | V1 native | V1.1 helper | V2 stable-abi | V3.1 bpftrace | V3 ebpf-core |
-|--------------------------|:----------:|:--------:|:---------:|:-----------:|:-------------:|:-------------:|:------------:|
-| Kernel module required   |    Yes     |   Yes    |    Yes    |     Yes     |      No       |     No        |      No      |
-| Userspace helper         |    No      |   No     |    No     |     Yes     |      n/a      |     Yes       |     Yes      |
-| Debuginfo required       |    Yes     |   Yes    |    Yes    |     Yes     |      No       |   No (BTF)    |   No (BTF)   |
-| Kernel crash risk        |    High    |   High   |    Low    |     Low     |     None      |    None       |     None     |
-| Min kernel version       |   <=6.6    |   6.8+   |    6.8+   |     6.8+    |     4.10+     |    5.8+       |     5.8+     |
-| netp                     |     x      |    x     |     x     |      x      |       x       |       x       |       x      |
-| nets (service-time)      |     x      |    x     |     x     |      x      |       ~       |       x       |       x      |
-| blk                      |     x      |    x     |     x     |      x      |       x       |       x       |       x      |
-| mbw                      |     x      |    x     |     -     |      x      |       x       |       x       |       x      |
-| llcmr                    |     x      |    x     |     x     |      x      |       x       |       x       |       x      |
-| llcocc                   |     x      |    -     |     -     |      x      |       x       |       x       |       x      |
-| cpu                      |     x      |    x     |     x     |      x      |       x       |       x       |       x      |
-| Framework                | SystemTap  | SystemTap| SystemTap | SystemTap+C |     None      |   bpftrace    |    libbpf    |
-| AMD EPYC compatible      |  Partial   |  Partial |  Partial  |   Partial   |      Yes      |     Yes       |      Yes     |
-| ARM server compatible    |    No      |   No     |    No     |     No      |    Partial    |   Partial     |    Partial   |
+| Feature                  | V0 classic | V0.1 k68 | V0.2 helper | V1 native | V1.1 helper | V2 stable-abi | V3.1 bpftrace | V3 ebpf-core |
+|--------------------------|:----------:|:--------:|:-----------:|:---------:|:-----------:|:-------------:|:-------------:|:------------:|
+| Kernel module required   |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |     No        |      No      |
+| Userspace helper         |    No      |   No     |     Yes     |    No     |     Yes     |      n/a      |     Yes       |     Yes      |
+| Debuginfo required       |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |   No (BTF)    |   No (BTF)   |
+| Kernel crash risk        |    High    |   High   |     Low     |    Low    |     Low     |     None      |    None       |     None     |
+| Min kernel version       |   <=6.6    |   6.8+   |  5.15 GA    |    6.8+   |     6.8+    |     4.10+     |    5.8+       |     5.8+     |
+| netp                     |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
+| nets (service-time)      |     x      |    x     |      x      |     x     |      x      |       ~       |       x       |       x      |
+| blk                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
+| mbw                      |     x      |    x     |      x      |     -     |      x      |       x       |       x       |       x      |
+| llcmr                    |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
+| llcocc                   |     x      |    -     |      x      |     -     |      x      |       x       |       x       |       x      |
+| cpu                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
+| Framework                | SystemTap  | SystemTap| SystemTap+C | SystemTap | SystemTap+C |     None      |   bpftrace    |    libbpf    |
+| AMD EPYC compatible      |  Partial   |  Partial |   Partial   |  Partial  |   Partial   |      Yes      |     Yes       |      Yes     |
+| ARM server compatible    |    No      |   No     |     No      |    No     |     No      |    Partial    |   Partial     |    Partial   |
 
 x = supported, ~ = polling approximation, - = disabled in this build
 
@@ -104,6 +106,7 @@ x = supported, ~ = polling approximation, - = disabled in this build
 |   |-- intp-resctrl-helper.sh resctrl companion daemon
 |-- v0-stap-classic/           Unmodified 2022 IntP (SystemTap, kernel <=6.6)
 |-- v0.1-stap-k68/             Kernel 6.8 patch (LLC occupancy disabled)
+|-- v0.2-stap-helper/          Kernel 5.15 GA, V0-faithful stap + userspace helper (RCU-safe)
 |-- v1-stap-native/            Kernel 6.8+, stap-native probes (mbw/llcocc disabled)
 |-- v1.1-stap-helper/          Kernel 6.8+, stap + userspace helper (full 7 metrics, RCU-safe)
 |-- v2-c-stable-abi/           Pure C: procfs / perf_event_open / resctrl
@@ -131,6 +134,28 @@ sudo stap -g intp-6.8.stp <PID> <interval_ms>
 ```
 
 Requires: SystemTap, kernel debuginfo, kernel 6.8+. Note: llcocc returns 0.
+
+### V0.2 -- V0-faithful + userspace helper (kernel 5.15 GA / Ubuntu 22.04)
+
+```bash
+cd v0.2-stap-helper
+make
+sudo INTP_HELPER_IMC_PMU_TYPE=14 \
+     INTP_HELPER_DRAM_BW_MBPS=34000 \
+     INTP_HELPER_L3_SIZE_KB=35840 \
+     ./intp-helper <comm-pattern> &
+sudo bash generate-stp.sh
+sudo stap -g intp.recal.stp <comm-pattern>
+# after run: kill the helper
+```
+
+Requires: SystemTap, kernel debuginfo, **kernel 5.15 GA (Ubuntu 22.04)**,
+Intel RDT (resctrl) for `llcocc`, uncore IMC PMU for `mbw`. Same helper
+pattern as V1.1, but the SystemTap script keeps the paper-faithful V0
+probes (no softirq tapset switch). The helper isolates the two RCU-unsafe
+operations (uncore IMC perf events, cqm_rmid LLC occupancy) from probe
+context, eliminating V0's fragility cliff on the Canonical RCU-backport
+kernel.
 
 ### V1 -- Stap-native (5/7 metrics; no helper, no embedded I/O)
 

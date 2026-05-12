@@ -1,8 +1,8 @@
 # IntP Metrics Alignment Matrix
 
-Reference variant: **V0** (`v0-stap-classic/intp.stp`) — the original IntP design from the 2014 paper.
+Reference variant: **V0** (`v0-stap-classic/intp.stp`) — the original IntP design from Xavier & De Rose (SBAC-PAD 2022).
 
-This document tracks how each metric is computed across the 7 variants and which divergences have been corrected.
+This document tracks how each metric is computed across the 8 variants and which divergences have been corrected.
 
 ## Variant index
 
@@ -10,6 +10,7 @@ This document tracks how each metric is computed across the 7 variants and which
 |---|---|---|---|
 | V0   | `v0-stap-classic/intp.stp`        | SystemTap, classic kprobes        | ≤4.18 |
 | V0.1 | `v0.1-stap-k68/intp-6.8.stp`      | SystemTap (V0 ported to 6.8)      | 6.8 (experimental) |
+| V0.2 | `v0.2-stap-helper/intp.stp.template` + `generate-stp.sh` | SystemTap + userspace helper, V0-faithful probe set | 5.15 GA (U22) |
 | V1   | `v1-stap-native/intp-resctrl.stp` | SystemTap + resctrl               | ≤6.7 |
 | V1.1 | `v1.1-stap-helper/intp-v1.1.stp`  | SystemTap + userspace helper      | ≥4.19 (incl. 6.8) |
 | V2   | `v2-c-stable-abi/src/*.c`         | C, /proc + perf + resctrl         | any |
@@ -18,15 +19,15 @@ This document tracks how each metric is computed across the 7 variants and which
 
 ## Metric formulas
 
-| Metric | V0 (reference) | V0.1 | V1 | V1.1 | V2 | V3 | V3.1 |
-|---|---|---|---|---|---|---|---|
-| **netp** | `(tput_bps / 125e6) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | `bps / NIC_speed × 100` (autodetect) | ≡ V2 | ≡ V2 |
-| **nets** | `(avg_lat_ns × count) / 1e9 × 100`, summed TX+RX. Probes: `__dev_queue_xmit`+`net:net_dev_xmit` (TX) and `__napi_schedule_irqoff`+`napi_complete_done` (RX) | ≡ V0 | ≡ V0 | **stap `softirq.entry/exit` tapset filtered by vec=2,3** [softirq tracepoints; same approach as V3.1] | softirq fraction × softirq pct × num_cores [matches V0 wall-clock semantics in aggregate] | **kprobe `__dev_queue_xmit`+`net:net_dev_start_xmit` (TX) + `napi_poll` entry/exit (RX) PLUS `irq:softirq_entry/exit`** [softirq tracepoints added — primary path on kernels where napi_poll is inlined / veth where per-packet model degenerates] | **`irq:softirq_entry/exit` filtered by vec=2,3** [softirq tracepoints; verified non-zero on kernel 6.8 + veth] |
-| **blk** | `(avg_svctm_us × ops_per_sec) / 100` from `block:block_rq_complete` (over-amplified by ~100×) | ≡ V0 | ≡ V0 | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3, drops V0's amplification quirk] | `io_ticks_delta / interval_ms × 100` (DIFFERENT MODEL — measures % time disk had ≥1 outstanding I/O, no queue-depth signal) | `svctm_ns_sum / interval_ns × 100` (physical disk-busy fraction; preserves queue-depth pressure for parallel NVMe) | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3] |
-| **mbw** | `bw_bps / 34e9 × 100` (hardcoded 34 GB/s) | ≡ V0 | ≡ V0 (returns 0; helper-fed) | ≡ V0 (helper-fed) | `bw / mem_bw_max × 100` (autodetect) | ≡ V2 | ≡ V2 |
-| **llcmr** | `(misses / loads) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 (refs ≈ loads) | ≡ V0 |
-| **llcocc** | `(occ_count × 49152) / 34e6 × 100` (hardcoded 34 MB) | ≡ V0 | ≡ V0 (helper-fed) | ≡ V0 (helper-fed) | `occ_bytes / llc_size × 100` (autodetect via resctrl) | ≡ V2 | ≡ V2 |
-| **cpu** | `(uticks + kticks) / allticks × 100` from `perf.sw.cpu_clock` | ≡ V0 | ≡ V0 | ≡ V0 | `(1 - idle/total) × 100` from /proc/stat | `on_cpu_ns / (interval × num_cores) × 100` (mathematically equivalent to V0 — `allticks` in V0 is per-CPU-summed, V3 divides explicitly) | ≡ V3 |
+| Metric | V0 (reference) | V0.1 | V0.2 | V1 | V1.1 | V2 | V3 | V3.1 |
+|---|---|---|---|---|---|---|---|---|
+| **netp** | `(tput_bps / 125e6) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | `bps / NIC_speed × 100` (autodetect) | ≡ V2 | ≡ V2 |
+| **nets** | `(avg_lat_ns × count) / 1e9 × 100`, summed TX+RX. Probes: `__dev_queue_xmit`+`net:net_dev_xmit` (TX) and `__napi_schedule_irqoff`+`napi_complete_done` (RX) | ≡ V0 | ≡ V0 (paper-faithful per-packet kprobes preserved) | ≡ V0 | **stap `softirq.entry/exit` tapset filtered by vec=2,3** [softirq tracepoints; same approach as V3.1] | softirq fraction × softirq pct × num_cores [matches V0 wall-clock semantics in aggregate] | **kprobe `__dev_queue_xmit`+`net:net_dev_start_xmit` (TX) + `napi_poll` entry/exit (RX) PLUS `irq:softirq_entry/exit`** [softirq tracepoints added — primary path on kernels where napi_poll is inlined / veth where per-packet model degenerates] | **`irq:softirq_entry/exit` filtered by vec=2,3** [softirq tracepoints; verified non-zero on kernel 6.8 + veth] |
+| **blk** | `(avg_svctm_us × ops_per_sec) / 100` from `block:block_rq_complete` (over-amplified by ~100×) | ≡ V0 | ≡ V0 (V0 amplification quirk preserved for paper fidelity) | ≡ V0 | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3, drops V0's amplification quirk] | `io_ticks_delta / interval_ms × 100` (DIFFERENT MODEL — measures % time disk had ≥1 outstanding I/O, no queue-depth signal) | `svctm_ns_sum / interval_ns × 100` (physical disk-busy fraction; preserves queue-depth pressure for parallel NVMe) | **`svctm_sum_ns / interval_ns × 100`** [aligned with V3] |
+| **mbw** | `bw_bps / 34e9 × 100` (hardcoded 34 GB/s) | ≡ V0 | ≡ V0 (helper-fed via uncore IMC `perf_event_open(2)`) | ≡ V0 (returns 0; helper-fed) | ≡ V0 (helper-fed) | `bw / mem_bw_max × 100` (autodetect) | ≡ V2 | ≡ V2 |
+| **llcmr** | `(misses / loads) × 100` | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 (refs ≈ loads) | ≡ V0 |
+| **llcocc** | `(occ_count × 49152) / 34e6 × 100` (hardcoded 34 MB) | ≡ V0 | ≡ V0 (helper-fed via resctrl mon_groups) | ≡ V0 (helper-fed) | ≡ V0 (helper-fed) | `occ_bytes / llc_size × 100` (autodetect via resctrl) | ≡ V2 | ≡ V2 |
+| **cpu** | `(uticks + kticks) / allticks × 100` from `perf.sw.cpu_clock` | ≡ V0 | ≡ V0 | ≡ V0 | ≡ V0 | `(1 - idle/total) × 100` from /proc/stat | `on_cpu_ns / (interval × num_cores) × 100` (mathematically equivalent to V0 — `allticks` in V0 is per-CPU-summed, V3 divides explicitly) | ≡ V3 |
 
 Legend:
 - `≡ V0` = mathematically identical to V0 (possibly with autodetected constants instead of hardcoded values)
@@ -83,7 +84,7 @@ V0 hardcodes:
 
 V2/V3/V3.1 autodetect via `intp-detect.sh` and CLI overrides (`--nic-speed-bps`, `--mem-bw-max-bps`, `--llc-size-bytes`).
 
-**Decision**: keep autodetection. The IntP paper's hardcoded constants reflect the original 2014 hardware (Xeon E5-2620v3, 8C/16T, DDR3-1600). For Hetzner Sapphire Rapids (24C/48T, DDR5-4800, 46 MB LLC, 1 Gbps), autodetected values are physically meaningful. Hetzner's 1 Gbps NIC happens to match V0's hardcoded 125 MB/s exactly, so `netp` is numerically aligned by coincidence.
+**Decision**: keep autodetection. The IntP paper's hardcoded constants reflect the testbed used in the 2022 paper, which itself is a Haswell-era platform (Xeon E5-2620v3, 8C/16T, DDR3-1600 — CPU released 2014). For Hetzner Sapphire Rapids (24C/48T, DDR5-4800, 46 MB LLC, 1 Gbps), autodetected values are physically meaningful. Hetzner's 1 Gbps NIC happens to match V0's hardcoded 125 MB/s exactly, so `netp` is numerically aligned by coincidence.
 
 If full numerical reproduction of V0 is required (for cross-paper comparison), use:
 ```bash

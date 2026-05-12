@@ -1,7 +1,8 @@
 # IntP root Makefile — orchestrates per-variant builds.
 #
-# Compileable variants:
-#   v1.1-stap-helper   — C helper for V1 stap module
+# Compileable variants (C helpers and/or eBPF binaries):
+#   v0.2-stap-helper   — C helper for V0 stap script (target kernel 5.15 GA)
+#   v1.1-stap-helper   — C helper for V1 stap module (target kernel 6.8+)
 #   v2-c-stable-abi    — hybrid procfs/perf_event_open/resctrl backends
 #   v3-ebpf-libbpf     — libbpf+CO-RE BPF program (needs clang, libbpf-dev)
 #
@@ -19,13 +20,14 @@
 #   make help       this message
 #
 # Per-variant targets (build/clean/smoke individually):
-#   make v1.1 v2 v3 v3.1
-#   make clean-v1.1 clean-v2 clean-v3 clean-v3.1
+#   make v0.2 v1.1 v2 v3 v3.1
+#   make clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1
 #   make smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1
 #
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
+V02_DIR := $(ROOT)/v0.2-stap-helper
 V11_DIR := $(ROOT)/v1.1-stap-helper
 V2_DIR  := $(ROOT)/v2-c-stable-abi
 V3_DIR  := $(ROOT)/v3-ebpf-libbpf
@@ -33,14 +35,15 @@ V31_DIR := $(ROOT)/v3.1-bpftrace
 V0_STP  := $(ROOT)/v0-stap-classic/intp.stp
 V01_STP := $(ROOT)/v0.1-stap-k68/intp-6.8.stp
 V1_STP  := $(ROOT)/v1-stap-native/intp-resctrl.stp
+V02_STP_TMPL := $(ROOT)/v0.2-stap-helper/intp.stp.template
 
 .PHONY: all clean smoke help preflight \
-        v1.1 v2 v3 v3.1 \
-        clean-v1.1 clean-v2 clean-v3 clean-v3.1 \
+        v0.2 v1.1 v2 v3 v3.1 \
+        clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1 \
         smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1 \
-        validate-v0 validate-v0.1 validate-v1
+        validate-v0 validate-v0.1 validate-v0.2 validate-v1
 
-all: v1.1 v2 v3 v3.1 validate-v0 validate-v0.1 validate-v1
+all: v0.2 v1.1 v2 v3 v3.1 validate-v0 validate-v0.1 validate-v0.2 validate-v1
 	@echo "[intp] all variants built/validated"
 
 # ---- preflight (host capability check, no installs) -------------------------
@@ -50,6 +53,9 @@ preflight:
 	@bash $(ROOT)/shared/intp-preflight.sh $(PREFLIGHT_ARGS)
 
 # ---- compileable variants ----------------------------------------------------
+
+v0.2:
+	$(MAKE) -C $(V02_DIR) all
 
 v1.1:
 	$(MAKE) -C $(V11_DIR) all
@@ -80,13 +86,24 @@ validate-v0.1:
 	@command -v stap >/dev/null 2>&1 || { echo "[v0.1] skip: stap not installed"; exit 0; }
 	@test -f $(V01_STP) && stap -g -p1 $(V01_STP) stress-ng >/dev/null && echo "[v0.1] parse OK"
 
+# v0.2 ships a .stp template that needs `generate-stp.sh` to render the actual
+# script (the helper exports IMC PMU type / DRAM BW / L3 size as env vars,
+# which generate-stp.sh substitutes into intp.recal.stp). At parse time we just
+# bash -n the generator; the .stp template is not stap-parseable on its own.
+validate-v0.2:
+	@test -f $(V02_STP_TMPL) || { echo "[v0.2] skip: template not found"; exit 0; }
+	@bash -n $(V02_DIR)/generate-stp.sh && echo "[v0.2] generator parse OK"
+
 validate-v1:
 	@command -v stap >/dev/null 2>&1 || { echo "[v1] skip: stap not installed"; exit 0; }
 	@test -f $(V1_STP) && stap -g -p1 $(V1_STP) stress-ng >/dev/null && echo "[v1] parse OK"
 
 # ---- clean ------------------------------------------------------------------
 
-clean: clean-v1.1 clean-v2 clean-v3 clean-v3.1
+clean: clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1
+
+clean-v0.2:
+	-$(MAKE) -C $(V02_DIR) clean
 
 clean-v1.1:
 	-$(MAKE) -C $(V11_DIR) clean
@@ -109,6 +126,11 @@ smoke: smoke-v2 smoke-v3 smoke-v3.1
 
 smoke-v1.1: v1.1
 	@echo "[v1.1] smoke not applicable (helper, not standalone profiler)"
+
+# v0.2 is helper-only too; the actual run needs the recalibrated .stp generated
+# at runtime from the helper-exported env. Smoke just confirms the helper builds.
+smoke-v0.2: v0.2
+	@echo "[v0.2] smoke not applicable (helper, not standalone profiler)"
 
 smoke-v2: v2
 	@$(V2_DIR)/intp-hybrid --interval 1 --duration 5 >/dev/null && echo "[v2] smoke OK"
