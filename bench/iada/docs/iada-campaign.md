@@ -1,9 +1,142 @@
 # IADA campaign — second-phase scheduling experiment
 
-**Status:** scaffold ready, smoke test validated 2026-05-05
+**Status:** scaffold ready, smoke test validated 2026-05-05; closed-loop
+wrapper (Section V) added in `iada-closed-loop` branch.
 **Host:** local (laptop) — CloudSim is a deterministic simulation
 **Reference dataset validated:** 192 apps on 48 PMs, 24 intervals,
 mean IDI 3476.2
+
+---
+
+## Methodological framing
+
+The shipped IADA classifier (SVM + per-class K-Means) was trained by
+Meyer (2021) on profiles collected in **LXC containers** under
+**Node-Tiers** synthetic stressors. Our IntP campaign collects with
+**`stress-ng`** workloads in **Docker** containers on Sapphire Rapids
+hardware. That difference is a documented **distribution shift**, and
+how big it is depends on which target environment a campaign claims
+to compare against.
+
+We split the IADA campaign into two named modalities so that the
+methodologically tight question (M1) is not entangled with the
+methodologically open one (M2):
+
+### M1 — IADA-aligned (default, primary)
+
+**Scope:** `ENVS=container` only. The IntP variant is the independent
+variable; the deployment environment is held at the closest match to
+the classifier's training domain.
+
+**Shift relative to training data:** small-to-moderate. LXC → Docker
+differs primarily in `netp`/`nets` (NAT bridge vs L2) and in
+`cpu`/`mbw` (cgroup-v2 vs v1, plus the bench daemon overhead). The
+paper itself acknowledges this kind of shift ("if we change the
+training set, the correlation between resources probably will have
+different behavior" — Meyer 2021 §5.2.1).
+
+**What is interpretable from M1:** instrumentation-fidelity comparisons
+between V0…V3.1 with the scheduler held fixed. This is the contribution
+that anchors Section V of the dissertation. Retraining is optional and
+planned with Meyer's assistance.
+
+### M2 — cross-domain transfer (opt-in, gated)
+
+**Scope:** `ENVS=bare,container,vm-guest`. Adds bare-metal and VM-guest
+profiles to the same scheduler-fixed comparison.
+
+**Shift relative to training data:**
+
+- *Container vs bare metal:* moderate. No cgroup floor → wider
+  dynamic range on every metric, so the K-Means thresholds shipped
+  with the classifier shift; samples the model would tag as `low`
+  may straddle the next centroid.
+- *Container vs VM-guest:* severe. The PMU and RDT counters are
+  typically inaccessible to a guest, so `mbw` / `llcocc` / `llcmr`
+  arrive as zero. The K-Means classifier reads "zero" as `low` /
+  `absent`, but the truthful label is `unavailable`. The SVM
+  collapses cases into CPU / disk / network categories that exist
+  in its training labels.
+
+**Hard-block.** `run-iada-from-bench.sh` refuses to run M2 unless
+`IADA_M2_ACK_DOMAIN_TRANSFER=1` is exported, with a message that cites
+Meyer 2021 §5.2.1 and Meyer 2022 §3.1.3 on classifier-data coupling
+and points at the retrain pipeline.
+
+**What is interpretable from M2 *without* retraining:** a
+*domain-transfer ablation* — i.e. how much the numbers move when the
+classifier sees out-of-domain features. This is **not** a scheduling-
+quality comparison: degradation could be the variant's profile
+quality or could be the classifier failing to generalise, and the
+manifest alone cannot tell those apart.
+
+**What is interpretable from M2 *after* domain-specific retraining:**
+the scheduling-quality comparison. The fork
+[ggrv-intp/CloudSimInterference](https://github.com/ggrv-intp/CloudSimInterference)
+branch `retrain-pipeline` ships `R/retrain.R` for exactly this. See
+[retraining](#retraining) below.
+
+### Sanity check
+
+`run-iada-from-bench.sh` step 3 invokes
+`bench/iada/scripts/sanity-check-classifier.sh` for each
+`(variant, env)` present in the IADA tree before running CloudSim.
+For up to `SANITY_SAMPLES` randomly-drawn profiles per cell
+(default 10, balanced across workloads), the script:
+
+1. Reads the profile CSV and reorders columns to the at-inference
+   layout MLClassifier.java uses (`nets, netp, blk, mbw, llcmr,
+   llcocc, cpu`).
+2. Runs SVM `predict()` and the per-class K-Means level mapping
+   against the six shipped `.rda` artifacts.
+3. Infers an *expected class* from the workload's directory name
+   (`cpu_*` → `cpu`, `mem_*`/`stress_vm` → `mem`, etc.). Workloads
+   that don't match any class are scored `plausibility=unknown` and
+   are not counted toward mismatch.
+4. Writes one row per sample to
+   `<campaign-dir>/sanity/<variant>__<env>.tsv`:
+   `workload  expected_class  predicted_class  predicted_level  plausibility`.
+
+If the mismatch rate exceeds `SANITY_FAIL_THRESHOLD_PCT` (default 30%)
+in any `(variant, env)`, the wrapper aborts with a pointer to the
+offending TSV and a suggestion. Two failure modes are distinguishable:
+
+- *Mismatch concentrated in `env=container`*: the variant likely
+  produces low-quality profiles — an instrumentation-fidelity
+  issue, fixable variant-side.
+- *Mismatch only in `env=bare` or `env=vm-guest`*: the classifier
+  is operating out of its training domain — fixable by retraining.
+
+### Retraining
+
+The fork ships `R/retrain.R` and `R/RETRAIN.md` on branch
+`retrain-pipeline`. Drop-in: the six regenerated `.rda` files keep
+the variable names (`modelo_svm`, `cl_cpu`, …), feature ordering, and
+hyperparameters that `MLClassifier.java` expects, so no Java rebuild
+is required.
+
+```bash
+cd "$CLOUDSIM_REPO"
+Rscript R/retrain.R \
+    --dataset-root <path-to-domain-dataset> \
+    --output-dir   R/
+# then re-run bench/iada/scripts/run-iada-from-bench.sh
+```
+
+The dataset root accepts either per-class subdirs (`cpu/`, `memory/`,
+`disk/`, `network/`, `cache/`) or the legacy `forced/` flat layout.
+Existing `.rda` files are backed up with a timestamp suffix before
+being overwritten. See `R/RETRAIN.md` in the fork for the full
+operating manual and metric reference (paper Meyer 2021 Table 3).
+
+### Auxiliary repos
+
+Single auxiliary repo:
+[ggrv-intp/CloudSimInterference](https://github.com/ggrv-intp/CloudSimInterference)
+— the CloudSim/IADA Java simulator with the IADA classifier embedded
+in `R/`. `setup-iada.sh --auto-clone` clones it next to this repo by
+default. There is **no** separate `interference-classifier` repo;
+the classifier lives inside `CloudSimInterference/R/`.
 
 ---
 
@@ -30,8 +163,11 @@ IADA combines an SAO scheduler, an SVM classifier, K-means clustering,
 and Change-Point Detection (CPD), all implemented in R and embedded
 into a Java CloudSim simulation through JRI. The classifier is
 pre-trained on synthetic stressors (`forced/`) shipped with the
-original IADA repo; we **do not retrain** it — see
-[Methodological decisions](#methodological-decisions-recorded).
+original IADA repo. The dissertation's primary contribution (M1) uses
+the shipped classifier as-is, with the sanity check (above) guarding
+against out-of-domain interpretation. The retrain path (M2) is wired
+up and tested end-to-end but kept opt-in, gated by
+`IADA_M2_ACK_DOMAIN_TRANSFER=1`.
 
 ---
 
@@ -262,20 +398,28 @@ After IntP plan Phases 3–5 finish:
 | Item | ETA |
 |---|---|
 | 1 simulation (192 apps, 48 PMs, 24 intervals) | ~26 min |
-| 7 variants × 3 envs × 1 mix | 21 simulations ≈ 9 h |
+| **M1**: 7 variants × 1 env × 1 mix | 7 simulations ≈ 3 h |
+| **M2** (post-retrain): 7 variants × 3 envs × 1 mix | 21 simulations ≈ 9 h |
 | 7 variants × 3 envs × 5 mixes (future) | ~45 h |
 
-All local. Does not contend with the Hetzner host.
+All local. Does not contend with the Hetzner host. The M2 budget
+listed above does **not** include the wallclock spent collecting a
+domain-matched dataset and running `R/retrain.R` — neither of which
+runs through this wrapper.
 
 ---
 
 ## Methodological decisions (recorded)
 
-1. **No SVM/K-means retraining.** Models pre-trained on `forced/`
-   (the paper's synthetic stressors) are kept fixed. Varying the
-   input isolates the instrumentation-fidelity hypothesis.
-   Per-variant retraining is a complementary hypothesis and is left
-   for future work.
+1. **M1 uses the shipped classifier; M2 needs retraining.** The
+   default modality (M1, env=container) intentionally varies only
+   the IntP variant, keeping the scheduler and classifier fixed so
+   instrumentation fidelity is the lone independent variable. M2
+   adds bare/vm-guest, which is a domain shift relative to the
+   classifier's training data; the wrapper hard-blocks it unless
+   the operator acknowledges that the numbers either need
+   retraining-first or have to be reframed as a transfer ablation.
+   See [Methodological framing](#methodological-framing).
 
 2. **CloudSim runs locally.** The simulator is deterministic; there
    is no value in running it on different hardware. The Hetzner
