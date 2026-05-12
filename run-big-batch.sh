@@ -38,8 +38,14 @@
 #                                  if V1 stap captured <15% of expected samples.
 #     CONTAINER_IMAGE=ubuntu:24.04  Docker image for container/container-guest envs
 #     VM_IMAGE=                 path to .qcow2 for vm/vm-guest envs (required when set)
-#     VM_MEM=32G                memory for QEMU guest
-#     VM_CPUS=16                vCPUs for QEMU guest
+#     VM_MEM=                   memory for QEMU guest (default: inherits BENCH_MEM)
+#     VM_CPUS=                  vCPUs for QEMU guest (default: inherits BENCH_CPUS)
+#     BENCH_CPUS=               cross-env CPU parity knob; applied as cgroup
+#                                cpu.max for bare, --cpus for container, -smp for VM.
+#                                Default: floor(nproc * 2/3). See docs/CROSS-ENV-CAMPAIGN.md.
+#     BENCH_MEM=                cross-env memory parity knob; applied as cgroup
+#                                memory.max for bare, --memory for container, -m for VM.
+#                                Default: floor(MemTotal * 2/3) in GB.
 #     INTP_VMG_ALLOW_STAP=0     set to 1 if your qcow2 has linux-headers + stap (vm-guest stap support)
 #
 #   Segment toggles
@@ -78,6 +84,10 @@
 #   sudo BENCH_ENVS=bare,container bash run-big-batch.sh
 #   sudo BENCH_ENVS=bare,vm VM_IMAGE=/var/lib/intp/ubuntu24.qcow2 VM_MEM=16G VM_CPUS=8 bash run-big-batch.sh
 #   sudo RUN_HIBENCH=0 REPS=3 DURATION=60 bash run-big-batch.sh   # quick sizing run
+#   # Cross-env campaign (Hetzner Sapphire Rapids, see docs/CROSS-ENV-CAMPAIGN.md):
+#   sudo BENCH_ENVS=bare,container,vm-guest BENCH_VARIANTS=v1.1,v2,v3,v3.1 \
+#        VM_IMAGE=/var/lib/intp/ubuntu24.qcow2 BENCH_CPUS=64 BENCH_MEM=192G \
+#        REPS=10 DURATION=120 bash run-big-batch.sh
 
 set -u -o pipefail
 
@@ -138,8 +148,15 @@ HIBENCH_VARIANTS="${HIBENCH_VARIANTS:-$HIBENCH_VARIANTS_DEFAULT}"
 BENCH_WORKLOADS="${BENCH_WORKLOADS:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"
-VM_MEM="${VM_MEM:-32G}"
-VM_CPUS="${VM_CPUS:-16}"
+# VM_MEM / VM_CPUS now default to empty so they inherit BENCH_MEM /
+# BENCH_CPUS in run-intp-bench.sh; explicit settings still win.
+VM_MEM="${VM_MEM:-}"
+VM_CPUS="${VM_CPUS:-}"
+# Cross-env parity knobs (see docs/CROSS-ENV-CAMPAIGN.md). Empty values
+# let run-intp-bench.sh compute defaults as floor(nproc * 2/3) /
+# floor(MemTotal_GB * 2/3).
+BENCH_CPUS="${BENCH_CPUS:-}"
+BENCH_MEM="${BENCH_MEM:-}"
 
 # ── Segment toggles ────────────────────────────────────────────────────────────
 RUN_STRESS_BENCH="${RUN_STRESS_BENCH:-1}"
@@ -177,6 +194,11 @@ export INTP_BENCH_CONTAINER="$CONTAINER_IMAGE"
 export INTP_BENCH_VM_IMAGE="$VM_IMAGE"
 export INTP_BENCH_VM_MEM="$VM_MEM"
 export INTP_BENCH_VM_CPUS="$VM_CPUS"
+# Cross-env resource parity: BENCH_CPUS/BENCH_MEM apply to all three envs
+# (bare cgroup, container --cpus/--memory, VM -smp/-m). When empty,
+# run-intp-bench.sh derives 2/3 of host nproc / MemTotal.
+export INTP_BENCH_CPUS="$BENCH_CPUS"
+export INTP_BENCH_MEM="$BENCH_MEM"
 
 exec > >(tee -a "$OUT/big-batch.log") 2>&1
 
@@ -209,7 +231,8 @@ echo "  bench_envs=$BENCH_ENVS"
 echo "  bench_variants=$BENCH_VARIANTS  hibench_variants=$HIBENCH_VARIANTS"
 echo "  bench_workloads=${BENCH_WORKLOADS:-<all>}"
 echo "    container_image=$CONTAINER_IMAGE"
-echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=$VM_MEM  vm_cpus=$VM_CPUS"
+echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=${VM_MEM:-<inherit>}  vm_cpus=${VM_CPUS:-<inherit>}"
+echo "    bench_cpus=${BENCH_CPUS:-<auto 2/3 nproc>}  bench_mem=${BENCH_MEM:-<auto 2/3 MemTotal>}"
 echo "  run_stress_bench=$RUN_STRESS_BENCH"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
 echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
