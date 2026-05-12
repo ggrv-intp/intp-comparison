@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # validate-cross-variant.sh
 #
-# Cross-variant byte-equivalence test for IntP V0/V1/V2/V3.1/V3.
+# Cross-variant byte-equivalence test for IntP V0/V1/V2/V3.1/V3/V3.2.
 #
 # Runs each available variant under identical conditions (same target PID,
 # same interval, same duration), captures TSV output, then compares the
@@ -26,6 +26,7 @@
 #   --v2-bin PATH         Path to V0.1 binary (default: ../v2-c-stable-abi/intp-hybrid)
 #   --v3.1-script PATH    Path to V3.1 launcher (default: ../v3.1-bpftrace/run-intp-bpftrace.sh)
 #   --v3-bin PATH         Path to V1 binary (default: ../v3-ebpf-libbpf/intp-ebpf)
+#   --v3.2-bin PATH       Path to V3.2 binary (default: ../v3.2-ebpf-aggregate/intp-ebpf-agg)
 #   --nic-speed-bps N    Force NIC speed (bytes/sec) for all variants
 #   --mem-bw-max-bps N   Force memory bandwidth ceiling (bytes/sec) for all variants
 #   --llc-size-bytes N   Force LLC size (bytes) for all variants
@@ -54,6 +55,7 @@ LLC_SIZE_BYTES=""
 V2_BIN="${REPO_ROOT}/v2-c-stable-abi/intp-hybrid"
 V3_1_SCRIPT="${REPO_ROOT}/v3.1-bpftrace/run-intp-bpftrace.sh"
 V3_BIN="${REPO_ROOT}/v3-ebpf-libbpf/intp-ebpf"
+V3_2_BIN="${REPO_ROOT}/v3.2-ebpf-aggregate/intp-ebpf-agg"
 
 METRICS=("netp" "nets" "blk" "mbw" "llcmr" "llcocc" "cpu")
 
@@ -75,6 +77,7 @@ parse_args() {
             --v2-bin)         V2_BIN="$2"; shift 2 ;;
             --v3.1-script)    V3_1_SCRIPT="$2"; shift 2 ;;
             --v3-bin)         V3_BIN="$2"; shift 2 ;;
+            --v3.2-bin)       V3_2_BIN="$2"; shift 2 ;;
             --nic-speed-bps)  NIC_SPEED_BPS="$2"; shift 2 ;;
             --mem-bw-max-bps) MEM_BW_MAX_BPS="$2"; shift 2 ;;
             --llc-size-bytes) LLC_SIZE_BYTES="$2"; shift 2 ;;
@@ -111,6 +114,9 @@ variant_available() {
             ;;
         v3)
             [[ -x "$V3_BIN" ]]
+            ;;
+        v3.2)
+            [[ -x "$V3_2_BIN" ]]
             ;;
         *)
             return 1
@@ -166,6 +172,21 @@ run_variant() {
                 --duration "$DURATION" \
                 --output tsv \
                 --no-header \
+                > "$outfile" 2>"${outfile}.err" || true
+            ;;
+        v3.2)
+            # --no-raw-mbw keeps V3.2 column count at 7 so column_means
+            # and compare_pair stay byte-compatible with the other
+            # variants. The mbw_raw_mbps diagnostic stream isn't part of
+            # the cross-variant equivalence check.
+            timeout "$((DURATION + 5))" "$V3_2_BIN" \
+                "${pid_args[@]}" \
+                "${hw_args[@]}" \
+                --interval "$INTERVAL" \
+                --duration "$DURATION" \
+                --output tsv \
+                --no-header \
+                --no-raw-mbw \
                 > "$outfile" 2>"${outfile}.err" || true
             ;;
     esac
@@ -266,7 +287,7 @@ main() {
 
     # Discover available variants
     local available=()
-    for v in v2 v3.1 v3; do
+    for v in v2 v3.1 v3 v3.2; do
         if variant_available "$v"; then
             available+=("$v")
             log "Variant $v: available"
