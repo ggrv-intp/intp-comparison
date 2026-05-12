@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# intp-aux-rerun.sh -- Auxiliary reruns #4 and #5 for the SBAC-PAD paper.
+#
+#   #4: noise-floor characterization (V3 system-wide, HiBench stack UP and IDLE)
+#   #5: pidstat + perf -p breakdown for the V3 composite-mechanism hypothesis
+#
+# Run via tmux so you can detach (Ctrl-b d) and reattach (tmux a -t intp-aux):
+#
+#     tmux new-session -d -s intp-aux 'bash -lc "bash ~/intp-aux-rerun.sh; exec bash"'
+#     tmux attach -t intp-aux
+#
+# Wall clock: ~40 min total (#4 ~18 min, #5 ~20 min).
+
+set -euo pipefail
+
+# ============================================================================
+# Configuration -- adjust these to your testbed paths
+# ============================================================================
+REPO_ROOT="${REPO_ROOT:-$HOME/intp-comparison}"
+INTP_EBPF_BIN="${INTP_EBPF_BIN:-$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf}"
+export OUT_DIR="${OUT_DIR:-$HOME/intp-aux-rerun-$(date +%Y%m%d-%H%M%S)}"
+
+DURATION=90        # seconds per rep, matches the existing overhead stage
+WARMUP=5
+COOLDOWN=2
+REPS_NF=12         # noise-floor reps (matches the bench's overhead stage default)
+REPS_OVH=3         # pidstat reps (statistical sanity vs wall-clock budget)
+
+# Reference loads -- adjust if your existing overhead stage used different flags
+declare -A REF_LOADS=(
+  [ref_cpu]="--cpu 0 --cpu-method all"
+  [ref_disk]="--hdd 4 --hdd-bytes 1G"
+  [ref_stream]="--stream 0"
+)
+
+# ============================================================================
+# Pre-flight
+# ============================================================================
+mkdir -p "$OUT_DIR"/{noise_floor,ringbuf_pidstat/ref_cpu,ringbuf_pidstat/ref_disk,ringbuf_pidstat/ref_stream}
+exec > >(tee -a "$OUT_DIR/run.log") 2>&1
+
+echo "=== IntP auxiliary rerun ==="
+echo "Started: $(date -Iseconds)"
+echo "Output:  $OUT_DIR"
+echo
+
+[ -x "$INTP_EBPF_BIN" ] || { echo "FATAL: intp-ebpf not found at $INTP_EBPF_BIN"; exit 1; }
+command -v pidstat   >/dev/null || { echo "FATAL: pidstat not found (apt install sysstat)"; exit 1; }
+command -v perf      >/dev/null || { echo "FATAL: perf not found (apt install linux-tools-common)"; exit 1; }
+command -v stress-ng >/dev/null || { echo "FATAL: stress-ng not found"; exit 1; }
+
+# Capture env snapshot for the appendix
+{
+  echo "=== uname ==="; uname -a
+  echo "=== /proc/cmdline ==="; cat /proc/cmdline
+  echo "=== kernel.perf_event_paranoid ==="; sysctl kernel.perf_event_paranoid
+  echo "=== resctrl info ==="; ls /sys/fs/resctrl/info/ 2>/dev/null || true
+  echo "=== HiBench stack (jps) ==="
+  if command -v jps >/dev/null; then
+    jps
+  else
+    pgrep -af 'NameNode|DataNode|deploy.master.Master|deploy.worker.Worker' | sed 's/^/  /' || echo "  (jps unavailable; using pgrep)"
+  fi
+  echo "=== listeners on HDFS/Spark ports ==="
+  ss -tlnp 2>/dev/null | grep -E ':(9000|9866|7077|7078|8080|8081)' || echo "  (none -- stack may not be up)"
+} > "$OUT_DIR/env.txt"
+
+# ============================================================================
+# Experiment #4 -- noise floor
+# Pre-condition: HiBench stack UP and IDLE (NameNode + DataNode + Master + Worker;
+#                no Spark Driver running, no antagonist running).
+# Method: 12 V3 system-wide windows of 90s each.
+# Output: noise_floor/summary.tsv (per-metric mean/std across all samples).
+# ============================================================================
+echo
+echo "==================================================================="
+echo "Experiment #4: noise floor (V3 system-wide, stack-up-but-idle)"
+echo "==================================================================="
+echo "Pre-check (stack should be UP and idle):"
+grep -A5 'HiBench stack' "$OUT_DIR/env.txt"
+echo
+
+for r in $(seq 1 $REPS_NF); do
+  rep_dir="$OUT_DIR/noise_floor/rep$(printf %02d $r)"
+  mkdir -p "$rep_dir"
+  echo "  [#4 rep $r/$REPS_NF] $(date +%H:%M:%S)"
+  sudo timeout $((DURATION + 10)) "$INTP_EBPF_BIN" \
+    --interval 1.0 --duration $DURATION --output tsv \
+    > "$rep_dir/profiler.tsv" 2> "$rep_dir/intp.err" || true
+  sleep 2
+done
+
+python3 - <<'PY'
+import csv, glob, statistics as st, os
+# Metrics emitted by intp-ebpf --output tsv. All values are integer percentages (0-100),
+# despite the comment-header in the TSV listing the underlying eBPF source (e.g. cpu:sched_switch).
+metrics = ['netp','nets','blk','mbw','llcmr','llcocc','cpu']
+out_dir = os.environ["OUT_DIR"]
+rows = []
+for rep in sorted(glob.glob(f"{out_dir}/noise_floor/rep*/profiler.tsv")):
+    try:
+        with open(rep) as f:
+            # intp-ebpf prefixes the TSV with "# ..." metadata lines; DictReader would otherwise treat them as the header.
+            data_lines = [ln for ln in f if not ln.startswith('#') and ln.strip()]
+        for row in csv.DictReader(data_lines, delimiter='\t'):
+            try:
+                rows.append({m: float(row.get(m, 0) or 0) for m in metrics})
+            except (ValueError, TypeError):
+                pass
+    except FileNotFoundError:
+        pass
+
+if not rows:
+    print("WARNING: no samples collected for #4")
+else:
+    out = f"{out_dir}/noise_floor/summary.tsv"
+    print(f"\n  Noise floor (system-wide V3, stack-up-but-idle, n={len(rows)} samples):")
+    print(f"  {'metric':<8} {'mean':>10} {'std':>10} {'p50':>10} {'p95':>10}")
+    with open(out, 'w') as f:
+        f.write("metric\tmean\tstd\tp50\tp95\tn\n")
+        for m in metrics:
+            vs = sorted(r[m] for r in rows)
+            p50 = vs[len(vs)//2]
+            p95 = vs[int(len(vs)*0.95)] if vs else 0
+            print(f"  {m:<8} {st.mean(vs):>10.3f} {st.pstdev(vs):>10.3f} {p50:>10.3f} {p95:>10.3f}")
+            f.write(f"{m}\t{st.mean(vs):.6f}\t{st.pstdev(vs):.6f}\t{p50:.6f}\t{p95:.6f}\t{len(vs)}\n")
+    print(f"  Summary -> {out}")
+PY
+
+# ============================================================================
+# Experiment #5 -- pidstat + perf -p breakdown for V3 composite hypothesis
+# For each ref_* load, 3 reps with V3 attached. Captures:
+#   - pidstat 1Hz CPU% of intp-ebpf consumer  (the "CPU stealing" axis)
+#   - perf stat -p intp-ebpf context-switches (the consumer's own ctx-switches)
+#   - perf stat -a sched:sched_switch          (system-wide, for delta vs baseline)
+# Also 3 baseline reps per ref_load (no profiler) for the sched_switch delta.
+# ============================================================================
+echo
+echo "==================================================================="
+echo "Experiment #5: pidstat + perf -p breakdown (V3 composite mechanism)"
+echo "==================================================================="
+
+for ref in ref_cpu ref_disk ref_stream; do
+  flags="${REF_LOADS[$ref]}"
+  echo
+  echo "--- $ref  ($flags) ---"
+  ref_dir="$OUT_DIR/ringbuf_pidstat/$ref"
+
+  for arm in baseline with_profiler; do
+    mkdir -p "$ref_dir/$arm"
+    for r in $(seq 1 $REPS_OVH); do
+      run_dir="$ref_dir/$arm/rep$(printf %02d $r)"
+      mkdir -p "$run_dir"
+      echo "  [#5 $ref/$arm rep $r] $(date +%H:%M:%S)"
+
+      # Start the stress-ng workload (warmup + measurement + cooldown)
+      total=$((WARMUP + DURATION + COOLDOWN))
+      sudo stress-ng $flags --timeout ${total}s --metrics-brief \
+        > "$run_dir/stress.log" 2>&1 &
+      STRESS_PID=$!
+
+      sleep $WARMUP   # let stress-ng reach steady state
+
+      if [ "$arm" = "with_profiler" ]; then
+        sudo "$INTP_EBPF_BIN" --interval 1.0 --duration $DURATION --output tsv \
+          > "$run_dir/intp.tsv" 2> "$run_dir/intp.err" &
+        INTP_LAUNCHER_PID=$!
+        sleep 1
+        EBPF_PID=$(pgrep -nf "$(basename "$INTP_EBPF_BIN")" || echo "")
+        if [ -n "$EBPF_PID" ]; then
+          pidstat -p "$EBPF_PID" -u 1 $DURATION > "$run_dir/pidstat.txt" 2>&1 &
+          PIDSTAT_PID=$!
+          sudo perf stat -p "$EBPF_PID" -e context-switches,task-clock,cpu-migrations \
+            -- sleep $DURATION 2> "$run_dir/perf_consumer.txt" &
+          PERF_C_PID=$!
+        else
+          echo "  WARN: intp-ebpf PID not found; consumer-side measurements skipped"
+        fi
+      fi
+
+      # System-wide sched_switch for the same 90s window
+      sudo perf stat -a -e sched:sched_switch \
+        -- sleep $DURATION 2> "$run_dir/perf_system.txt" &
+      PERF_S_PID=$!
+
+      wait $PERF_S_PID 2>/dev/null || true
+      if [ "$arm" = "with_profiler" ]; then
+        wait ${PIDSTAT_PID:-} 2>/dev/null || true
+        wait ${PERF_C_PID:-}  2>/dev/null || true
+        wait $INTP_LAUNCHER_PID 2>/dev/null || true
+      fi
+      wait $STRESS_PID 2>/dev/null || true
+      sleep $COOLDOWN
+    done
+  done
+done
+
+# Post-process #5
+python3 - <<'PY'
+import re, glob, statistics as st, os
+from pathlib import Path
+
+def parse_perf_one(path, event):
+    try: text = Path(path).read_text(errors='ignore')
+    except (FileNotFoundError, OSError): return None
+    for line in text.splitlines():
+        m = re.search(r'([\d,]+)\s+' + re.escape(event), line)
+        if m:
+            try: return int(m.group(1).replace(',', ''))
+            except ValueError: return None
+    return None
+
+def parse_pidstat_cpu(path):
+    try: text = Path(path).read_text(errors='ignore')
+    except (FileNotFoundError, OSError): return []
+    vs = []
+    for line in text.splitlines():
+        # pidstat default format columns: time UID PID %usr %system %guest %wait %CPU CPU Command
+        parts = line.split()
+        if len(parts) >= 9 and parts[0].count(':') == 2 and parts[2].isdigit():
+            try: vs.append(float(parts[7]))
+            except (ValueError, IndexError): pass
+    return vs
+
+root = Path(os.environ["OUT_DIR"]) / "ringbuf_pidstat"
+print()
+print("Experiment #5 -- composite mechanism summary:")
+print(f"  {'ref':<11} {'sched_sw baseline':>20} {'sched_sw with_v3':>20} "
+      f"{'delta':>12} {'consumer ctx-sw':>18} {'consumer CPU%':>16}")
+for ref in ['ref_cpu','ref_disk','ref_stream']:
+    base = [parse_perf_one(p, 'sched:sched_switch')
+            for p in glob.glob(str(root/ref/'baseline'/'rep*'/'perf_system.txt'))]
+    withp = [parse_perf_one(p, 'sched:sched_switch')
+             for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_system.txt'))]
+    cons = [parse_perf_one(p, 'context-switches')
+            for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'perf_consumer.txt'))]
+    cpus = []
+    for p in glob.glob(str(root/ref/'with_profiler'/'rep*'/'pidstat.txt')):
+        vs = parse_pidstat_cpu(p)
+        if vs: cpus.append(st.mean(vs))
+    base  = [b for b in base if b]
+    withp = [b for b in withp if b]
+    cons  = [c for c in cons if c]
+    mb = st.mean(base)  if base  else 0
+    mw = st.mean(withp) if withp else 0
+    mc = st.mean(cons)  if cons  else 0
+    mcpu = st.mean(cpus) if cpus  else 0
+    print(f"  {ref:<11} {mb:>20,.0f} {mw:>20,.0f} {mw-mb:>12,.0f} {mc:>18,.0f} {mcpu:>15.2f}%")
+print()
+print("Reading:")
+print("  - 'delta' negative on ref_cpu/ref_stream by ~40k confirms the existing paper figure.")
+print("  - 'consumer ctx-sw' ~ |delta| on ref_cpu/ref_stream  => mechanism #1 (adaptive wakeup) dominates.")
+print("  - On ref_disk, |delta| >> consumer ctx-sw           => mechanism #2 (CPU stealing) dominates.")
+print("  - consumer CPU% * 90s * (CLK_TCK=100) ~= jiffies axis from existing fig:overhead-jiffies.")
+PY
+
+echo
+echo "=== Auxiliary rerun done: $(date -Iseconds) ==="
+echo "Output dir: $OUT_DIR"
+echo
+echo "Next step: scp -r pantanal01:$OUT_DIR ./   and feed summary.tsv into the paper's"
+echo "noise-floor table (§IV-E) and the composite-mechanism prose (§V-D)."
