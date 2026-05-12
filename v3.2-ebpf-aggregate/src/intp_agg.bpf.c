@@ -16,6 +16,8 @@
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
 
 #include "intp_agg.bpf.h"
 
@@ -160,4 +162,110 @@ agg_per_pid_slot(__u32 tgid)
 
     bpf_map_update_elem(&agg_per_pid, &tgid, z, BPF_NOEXIST);
     return bpf_map_lookup_elem(&agg_per_pid, &tgid);
+}
+
+/* =====================================================================
+ * netp -- network physical utilization
+ *
+ * Identical probe sites to V3 (tracepoint:net:net_dev_xmit and
+ * tracepoint:net:netif_receive_skb) but the destination is the counter
+ * maps instead of bpf_ringbuf_reserve. Loopback skip is preserved
+ * verbatim: single-host workloads otherwise double-count and inflate
+ * netp ≥2x relative to the per-NIC sysfs ground-truth.
+ * ===================================================================== */
+
+static __always_inline int tp_dev_is_lo(void *ctx, unsigned int data_loc)
+{
+    /* tracepoint __data_loc fields encode (length << 16) | offset.
+     * Resolve the string by adding the offset to ctx, then read 4 bytes. */
+    unsigned int offset = data_loc & 0xFFFFu;
+    char buf[4] = {};
+    bpf_probe_read_kernel_str(buf, sizeof(buf), (char *)ctx + offset);
+    return buf[0] == 'l' && buf[1] == 'o' && buf[2] == '\0';
+}
+
+SEC("tracepoint/net/net_dev_xmit")
+int tp_net_dev_xmit(struct trace_event_raw_net_dev_xmit *ctx)
+{
+    if (!should_monitor_current()) return 0;
+    if (tp_dev_is_lo(ctx, ctx->__data_loc_name)) return 0;
+
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+
+    __u32 len = BPF_CORE_READ(ctx, len);
+    __sync_fetch_and_add(&g->netp_tx_bytes, len);
+
+    if (!is_system_wide()) {
+        __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+        struct intp_counters *p = agg_per_pid_slot(tgid);
+        if (p) __sync_fetch_and_add(&p->netp_tx_bytes, len);
+    }
+    return 0;
+}
+
+SEC("tracepoint/net/netif_receive_skb")
+int tp_netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
+{
+    /* netif_receive_skb runs in softirq context; current task is whoever
+     * was interrupted. PID filtering is therefore approximate -- same
+     * caveat as V3. In system-wide mode we count everything; in per-PID
+     * mode the agg_per_pid update is best-effort. */
+    if (!should_monitor_current()) return 0;
+    if (tp_dev_is_lo(ctx, ctx->__data_loc_name)) return 0;
+
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+
+    __u32 len = BPF_CORE_READ(ctx, len);
+    __sync_fetch_and_add(&g->netp_rx_bytes, len);
+
+    if (!is_system_wide()) {
+        __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+        struct intp_counters *p = agg_per_pid_slot(tgid);
+        if (p) __sync_fetch_and_add(&p->netp_rx_bytes, len);
+    }
+    return 0;
+}
+
+/* =====================================================================
+ * fork tracking -- keep descendant_tgids in sync with the workload tree
+ *
+ * Same semantics as V3: the parent's TGID is in the filter, so when it
+ * forks, the child's TGID is added to descendant_tgids. exit removes
+ * the thread-leader. Required for any workload that spawns children
+ * after we attach (stress-ng --cache 24, Spark executors, etc.).
+ * ===================================================================== */
+
+SEC("tracepoint/sched/sched_process_fork")
+int tp_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
+{
+    struct intp_config *cfg = intp_cfg();
+    if (!cfg || cfg->system_wide) return 0;
+
+    __u32 parent_tgid = bpf_get_current_pid_tgid() >> 32;
+    if (!pid_in_filter(cfg, parent_tgid)) return 0;
+
+    __u32 child_tgid = (__u32)ctx->child_pid;
+    __u8  one        = 1;
+    bpf_map_update_elem(&descendant_tgids, &child_tgid, &one, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/sched/sched_process_exit")
+int tp_sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+    (void)ctx;
+    /* Process exit (vs. thread exit) is signalled by the leader exiting
+     * last: leader has pid == tgid. Threads exiting earlier have
+     * pid != tgid; ignore those so we keep the entry alive while
+     * sibling threads are still running. */
+    __u64 pt = bpf_get_current_pid_tgid();
+    __u32 tgid = pt >> 32;
+    __u32 pid  = (__u32)pt;
+    if (pid != tgid) return 0;
+    bpf_map_delete_elem(&descendant_tgids, &tgid);
+    /* Also clean up the per-PID counter slot so the hash stays bounded. */
+    bpf_map_delete_elem(&agg_per_pid, &tgid);
+    return 0;
 }
