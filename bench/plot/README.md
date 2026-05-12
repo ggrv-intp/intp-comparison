@@ -18,6 +18,7 @@ covers the **standalone** invocation flow.
 | `plot-hibench.py`           | a `hibench/` directory (one or more workload sweeps) | `<input>/plots/fig*.png` | rendering the HiBench-specific resource-family figures |
 | `plot-pca-correlation-circle.py` | an `aggregate-means.{tsv,csv}` from a single campaign | `fig_pca_correlation_circle.png` | publication-grade single-figure biplot for the SBAC-PAD short paper |
 | `extract-fragility.py`      | a `bench-full/` directory (SystemTap stap.log per run) | `<input>/fragility-summary.tsv` and `fragility-aggregated.tsv` | quantifying probe skips, overload, sample loss for the V0 / V0.1 / V1 / V1.1 stap variants |
+| `plot-cross-environment.py` | a `bench-full/` directory containing `aggregate-means.tsv` (>= 2 envs) | `<input>/cross-env/{summary,availability,stats}.tsv` + `plots/<variant>/<workload>.png` | comparing bare vs container vs vm under the same workload using Kruskal-Wallis + Mann-Whitney (Bonferroni) + Cliff's delta |
 
 ## Dependencies
 

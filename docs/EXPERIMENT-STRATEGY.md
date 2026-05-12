@@ -82,6 +82,16 @@ campaign root **before** deleting the variant directories. The plots are
 the cheapest evidence-of-bug for the paper's "portability and reliability
 cliffs" section.
 
+### Rule 5 — cross-env campaigns: parity + KW/MW analysis
+
+If the campaign compares more than one execution regime
+(`bare`, `container`, `vm-guest`, …), use the unified `--bench-cpus` /
+`--bench-mem` knobs so the three envs see the same CPU/RAM budget,
+and consume the resulting `aggregate-means.tsv` with
+`bench/plot/plot-cross-environment.py` (Kruskal-Wallis + Mann-Whitney
++ Bonferroni + Cliff's delta). The full operational guide is in
+[CROSS-ENV-CAMPAIGN.md](CROSS-ENV-CAMPAIGN.md).
+
 ---
 
 ## V0 — legacy baseline on Ubuntu 22.04 + kernel 5.15

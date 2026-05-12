@@ -144,8 +144,21 @@ OUTPUT_DIR=""
 
 CONTAINER_IMAGE="${INTP_BENCH_CONTAINER:-ubuntu:24.04}"
 VM_IMAGE="${INTP_BENCH_VM_IMAGE:-}"           # qcow2 path, optional
-VM_MEM="${INTP_BENCH_VM_MEM:-32G}"
-VM_CPUS="${INTP_BENCH_VM_CPUS:-16}"
+# VM_CPUS / VM_MEM remain back-compat knobs; if unset they inherit
+# BENCH_CPUS / BENCH_MEM (computed by _compute_default_resources). The
+# env-var-defaulting form below preserves explicit overrides from the
+# operator (INTP_BENCH_VM_CPUS=...) without trampling the cross-env
+# parity values for the bare/container envs.
+VM_MEM="${INTP_BENCH_VM_MEM:-}"
+VM_CPUS="${INTP_BENCH_VM_CPUS:-}"
+# Cross-env resource parity knobs. Defaults intentionally leave
+# ~1/3 of host resources for the profiler, kernel, qemu/docker
+# daemons, and IO buffers. Override per campaign as needed; the
+# computed values flow into bare cgroups, container --cpus/--memory,
+# and qemu -smp/-m so the three envs see the same theoretical
+# resource pool.
+BENCH_CPUS="${INTP_BENCH_CPUS:-}"     # vCPU count (all envs)
+BENCH_MEM="${INTP_BENCH_MEM:-}"       # memory size, e.g. 192G (all envs)
 # All-in-one image for env=container-full / vm-full (HDFS+Spark+IntP baked).
 # Built via bench/deploy/build-full-image.sh.
 INTP_FULL_IMAGE="${INTP_BENCH_FULL_IMAGE:-intp-full:latest}"
@@ -334,8 +347,14 @@ Other:
   --output-dir DIR         Override output dir
   --container-image IMG    Container image (default: $CONTAINER_IMAGE)
   --vm-image PATH          qcow2 image for VM env (required when env=vm)
-  --vm-mem SIZE            VM memory (default: $VM_MEM)
-  --vm-cpus N              VM CPU count (default: $VM_CPUS)
+  --vm-mem SIZE            VM memory (default: inherits --bench-mem)
+  --vm-cpus N              VM CPU count (default: inherits --bench-cpus)
+  --bench-cpus N           Parity knob: vCPUs visible to bare (cgroup cpu.max),
+                           container (--cpus), and VM (-smp). Defaults to
+                           floor(nproc * 2/3). Honors INTP_BENCH_CPUS env.
+  --bench-mem SIZE         Parity knob: memory cap for bare (cgroup memory.max),
+                           container (--memory), and VM (-m). Defaults to
+                           floor(MemTotal * 2/3). Honors INTP_BENCH_MEM env.
     env INTP_BENCH_SET_CPU_GOVERNOR=1
                                                     Force governor -> performance during the run
   --skip-build             Do not auto-build missing variants
@@ -393,6 +412,8 @@ parse_args() {
             --vm-image)              VM_IMAGE="$2"; shift 2 ;;
             --vm-mem)                VM_MEM="$2"; shift 2 ;;
             --vm-cpus)               VM_CPUS="$2"; shift 2 ;;
+            --bench-cpus)            BENCH_CPUS="$2"; shift 2 ;;
+            --bench-mem)             BENCH_MEM="$2"; shift 2 ;;
             --skip-build)            SKIP_BUILD=1; shift ;;
             --allow-v0)              ALLOW_V0_ON_NEW_KERNEL=1; shift ;;
             --dry-run)               DRY_RUN=1; shift ;;
@@ -411,7 +432,11 @@ parse_args() {
     case "$OVH_WARMUP" in
         ''|*[!0-9]*) die "Invalid --overhead-warmup value: '$OVH_WARMUP' (non-negative integer)" ;;
     esac
-    validate_positive_int vm-cpus "$VM_CPUS"
+    # VM_CPUS may be empty here; it is resolved to BENCH_CPUS by
+    # _compute_default_resources before any launcher reads it. Validate the
+    # explicit-override path only.
+    if [ -n "$VM_CPUS" ]; then validate_positive_int vm-cpus "$VM_CPUS"; fi
+    if [ -n "$BENCH_CPUS" ]; then validate_positive_int bench-cpus "$BENCH_CPUS"; fi
     if [ -z "$RUN_SEED" ]; then RUN_SEED="$(date +%s)"; fi
     case "$RUN_SEED" in
         ''|*[!0-9]*) die "Invalid --seed value: '$RUN_SEED' (must be a non-negative integer)" ;;
@@ -479,6 +504,43 @@ ensure_perf_paranoid() {
         log "Lowering perf_event_paranoid from $p to -1 (required for IMC uncore counters)"
         echo -1 > /proc/sys/kernel/perf_event_paranoid
     fi
+}
+
+# Compute cross-env CPU / memory budget and pipe it through to the bare,
+# container, and VM launchers. Honors operator overrides (CLI flag,
+# INTP_BENCH_CPUS / INTP_BENCH_MEM env, INTP_BENCH_VM_CPUS / VM_MEM env)
+# and defaults to 2/3 of the host, leaving ~1/3 for the profiler, kernel,
+# qemu/docker daemons, and IO buffers.
+_compute_default_resources() {
+    if [ -z "$BENCH_CPUS" ]; then
+        local nproc_total
+        nproc_total=$(nproc 2>/dev/null || echo 1)
+        BENCH_CPUS=$(( nproc_total * 2 / 3 ))
+        [ "$BENCH_CPUS" -lt 1 ] && BENCH_CPUS=1
+    fi
+    if [ -z "$BENCH_MEM" ]; then
+        local mem_kb mem_gb
+        mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+        mem_gb=$(( mem_kb / 1024 / 1024 ))
+        local budget_gb=$(( mem_gb * 2 / 3 ))
+        [ "$budget_gb" -lt 2 ] && budget_gb=2
+        BENCH_MEM="${budget_gb}G"
+    fi
+    # Validate BENCH_CPUS as positive int; BENCH_MEM is forwarded verbatim
+    # to docker --memory / qemu -m so we let those tools validate the suffix.
+    case "$BENCH_CPUS" in
+        ''|*[!0-9]*) die "BENCH_CPUS must be a positive integer (got '$BENCH_CPUS')" ;;
+        0)           die "BENCH_CPUS must be >= 1" ;;
+    esac
+    # Back-compat alias: VM_CPUS / VM_MEM inherit BENCH_* unless the operator
+    # set them explicitly via --vm-cpus / --vm-mem / INTP_BENCH_VM_*.
+    [ -z "$VM_CPUS" ] && VM_CPUS="$BENCH_CPUS"
+    [ -z "$VM_MEM" ]  && VM_MEM="$BENCH_MEM"
+    case "$VM_CPUS" in
+        ''|*[!0-9]*) die "VM_CPUS must be a positive integer (got '$VM_CPUS')" ;;
+        0)           die "VM_CPUS must be >= 1" ;;
+    esac
+    log "[resources] BENCH_CPUS=$BENCH_CPUS BENCH_MEM=$BENCH_MEM (VM_CPUS=$VM_CPUS VM_MEM=$VM_MEM)"
 }
 
 setup_cpu_env() {
@@ -902,6 +964,7 @@ launch_veth_workload() {
         local cg="/sys/fs/cgroup/intp-bench-$name"
         mkdir -p "$cg"
         CURRENT_WORKLOAD_CGROUP="$cg"
+        _apply_bench_caps_to_cgroup "$cg"
         bash -c "echo \$\$ > '$cg/cgroup.procs'; exec iperf3 ${cli_args[*]}" \
             > "$logfile" 2>&1 &
         echo $!
@@ -909,6 +972,32 @@ launch_veth_workload() {
     fi
     iperf3 "${cli_args[@]}" > "$logfile" 2>&1 &
     echo $!
+}
+
+# Apply BENCH_CPUS/BENCH_MEM caps to a bare-metal cgroup. Best-effort:
+# if cpu/memory controllers are not delegated to this cgroup, log a warn
+# (do NOT die) — the experiment still runs, it just lacks parity for
+# this rep, which is far better than silently aborting a long campaign.
+_apply_bench_caps_to_cgroup() {
+    local cg="$1"
+    [ -z "$cg" ] && return 0
+    [ -d "$cg" ] || return 0
+    if [ -n "$BENCH_CPUS" ] && [ -f "$cg/cpu.max" ]; then
+        # cpu.max format: "<quota> <period>"; quota = N * period gives N cpus.
+        printf '%d 100000\n' "$(( BENCH_CPUS * 100000 ))" \
+            > "$cg/cpu.max" 2>/dev/null \
+            || warn "[parity/bare] cpu.max write failed for $cg (controller delegated?)"
+    fi
+    if [ -n "$BENCH_MEM" ] && [ -f "$cg/memory.max" ]; then
+        local bytes
+        bytes=$(numfmt --from=iec "$BENCH_MEM" 2>/dev/null || echo "")
+        if [ -n "$bytes" ]; then
+            printf '%s\n' "$bytes" > "$cg/memory.max" 2>/dev/null \
+                || warn "[parity/bare] memory.max write failed for $cg"
+        else
+            warn "[parity/bare] could not parse BENCH_MEM='$BENCH_MEM' as IEC size"
+        fi
+    fi
 }
 
 launch_workload_bare() {
@@ -944,6 +1033,7 @@ launch_workload_bare() {
         local cg="/sys/fs/cgroup/intp-bench-$name"
         mkdir -p "$cg"
         CURRENT_WORKLOAD_CGROUP="$cg"
+        _apply_bench_caps_to_cgroup "$cg"
         # shellcheck disable=SC2086
         bash -c "echo \$\$ > '$cg/cgroup.procs'; exec stress-ng $args --timeout '${duration}s' --metrics-brief" > "$logfile" 2>&1 &
         echo $!
@@ -985,13 +1075,31 @@ launch_workload_container() {
         fi
     fi
 
+    # Parity caps. If --cpus / --memory are rejected (e.g. unsupported
+    # cgroup mode on a legacy host) docker exits non-zero; warn and retry
+    # without the caps so the rep still produces a measurement.
+    local parity_args=()
+    [ -n "$BENCH_CPUS" ] && parity_args+=( --cpus="$BENCH_CPUS" )
+    [ -n "$BENCH_MEM" ]  && parity_args+=( --memory="$BENCH_MEM" )
+
     docker run --rm -d --name "$name" \
         --pid=host --cap-add SYS_NICE \
         --network host \
+        "${parity_args[@]}" \
         "${extra_caps[@]}" \
         "$CONTAINER_IMAGE" \
         bash -c "apt-get update -qq && apt-get install -y -qq stress-ng >/dev/null && stress-ng $args --timeout ${duration}s --metrics-brief" \
-        > "$logfile" 2>&1
+        > "$logfile" 2>&1 \
+        || {
+            warn "[parity/container] docker run with --cpus/--memory failed; retrying without parity caps"
+            docker run --rm -d --name "$name" \
+                --pid=host --cap-add SYS_NICE \
+                --network host \
+                "${extra_caps[@]}" \
+                "$CONTAINER_IMAGE" \
+                bash -c "apt-get update -qq && apt-get install -y -qq stress-ng >/dev/null && stress-ng $args --timeout ${duration}s --metrics-brief" \
+                > "$logfile" 2>&1
+        }
     # Get the PID of the in-container stress-ng on the host PID namespace
     local cpid
     cpid=$(docker inspect -f '{{.State.Pid}}' "$name" 2>/dev/null || echo 0)
@@ -1002,12 +1110,60 @@ launch_workload_container() {
 # Cleaned by _vm_cleanup_tmpdirs (registered as EXIT trap by parse_args).
 VM_TMPDIRS=()
 
+# Tracks host-side qemu PIDs spawned by launch_workload_vm*.
+# Drained by stop_workload (normal path) and reaped by
+# _vm_kill_orphan_qpids on EXIT/INT/TERM (safety net).
+# OPERATOR: validate trap under real SIGINT mid-rep
+VM_HOST_PIDS=()
+
 _vm_cleanup_tmpdirs() {
     local d
     for d in "${VM_TMPDIRS[@]:-}"; do
         [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d" 2>/dev/null
     done
     VM_TMPDIRS=()
+}
+
+_vm_forget_host_pid() {
+    # Filter $1 out of VM_HOST_PIDS in-place. O(n) but n is small (one entry
+    # per concurrent VM workload). No-op if the pid is not tracked.
+    local target="$1" p
+    local -a kept=()
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        [ "$p" = "$target" ] && continue
+        kept+=("$p")
+    done
+    VM_HOST_PIDS=("${kept[@]:-}")
+}
+
+_vm_kill_orphan_qpids() {
+    # Reap any qemu host PIDs still alive at trap time. Idempotent.
+    local p
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        kill -0 "$p" 2>/dev/null || continue
+        # Soft kill first; SIGTERM gives qemu a chance to flush.
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    # Wait up to 5 s for SIGTERM to take effect.
+    local i any_alive
+    for i in 1 2 3 4 5; do
+        any_alive=0
+        for p in "${VM_HOST_PIDS[@]:-}"; do
+            [ -z "$p" ] && continue
+            kill -0 "$p" 2>/dev/null && { any_alive=1; break; }
+        done
+        [ "$any_alive" -eq 0 ] && break
+        sleep 1
+    done
+    # Hard kill any survivor.
+    for p in "${VM_HOST_PIDS[@]:-}"; do
+        [ -z "$p" ] && continue
+        kill -0 "$p" 2>/dev/null || continue
+        kill -KILL "$p" 2>/dev/null || true
+    done
+    VM_HOST_PIDS=()
 }
 
 launch_workload_container_guest() {
@@ -1060,8 +1216,15 @@ launch_workload_container_guest() {
         extra_mounts+=(-v /lib/modules:/lib/modules:ro)
     fi
 
+    # Parity caps applied at the docker layer; same warn-and-retry fallback
+    # as launch_workload_container in case the host cgroup driver rejects them.
+    local parity_args=()
+    [ -n "$BENCH_CPUS" ] && parity_args+=( --cpus="$BENCH_CPUS" )
+    [ -n "$BENCH_MEM" ]  && parity_args+=( --memory="$BENCH_MEM" )
+
     docker run --rm -d --name "$name" \
         --network host \
+        "${parity_args[@]}" \
         "${extra_caps[@]}" \
         "${extra_mounts[@]}" \
         "$CONTAINER_IMAGE" \
@@ -1071,7 +1234,22 @@ launch_workload_container_guest() {
             stress-ng $args --timeout ${duration}s --metrics-brief &
             echo \$! > /tmp/intp-wl.pid
             wait \$!" \
-        > "$logfile" 2>&1
+        > "$logfile" 2>&1 \
+        || {
+            warn "[parity/container-guest] docker run with --cpus/--memory failed; retrying without parity caps"
+            docker run --rm -d --name "$name" \
+                --network host \
+                "${extra_caps[@]}" \
+                "${extra_mounts[@]}" \
+                "$CONTAINER_IMAGE" \
+                bash -c "set -e
+                    apt-get update -qq && apt-get install -y -qq \
+                        stress-ng systemtap bpftrace linux-tools-generic >/dev/null 2>&1 || true
+                    stress-ng $args --timeout ${duration}s --metrics-brief &
+                    echo \$! > /tmp/intp-wl.pid
+                    wait \$!" \
+                > "$logfile" 2>&1
+        }
     # Wait briefly for stress-ng to start, then return its container-local PID
     local cpid="" attempt
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -1147,7 +1325,9 @@ EOF
         -drive "file=$tmpdir/seed.iso,if=virtio,format=raw" \
         -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
-    echo $!
+    local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
+    echo "$qpid"
 }
 
 # Tracks ephemeral SSH keys + per-VM ports for vm-guest cleanup.
@@ -1239,6 +1419,7 @@ EOF
         -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
     local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
 
     # Wait up to 120 s for sshd. Cloud images usually boot in 30-60 s.
     local i
@@ -1384,6 +1565,7 @@ EOF
         -device virtio-net-pci,netdev=n0 \
         > "$logfile" 2>&1 &
     local qpid=$!
+    VM_HOST_PIDS+=("$qpid")
 
     # Wait for sshd
     local i
@@ -1440,6 +1622,7 @@ stop_workload() {
             ;;
         vm|vm-full)
             terminate_pid_gracefully "$pid" "stop_workload/$env/$name"
+            _vm_forget_host_pid "$pid"
             ;;
         vm-guest)
             # Best-effort guest-side cleanup before host-side qemu kill.
@@ -1454,6 +1637,7 @@ stop_workload() {
             fi
             sleep 2
             terminate_pid_gracefully "$pid" "stop_workload/vm-guest/$name"
+            _vm_forget_host_pid "$pid"
             ;;
     esac
 }
@@ -2525,11 +2709,12 @@ main() {
     ensure_root
     ensure_basic_deps
     ensure_perf_paranoid
+    _compute_default_resources
     setup_cpu_env
     prepare_output_dir
     write_metadata
 
-    trap 'restore_cpu_env; stop_resctrl_helper; _vm_cleanup_tmpdirs; _vm_guest_cleanup' EXIT INT TERM
+    trap 'restore_cpu_env; stop_resctrl_helper; _vm_kill_orphan_qpids; _vm_cleanup_tmpdirs; _vm_guest_cleanup' EXIT INT TERM
 
     log "== intp-bench =="
     log "output: $OUTPUT_DIR"
