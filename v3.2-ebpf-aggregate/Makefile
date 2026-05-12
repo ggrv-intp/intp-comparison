@@ -67,7 +67,7 @@ else
 endif
 BPF_CFLAGS += -target bpf -D__TARGET_ARCH_$(BPF_ARCH) $(INCLUDES)
 
-.PHONY: all clean deps vmlinux skeleton test test-full test-amplification
+.PHONY: all clean deps vmlinux skeleton test test-full test-amplification test-unit
 
 all: deps $(BINARY)
 
@@ -126,7 +126,13 @@ test: $(BINARY)
 test-amplification: $(BINARY)
 	@bash tests/integration/test-no-ctxsw-amplification.sh
 
-test-full: $(BINARY)
+test-unit:
+	@$(CC) -Wall -Wextra -Wpedantic -Werror -std=c11 $(INCLUDES) \
+	  -o tests/unit/test-counter-snapshot \
+	  tests/unit/test-counter-snapshot.c
+	@./tests/unit/test-counter-snapshot
+
+test-full: $(BINARY) test-unit
 	@bash tests/integration/test-load-attach.sh
 	@bash tests/integration/test-no-ctxsw-amplification.sh
 	@bash tests/integration/test-metrics-equivalence.sh
