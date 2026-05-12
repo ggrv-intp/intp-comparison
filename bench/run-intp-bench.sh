@@ -97,9 +97,10 @@ V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
 V2_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
 V3_1_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
 V3_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
+V3_2_BIN="$REPO_ROOT/v3.2-ebpf-aggregate/intp-ebpf-agg"
 
 DEFAULT_STAGES="detect,build,solo,pairwise,overhead,timeseries,report"
-DEFAULT_VARIANTS="v0,v0.1,v1,v1.1,v2,v3.1,v3"
+DEFAULT_VARIANTS="v0,v0.1,v1,v1.1,v2,v3.1,v3,v3.2"
 # Seven execution environments form three nested axes:
 #   • where the WORKLOAD runs (host / container / VM)
 #   • where the PROFILER runs (host-observer or in-guest)
@@ -669,6 +670,10 @@ stage_build() {
         log "Building v2..."
         run_or_dry make -C "$REPO_ROOT/v2-c-stable-abi"
     fi
+    if variant_selected v3.2 && [ ! -x "$V3_2_BIN" ]; then
+        log "Building v3.2 (eBPF in-kernel aggregating)…"
+        run_or_dry make -C "$REPO_ROOT/v3.2-ebpf-aggregate"
+    fi
     if variant_selected v3 && [ ! -x "$V3_BIN" ]; then
         log "Building v3..."
         run_or_dry make -C "$REPO_ROOT/v3-ebpf-libbpf"
@@ -769,6 +774,17 @@ variant_kernel_ok() {
         v3.1)
             # bpftrace ≥0.13 over kernel ≥5.4 (tracepoints + BPF maps stable).
             if _kernel_lt 5 4;  then warn "v3.1 needs kernel ≥5.4 (bpftrace tracepoints)"; return 1; fi
+            ;;
+        v3.2)
+            # Same kernel constraints as v3: libbpf + CO-RE eBPF with BTF.
+            # The in-kernel aggregation maps (PERCPU_ARRAY, HASH with
+            # __sync_fetch_and_add) have been available since 5.4; we
+            # keep the 5.10 floor for consistency with v3.
+            if _kernel_lt 5 10; then warn "v3.2 needs kernel ≥5.10 (libbpf+CO-RE)"; return 1; fi
+            if [ ! -f /sys/kernel/btf/vmlinux ]; then
+                warn "v3.2 needs CONFIG_DEBUG_INFO_BTF=y (no /sys/kernel/btf/vmlinux)"
+                return 1
+            fi
             ;;
     esac
     return 0
@@ -2118,6 +2134,43 @@ run_profiler_v3() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
+run_profiler_v3_2() {
+    # V3.2 (eBPF in-kernel aggregating). Same shape as run_profiler_v3
+    # but invokes V3_2_BIN and passes --no-raw-mbw so the captured TSV
+    # remains 7-column (compatible with the rest of the pipeline). The
+    # mbw_raw_mbps diagnostic stream is opt-in -- analysts can re-run
+    # outside the bench harness if they need it.
+    local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        if [ -n "$cgroup_path" ]; then
+            log "DRY: $V3_2_BIN --interval $INTERVAL --duration $duration --cgroup $cgroup_path --no-raw-mbw -> $outfile"
+        elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+            log "DRY: $V3_2_BIN --interval $INTERVAL --duration $duration --pids $pid --no-raw-mbw -> $outfile"
+        else
+            log "DRY: $V3_2_BIN --interval $INTERVAL --duration $duration --no-raw-mbw (system-wide) -> $outfile"
+        fi
+        printf 'netp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' > "$outfile"
+        echo 0 > "$outfile.samples"
+        return 0
+    fi
+    local args=( --interval "$INTERVAL" --duration "$duration"
+                 --output tsv --no-raw-mbw )
+    local scope="system-wide"
+    if [ -n "$cgroup_path" ]; then
+        args+=( --cgroup "$cgroup_path" )
+        scope="cgroup=$cgroup_path"
+    elif [ "$V_USE_PID_FILTER" = "1" ] && [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        args+=( --pids "$pid" )
+        scope="pid=$pid"
+    fi
+    {
+        printf '# variant=v3.2 scope=%s\n' "$scope"
+        "$V3_2_BIN" "${args[@]}" 2>"${outfile%.tsv}.v3.2.log" \
+            | awk 'BEGIN{cmd="date +%s.%N"} /^#/||/^netp/{print;next} {cmd|getline ts;close(cmd); print ts"\t"$0}'
+    } > "$outfile" || true
+    awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
+}
+
 # Map a variant to the profiler invocation as it appears INSIDE the guest.
 # Inside the container, /opt/intp/ is the bind-mounted REPO_ROOT (read-only);
 # inside the VM, /home/intp/intp is assumed (scp'd by run_profiler_inguest_vm).
@@ -2128,6 +2181,7 @@ _inguest_profiler_cmd() {
         v2)   echo "$prefix/v2-c-stable-abi/intp-hybrid --pid $pid --interval $interval --duration $duration --no-prom" ;;
         v3)   echo "$prefix/v3-ebpf-libbpf/intp-ebpf --pid $pid --interval $interval --duration $duration" ;;
         v3.1) echo "bash $prefix/v3.1-bpftrace/run-intp-bpftrace.sh --pid $pid --interval $interval --duration $duration" ;;
+        v3.2) echo "$prefix/v3.2-ebpf-aggregate/intp-ebpf-agg --pids $pid --interval $interval --duration $duration --no-raw-mbw" ;;
         v1.1) echo "stap -DMAXACTION=8192 -DSTP_NO_OVERLOAD --suppress-handler-errors $prefix/v1.1-stap-helper/intp-v1.1.stp -x $pid --target-pid=$pid -F" ;;
         v0|v0.1|v1) echo "stap -DMAXACTION=8192 --suppress-handler-errors $prefix/v0.1-stap-k68/intp-6.8.stp -x $pid -F" ;;
         *) echo ""; return 1 ;;
@@ -2250,6 +2304,7 @@ run_profiler() {
         v2) run_profiler_v2 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         v3.1) run_profiler_v3_1 "$outfile" "$duration" "$pid" ;;
         v3) run_profiler_v3 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
+        v3.2) run_profiler_v3_2 "$outfile" "$duration" "$pid" "$cgroup_path" ;;
         *) die "Unknown variant: $variant" ;;
     esac
 }

@@ -139,7 +139,10 @@ BENCH_ENVS="${BENCH_ENVS:-bare}"
 # OUT. V3.1 (bpftrace) remains fully implemented under v3.1-bpftrace/ and can
 # be re-enabled via BENCH_VARIANTS="...,v3.1"; it is excluded by default
 # because this campaign is comparing V0's recalibrated baseline against the
-# operationally robust variants, not the bpftrace alternative.
+# operationally robust variants, not the bpftrace alternative. V3.2 (the
+# in-kernel-aggregating variant addressing the V-D amplification) is also
+# excluded by default for the same campaign-stability reason and is opt-in
+# via BENCH_VARIANTS="...,v3.2"; see v3.2-ebpf-aggregate/DESIGN.md.
 BENCH_VARIANTS="${BENCH_VARIANTS:-v0,v1,v1.1,v2,v3}"
 # HIBENCH_VARIANTS defaults to BENCH_VARIANTS, EXCEPT that V0 is excluded
 # from HiBench by default. Sustained-load HiBench on kernel 5.15 with V0
@@ -257,6 +260,7 @@ run_step "v1 deps check" bash -lc '
 '
 run_step "build v2" make -C v2-c-stable-abi all
 run_step "build v3" make -C v3-ebpf-libbpf all
+run_step "build v3.2" make -C v3.2-ebpf-aggregate all
 run_step "v3.1 deps check" make -C v3.1-bpftrace deps
 run_step "python benchmark deps" bash -c '
   pip3 install --quiet --break-system-packages numpy matplotlib pandas scipy 2>/dev/null \
