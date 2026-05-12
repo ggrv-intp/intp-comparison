@@ -67,6 +67,7 @@ METRICS = ["netp", "nets", "blk", "mbw", "llcmr", "llcocc", "cpu"]
 MISSING_TOKEN = "--"
 MAX_PIXELS = 1900
 SAVE_DPI = 130
+FORMATS: list[str] = ["png", "pdf"]
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +353,17 @@ def render_panels(
     if not any_data:
         plt.close(fig)
         return False
-    outpath.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(outpath, bbox_inches="tight")
+    # outpath is conventionally <plots_dir>/<variant>/<stem>.png. We split
+    # the format prefix in so the caller-side caller stays unchanged but
+    # we emit one file per configured FORMATS entry under
+    # <plots_dir>/<format>/<variant>/<stem>.<format>.
+    plots_dir = outpath.parent.parent
+    variant_sub = outpath.parent.name
+    stem = outpath.stem
+    for fmt in FORMATS:
+        fmt_dir = plots_dir / fmt / variant_sub
+        fmt_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(fmt_dir / f"{stem}.{fmt}", bbox_inches="tight")
     plt.close(fig)
     return True
 
@@ -439,7 +449,12 @@ def main() -> int:
                     help="Significance threshold (default: 0.05)")
     ap.add_argument("--output-subdir", type=str, default="cross-env",
                     help="Output subdirectory under bench-full/ (default: cross-env)")
+    ap.add_argument("--formats", type=str, default="png,pdf",
+                    help="Comma-separated output formats (default: png,pdf). "
+                         "Each format is written under plots/<format>/<variant>/.")
     args = ap.parse_args()
+    global FORMATS
+    FORMATS = [f.strip() for f in args.formats.split(",") if f.strip()] or ["png"]
 
     camp = args.campaign_dir.resolve()
     if not camp.exists():
@@ -498,7 +513,8 @@ def main() -> int:
             if render_panels(df, variant, workload, envs, metrics, stats_df,
                              args.alpha, png):
                 n_png += 1
-    print(f"[cross-env] wrote {n_png} PNGs under {plots_dir}")
+    print(f"[cross-env] wrote {n_png} figures × {len(FORMATS)} formats "
+          f"({','.join(FORMATS)}) under {plots_dir}")
 
     readme = outdir / "README.md"
     readme.write_text(README_TEMPLATE.format(alpha=args.alpha))

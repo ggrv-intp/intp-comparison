@@ -115,7 +115,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-polygons", action="store_true",
                    help="Disable per-workload convergence polygons on panel B.")
     p.add_argument("--output", type=Path, default=None,
-                   help="Output PNG path. Default: <input-dir>/plots/fig_pca_correlation_circle.png")
+                   help="Output path stem. Default: <input-dir>/plots/fig_pca_correlation_circle "
+                        "(extension is taken from --formats; emitted under plots/<format>/).")
+    p.add_argument("--formats", type=str, default="png,pdf",
+                   help="Comma-separated output formats (default: png,pdf). "
+                        "Each format is written under the parent dir's <format>/ subdir.")
     return p.parse_args()
 
 
@@ -320,14 +324,22 @@ def main() -> None:
                  y=1.02, fontsize=11.5)
     fig.tight_layout()
 
+    formats = [f.strip() for f in args.formats.split(",") if f.strip()] or ["png"]
     out = args.output
     if out is None:
         plots_dir = args.input.parent / "plots"
-        plots_dir.mkdir(parents=True, exist_ok=True)
         out = plots_dir / "fig_pca_correlation_circle.png"
-    fig.savefig(out, bbox_inches="tight")
+    base_dir = out.parent
+    stem = out.stem
+    written = []
+    for fmt in formats:
+        sub = base_dir / fmt
+        sub.mkdir(parents=True, exist_ok=True)
+        path = sub / f"{stem}.{fmt}"
+        fig.savefig(path, bbox_inches="tight")
+        written.append(str(path))
     plt.close(fig)
-    print(f"[done] {out}")
+    print("[done] " + "  ".join(written))
 
 
 if __name__ == "__main__":

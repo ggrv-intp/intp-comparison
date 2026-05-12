@@ -197,10 +197,25 @@ def setup_style() -> None:
     })
 
 
+FORMATS: list[str] = ["png", "pdf"]
+
+
 def _save(fig, path: Path, label: str) -> None:
-    fig.savefig(path, bbox_inches="tight")
+    """Save figure to each configured format under <path.parent>/<format>/.
+
+    See plot-intp-bench._save for the contract — same multi-format scheme
+    so paper-bound PDFs and README-friendly PNGs coexist."""
+    base_dir = path.parent
+    stem = path.stem
+    written = []
+    for fmt in FORMATS:
+        sub = base_dir / fmt
+        sub.mkdir(parents=True, exist_ok=True)
+        out = sub / f"{stem}.{fmt}"
+        fig.savefig(out, bbox_inches="tight")
+        written.append(f"{fmt}/{out.name}")
     plt.close(fig)
-    print(f"[{label}] {path.name}")
+    print(f"[{label}] " + "  ".join(written))
 
 
 def _ordered_variants(values) -> list[str]:
@@ -1186,6 +1201,9 @@ def main() -> None:
                    help="Directory containing hibench run subdirs")
     p.add_argument("--out", type=Path, default=None,
                    help="Output directory (default: <hibench_dir>/plots)")
+    p.add_argument("--formats", type=str, default="png,pdf",
+                   help="Comma-separated output formats (default: png,pdf). "
+                        "Each format is written under <out>/<format>/.")
     args = p.parse_args()
 
     hdir = args.hibench_dir
@@ -1196,6 +1214,8 @@ def main() -> None:
 
     outdir = args.out or (hdir / "plots")
     outdir.mkdir(parents=True, exist_ok=True)
+    global FORMATS
+    FORMATS = [f.strip() for f in args.formats.split(",") if f.strip()] or ["png"]
 
     setup_style()
 

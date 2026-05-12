@@ -185,10 +185,28 @@ def _clamp_figsize(width: float, height: float) -> tuple[float, float]:
     return width * scale, height * scale
 
 
+FORMATS: list[str] = ["png", "pdf"]
+
+
 def _save(fig, path: Path, label: str) -> None:
-    fig.savefig(path, bbox_inches="tight")
+    """Save figure to each configured format under <path.parent>/<format>/.
+
+    The `path` argument carries the legacy .png filename for backwards
+    compat with callers; the stem is reused for every format and the
+    extension is replaced. With matplotlib defaults, PDFs are pure vector
+    (scatter/line/bar/pcolormesh all draw as vector primitives) — paper-
+    grade quality without an Inkscape round-trip."""
+    base_dir = path.parent
+    stem = path.stem
+    written = []
+    for fmt in FORMATS:
+        sub = base_dir / fmt
+        sub.mkdir(parents=True, exist_ok=True)
+        out = sub / f"{stem}.{fmt}"
+        fig.savefig(out, bbox_inches="tight")
+        written.append(f"{fmt}/{out.name}")
     plt.close(fig)
-    print(f"[{label}] {path.name}")
+    print(f"[{label}] " + "  ".join(written))
 
 
 # ---------------------------------------------------------------------------
@@ -1377,11 +1395,16 @@ def main() -> None:
                    help="Comma-separated variant list to plot (overrides "
                         "variants.manifest and DEFAULT_PLOTTED_VARIANTS). "
                         "Example: --variants v0.2,v1.1,v2,v3")
+    p.add_argument("--formats", type=str, default="png,pdf",
+                   help="Comma-separated output formats (default: png,pdf). "
+                        "Each format is written under <out>/<format>/.")
     args = p.parse_args()
     if not args.results_dir.exists():
         sys.exit(f"results_dir does not exist: {args.results_dir}")
     outdir = args.out or (args.results_dir / "plots")
     outdir.mkdir(parents=True, exist_ok=True)
+    global FORMATS
+    FORMATS = [f.strip() for f in args.formats.split(",") if f.strip()] or ["png"]
 
     setup_style()
 
