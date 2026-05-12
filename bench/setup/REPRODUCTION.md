@@ -249,37 +249,50 @@ bench/setup/run-stream-bench.sh   # if/when available
 
 ---
 
-## 6. IADA / CloudSim environment (separate, manual)
+## 6. IADA / CloudSim environment (separate, automated)
 
 This is the only campaign component **not bootstrapped by `setup-host.sh`**.
 
 ```bash
-sudo bash bench/iada/scripts/setup-iada.sh \
-    --intp-r-folder /root/intp/R   # path to IntP's R/ directory
+sudo bash bench/iada/scripts/setup-iada.sh --auto-clone
 ```
 
 Installs: R, r-base-dev, r-cran-rjava, libtirpc-dev, openjdk-17-jdk-headless,
 plus R packages (caret, e1071, dplyr, ggplot2, ocp) into `~/R/library`.
-Generates `~/.iada-env` with `JAVA_HOME`, `R_LIBS_USER`, `LD_LIBRARY_PATH`,
-`INTP_R_FOLDER`.
+Clones the [ggrv-intp/CloudSimInterference](https://github.com/ggrv-intp/CloudSimInterference)
+fork next to this repo (override with `--clone-root` or `--cloudsim`),
+applies `bench/iada/patches/mlclassifier-env-vars.patch` idempotently if the
+fork doesn't already expose `INTP_R_FOLDER` (the ggrv-intp `master` already
+does, so the patch is skipped silently), and writes `~/.iada-env` with
+`CLOUDSIM_REPO`, `INTP_R_FOLDER`, `INTP_R_LIBPATHS`, `JAVA_HOME`,
+`R_LIBS_USER`, `LD_LIBRARY_PATH`, `INTP_JAVA_OPTS`.
 
-### Required JVM flag (manual, not in setup script)
+### Required JVM flags (now in `INTP_JAVA_OPTS`)
 
-R 4.3 installs signal handlers that conflict with the JVM. Without this
-flag, `library(caret)` segfaults during JRI initialization:
+R 4.3 installs signal handlers that conflict with the JVM. Without these
+flags, `library(caret)` segfaults during JRI initialization. The setup
+script bakes them into `INTP_JAVA_OPTS` in `~/.iada-env`:
 
 ```bash
-export JAVA_TOOL_OPTIONS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
+export INTP_JAVA_OPTS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
 ```
 
-Document in [bench/iada/docs/campanha-iada.md](../iada/docs/campanha-iada.md).
+Wrappers (`run-iada-experiment.sh`, `run-iada-from-bench.sh`) pick them up
+automatically. Document any deviations in
+[bench/iada/docs/iada-campaign.md](../iada/docs/iada-campaign.md).
 
-### MLClassifier.java patch (manual, not in repo)
+### MLClassifier.java patch (idempotent, in repo)
 
-CloudSim's `MLClassifier.java` has hardcoded paths to the build host's
-filesystem. The patch reads `INTP_R_FOLDER` and `INTP_R_LIBPATHS` env
-vars instead. **Patch is not in this repo** — apply manually to the
-CloudSim checkout before building.
+The patch reads `INTP_R_FOLDER` and `INTP_R_LIBPATHS` env vars rather
+than dispatching on hostname. It ships as
+[bench/iada/patches/mlclassifier-env-vars.patch](../iada/patches/mlclassifier-env-vars.patch)
+and is applied automatically by `setup-iada.sh`. The default fork
+([ggrv-intp/CloudSimInterference](https://github.com/ggrv-intp/CloudSimInterference))
+already carries the change, so on first-time setup the patch step is a
+no-op log line ("MLClassifier.java already exposes INTP_R_FOLDER — patch
+skipped"). If you point `--cloudsim` at an unmodified upstream Meyer
+checkout, the patch is applied and the operator is reminded to rebuild
+CloudSim.
 
 ---
 
@@ -478,10 +491,11 @@ sudo bash bench/setup/setup-distributed-mode.sh smoke    # expect "Pi is roughly
 sudo bash bench/setup/setup-distributed-mode.sh prepare-hdfs   # one-shot, ~10-30 min
 
 # 7. IADA environment (only if running CloudSim afterward)
-sudo bash bench/iada/scripts/setup-iada.sh --intp-r-folder /root/intp/R
-# then add to ~/.bashrc or wrapper:
-# export JAVA_TOOL_OPTIONS="-DR_SignalHandlers=0 -XX:+UseSerialGC -Xss8m"
-# Apply MLClassifier.java patch manually.
+#    --auto-clone fetches ggrv-intp/CloudSimInterference next to this repo
+#    and applies the MLClassifier.java patch idempotently (already a no-op
+#    against the ggrv-intp fork's master).
+sudo bash bench/iada/scripts/setup-iada.sh --auto-clone
+source ~/.iada-env
 
 # 8. Smoke test the bench end-to-end
 sudo REPS=2 DURATION=30 RUN_HIBENCH=0 RUN_PLOTS=0 \
@@ -503,7 +517,7 @@ sudo REPS=1 DURATION=20 RUN_HIBENCH=0 RUN_PLOTS=0 \
 | Kernel mitigations status not captured | small perf shift if next host differs |
 | CPU governor not pinned | up to 5% throughput variance run-to-run |
 | `MEM_BW_MAX_BPS=24 GB/s` source unclear | calibration is reproducible only if value is documented |
-| MLClassifier.java patch not in repo | IADA campaign won't run without manual patch |
+| MLClassifier.java patch out-of-tree (historical) | resolved: patch is in `bench/iada/patches/` and applied by `setup-iada.sh`. The default fork (ggrv-intp) already carries the change, so the apply step is a no-op there. |
 | resctrl schemata not persisted | reboot loses CAT/MBA state until first run re-creates |
 | Veth pair not in `WORKLOADS` array | `netp`/`nets` gap on V2+ unless veth-driven workload is invoked manually |
 

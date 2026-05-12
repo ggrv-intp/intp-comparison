@@ -1,0 +1,48 @@
+From: intp-comparison <noreply@example.invalid>
+Subject: [PATCH] MLClassifier: read project_folder from INTP_R_FOLDER env
+
+Replace the hostname-hardcoded R folder paths in MLClassifier.java with
+env-var loading. The upstream Meyer version hardcodes paths for the
+build host ("vinicius-desktop", "DESKTOP-OTD5GFM", "pantana01"); this
+patch adds a single env-var probe that takes precedence over the
+hostname dispatch.
+
+Reads:
+  - INTP_R_FOLDER   : path to <CloudSimInterference>/R (with or
+                      without trailing slash)
+  - INTP_R_LIBPATHS : R user library (passed as .libPaths(...))
+
+Already-present check: setup-iada.sh greps for "INTP_R_FOLDER" in the
+target file and skips this patch silently when the fork (e.g.
+ggrv-intp/CloudSimInterference) already carries the change.
+
+Apply with:
+  git apply bench/iada/patches/mlclassifier-env-vars.patch
+or (from outside a git tree):
+  patch -p1 < bench/iada/patches/mlclassifier-env-vars.patch
+
+Rebuild CloudSim (mvn package / your toolchain) after applying.
+
+---
+ src/cloudsim/interference/MLClassifier.java | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/cloudsim/interference/MLClassifier.java b/src/cloudsim/interference/MLClassifier.java
+--- a/src/cloudsim/interference/MLClassifier.java
++++ b/src/cloudsim/interference/MLClassifier.java
+@@ -88,6 +88,15 @@ public class MLClassifier {
+
+ 		// Log.printLine("=======" + hostname);
+ 		// usar R para classificar ....
++
++		String envFolder = System.getenv("INTP_R_FOLDER");
++		String envLibPaths = System.getenv("INTP_R_LIBPATHS");
++		if (envFolder != null && !envFolder.isEmpty()) {
++			project_folder = envFolder.endsWith("/") ? envFolder : envFolder + "/";
++			if (envLibPaths != null && !envLibPaths.isEmpty()) {
++				re.eval(".libPaths('" + envLibPaths + "')");
++			}
++		}
+ 		if (hostname.equals("vinicius-desktop")) {
+ 			project_folder = "/home/vinicius/git/CloudSimInterference/R/"; // ubuntu
+ 			re.eval(".libPaths('/home/vinicius/R/x86_64-pc-linux-gnu-library/3.6')"); // ubuntu
