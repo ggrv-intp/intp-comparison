@@ -6,17 +6,22 @@
 #
 # Run via tmux so you can detach (Ctrl-b d) and reattach (tmux a -t intp-aux):
 #
-#     tmux new-session -d -s intp-aux 'bash -lc "bash ~/intp-aux-rerun.sh; exec bash"'
+#     tmux new-session -d -s intp-aux \
+#         'bash -lc "bash $REPO_ROOT/shared/intp-ebpf-checkout.sh; exec bash"'
 #     tmux attach -t intp-aux
 #
 # Wall clock: ~40 min total (#4 ~18 min, #5 ~20 min).
+#
+# Paths: REPO_ROOT is derived from this script's location (shared/ is one level
+# below the repo root). Override via env if invoking from outside the repo.
 
 set -euo pipefail
 
 # ============================================================================
-# Configuration -- adjust these to your testbed paths
+# Configuration -- derived from script location; override via env if needed
 # ============================================================================
-REPO_ROOT="${REPO_ROOT:-$HOME/intp-comparison}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 INTP_EBPF_BIN="${INTP_EBPF_BIN:-$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf}"
 export OUT_DIR="${OUT_DIR:-$HOME/intp-aux-rerun-$(date +%Y%m%d-%H%M%S)}"
 
@@ -40,8 +45,11 @@ mkdir -p "$OUT_DIR"/{noise_floor,ringbuf_pidstat/ref_cpu,ringbuf_pidstat/ref_dis
 exec > >(tee -a "$OUT_DIR/run.log") 2>&1
 
 echo "=== IntP auxiliary rerun ==="
-echo "Started: $(date -Iseconds)"
-echo "Output:  $OUT_DIR"
+echo "Started:   $(date -Iseconds)"
+echo "Script:    $SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+echo "Repo:      $REPO_ROOT"
+echo "Binary:    $INTP_EBPF_BIN"
+echo "Output:    $OUT_DIR"
 echo
 
 [ -x "$INTP_EBPF_BIN" ] || { echo "FATAL: intp-ebpf not found at $INTP_EBPF_BIN"; exit 1; }
