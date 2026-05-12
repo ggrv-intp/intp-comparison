@@ -180,6 +180,48 @@ OUT_DIR=$PWD/bench/iada/results/smoke-paper-original \
 
 ---
 
+## End-to-end (single command)
+
+The wrapper `bench/iada/scripts/run-iada-from-bench.sh` chains
+`convert-profiler-to-meyer.py` → `generate-iada-tree.py` →
+`sanity-check-classifier.sh` → `run-iada-campaign.sh` → `plot-iada.py`
+into one entry point that consumes a finished
+`bench/cross-env-campaign` output directory and emits an IADA
+campaign manifest plus figures. Modality is the primary switch:
+
+```bash
+sudo bash bench/iada/scripts/setup-iada.sh --auto-clone
+source ~/.iada-env
+
+# M1 (primary, default): IADA-aligned. ENVS=container, sanity-checked.
+bash bench/iada/scripts/run-iada-from-bench.sh \
+    results/cross-env-2026-05-XX
+
+# M2 (cross-domain transfer): hard-blocked unless explicitly acknowledged.
+IADA_M2_ACK_DOMAIN_TRANSFER=1 MODALITY=M2 \
+    bash bench/iada/scripts/run-iada-from-bench.sh \
+        results/cross-env-2026-05-XX
+```
+
+The wrapper's full env-var surface is documented inline (run with
+no arguments to print usage). Notable defaults:
+
+| Var                           | Default                          | Notes                                   |
+| ----------------------------- | -------------------------------- | --------------------------------------- |
+| `MODALITY`                    | `M1`                             | `M1` (aligned) or `M2` (transfer).      |
+| `VARIANTS`                    | `v0,v0.1,v1,v1.1,v2,v3,v3.1`     | Comma-list filtered against the tree.   |
+| `ENVS`                        | derived from `MODALITY`          | Override at your own risk (logged).     |
+| `WORKLOAD_MIXES`              | `all`                            | Passed to `run-iada-campaign.sh`.       |
+| `SANITY_SAMPLES`              | `10`                             | Profiles drawn per `(variant, env)`.    |
+| `SANITY_FAIL_THRESHOLD_PCT`   | `30`                             | Hard-fail above this mismatch rate.     |
+| `IADA_M2_ACK_DOMAIN_TRANSFER` | `0`                              | Must be `1` to bypass the M2 hard-block. |
+| `RUN_PLOT`                    | `1`                              | `0` to skip `plot-iada.py`.             |
+| `OUT_ROOT`                    | `<bench-campaign-dir>/iada`      | Tree + campaign manifests + figures.    |
+
+`--dry-run` is honoured: every step is echoed but nothing runs.
+
+---
+
 ## Campaign plan
 
 ### Phase 0 — Scaffold + smoke (completed 2026-05-05)
