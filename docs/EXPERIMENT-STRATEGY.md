@@ -94,6 +94,34 @@ and consume the resulting `aggregate-means.tsv` with
 
 ---
 
+## IADA closed-loop campaign
+
+Once an IntP cross-env campaign has produced `bench-full/aggregate-
+means.tsv`, the IADA closed loop (`bench/iada/scripts/run-iada-from-
+bench.sh`) feeds those profiles into the IADA scheduler (CloudSim) and
+reports IDI / migrations / wallclock per variant. The loop is split
+into two named modalities; pick the one that matches your scientific
+question:
+
+- **M1 (IADA-aligned, default).** `ENVS=container` only. The shipped
+  classifier was trained on container-collected profiles (Meyer 2021,
+  LXC + Node-Tiers); container-only keeps the comparison inside that
+  training domain. M1 is the right modality for *instrumentation-
+  fidelity* claims — i.e. "variant X produces scheduling-quality Y
+  with the scheduler fixed". Sanity-checked at startup.
+- **M2 (cross-domain transfer, opt-in).** Adds `bare` and `vm-guest`.
+  Hard-blocked at startup unless `IADA_M2_ACK_DOMAIN_TRANSFER=1`. M2
+  results are interpretable as *scheduling quality* only after the
+  classifier has been retrained on a dataset drawn from the target
+  environment (`R/retrain.R` in
+  [ggrv-intp/CloudSimInterference](https://github.com/ggrv-intp/CloudSimInterference),
+  branch `retrain-pipeline`). Without retraining, M2 is a domain-
+  transfer ablation and must be framed as such.
+
+Full guide: [bench/iada/docs/iada-campaign.md](../bench/iada/docs/iada-campaign.md).
+
+---
+
 ## V0 — legacy baseline on Ubuntu 22.04 + kernel 5.15
 
 The legacy-V0 campaign runs V0 against the modern variants on a host

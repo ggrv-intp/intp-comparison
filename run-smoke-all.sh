@@ -103,6 +103,25 @@ if [ "${SMOKE_CROSS_ENV:-0}" = "1" ]; then
       "$OUT/bench-cross-env-smoke"
 fi
 
+# SMOKE_IADA=1   exercises the IADA M1 closed loop (Section V) end-to-end
+#                against an existing cross-env-campaign output. Requires
+#                an already-provisioned host (setup-iada.sh --auto-clone),
+#                a sourced ~/.iada-env, and IADA_BENCH_CAMPAIGN_DIR pointing
+#                at a real bench-full/ output directory. Picks v2 only and
+#                env=container (M1 default) to keep wallclock bounded
+#                (~CloudSim 25-30 min on a 16-core laptop).
+if [ "${SMOKE_IADA:-0}" = "1" ]; then
+  : "${IADA_BENCH_CAMPAIGN_DIR:?SMOKE_IADA=1 requires IADA_BENCH_CAMPAIGN_DIR (a cross-env-campaign output dir containing bench-full/aggregate-means.tsv)}"
+  : "${CLOUDSIM_REPO:?SMOKE_IADA=1 requires CLOUDSIM_REPO from ~/.iada-env (source it after setup-iada.sh)}"
+
+  run_step "iada M1 smoke (v2, container, sanity-checked)" \
+    env MODALITY=M1 VARIANTS=v2 WORKLOAD_MIXES=all \
+        OUT_ROOT="$OUT/iada-smoke" RUN_PLOT=1 \
+        SANITY_SAMPLES=5 SANITY_FAIL_THRESHOLD_PCT=50 \
+      bash bench/iada/scripts/run-iada-from-bench.sh \
+        "$IADA_BENCH_CAMPAIGN_DIR"
+fi
+
 echo
 echo "Smoke finished. PASS=$ok FAIL=$fail"
 echo "Output: $OUT"
