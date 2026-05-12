@@ -1631,16 +1631,28 @@ run_profiler_systemtap() {
 }
 
 run_profiler_systemtap_v0() {
-    # V0 wraps run_profiler_systemtap with a per-run recalibration step.
-    # The 2022 baseline embeds NIC/LLC/IMC/CMT/MEM-BW constants for the
-    # original PUCRS dev machine; on any other host they would produce
-    # garbage normalisation. generate-stp.sh sources shared/intp-detect.sh,
-    # substitutes placeholders in intp.stp.template, and writes intp.recal.stp.
+    # V0 wraps run_profiler_systemtap with a per-run recalibration step plus
+    # the forensic stall watchdog. The 2022 baseline embeds NIC/LLC/IMC/CMT/
+    # MEM-BW constants for the original PUCRS dev machine; on any other host
+    # they would produce garbage normalisation. generate-stp.sh sources
+    # shared/intp-detect.sh, substitutes placeholders in intp.stp.template,
+    # and writes intp.recal.stp. v0-stall-monitor.sh runs in parallel and
+    # captures dmesg / sysrq evidence the moment stall indicators trip.
     local outfile="$1" duration="$2" pid="$3"
     local kv_log="${outfile%.tsv}.v0-calibration.kv"
+    local monitor_dir
+    monitor_dir="$(dirname -- "$outfile")/stall-monitor"
+    local monitor_pid=""
+
+    _v0_stop_monitor() {
+        if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
+            kill -TERM "$monitor_pid" 2>/dev/null || true
+            wait "$monitor_pid" 2>/dev/null || true
+        fi
+    }
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "DRY: $V0_GENERATOR -> $V0_RECAL_STP ; stap $V0_RECAL_STP <target> for ${duration}s -> $outfile"
+        log "DRY: $V0_GENERATOR -> $V0_RECAL_STP ; v0-stall-monitor.sh -> $monitor_dir ; stap $V0_RECAL_STP <target> for ${duration}s -> $outfile"
         : > "$kv_log"
         run_profiler_systemtap v0 "$V0_RECAL_STP" "$outfile" "$duration" "$pid"
         return $?
@@ -1656,7 +1668,23 @@ run_profiler_systemtap_v0() {
         return 1
     fi
 
+    mkdir -p "$monitor_dir"
+    if [ -x "$REPO_ROOT/bench/v0-stall-monitor.sh" ]; then
+        OUT_DIR="$monitor_dir" TARGET_PID=AUTO \
+            "$REPO_ROOT/bench/v0-stall-monitor.sh" \
+            >"$monitor_dir/monitor.log" 2>&1 &
+        monitor_pid=$!
+    else
+        warn "[v0] v0-stall-monitor.sh missing/not exec; running without forensic capture"
+    fi
+
+    # Ensure the monitor is reaped on timeout / crash / normal exit.
+    trap '_v0_stop_monitor' EXIT
     run_profiler_systemtap v0 "$V0_RECAL_STP" "$outfile" "$duration" "$pid"
+    local rc=$?
+    _v0_stop_monitor
+    trap - EXIT
+    return $rc
 }
 
 run_profiler_systemtap_v1_1() {
