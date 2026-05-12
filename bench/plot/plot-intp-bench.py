@@ -1409,6 +1409,26 @@ def main() -> None:
     fig_iada_segmented(args.results_dir, outdir)       # fig13 IADA Fig.5
     fig_variant_resource_heatmap(means, outdir)        # fig14 new summary
 
+    # Best-effort: chain the cross-env statistical comparison if the campaign
+    # has >=2 envs in aggregate-means.tsv. Failure here is non-fatal — the
+    # bench figure set is the authoritative output of this script.
+    try:
+        n_envs = means["env"].nunique()
+    except Exception:
+        n_envs = 0
+    if n_envs >= 2:
+        import subprocess
+        cross_script = Path(__file__).parent / "plot-cross-environment.py"
+        if cross_script.exists():
+            print(f"[cross-env] chaining {cross_script.name} ({n_envs} envs)")
+            try:
+                subprocess.run(
+                    [sys.executable, str(cross_script), str(args.results_dir)],
+                    check=False,
+                )
+            except Exception as e:
+                warnings.warn(f"cross-env chain failed: {e}")
+
     print(f"All figures written to {outdir}")
 
 
