@@ -159,6 +159,24 @@ def _clamp_figsize(width: float, height: float) -> tuple[float, float]:
     return width * scale, height * scale
 
 
+def _rglob_profiler(run_dir: Path):
+    """rglob('profiler.tsv') that follows symlinked variant dirs.
+
+    Python 3.13+ supports the recurse_symlinks kwarg; older versions need
+    an os.walk-based fallback so merged dirs (where bare/<variant> is a
+    symlink to another run's tree) still surface their profiler.tsv files."""
+    try:
+        return run_dir.rglob("profiler.tsv", recurse_symlinks=True)
+    except TypeError:
+        import os
+        out = []
+        for root, _, files in os.walk(run_dir, followlinks=True):
+            for f in files:
+                if f == "profiler.tsv":
+                    out.append(Path(root) / f)
+        return out
+
+
 def setup_style() -> None:
     plt.rcParams.update({
         "figure.dpi":         110,
@@ -641,10 +659,10 @@ def fig_timeseries(run_dirs: list[Path], outdir: Path) -> None:
     for run_dir in run_dirs:
         meta = _read_metadata(run_dir)
         profile = meta.get("profile", run_dir.name.split("-large-")[0])
-        for prof_path in run_dir.rglob("profiler.tsv"):
+        for prof_path in _rglob_profiler(run_dir):
             parts = prof_path.parts
             try:
-                variant = parts[-4]; workload = parts[-3]
+                variant = parts[-5]; workload = parts[-3]
             except IndexError:
                 continue
             df_t = load_profiler_tsv(prof_path)
@@ -840,10 +858,10 @@ def fig_resource_timeseries(run_dirs: list[Path], outdir: Path) -> None:
     for run_dir in run_dirs:
         meta = _read_metadata(run_dir)
         profile = meta.get("profile", run_dir.name.split("-large-")[0])
-        for prof_path in run_dir.rglob("profiler.tsv"):
+        for prof_path in _rglob_profiler(run_dir):
             parts = prof_path.parts
             try:
-                variant = parts[-4]; workload = parts[-3]
+                variant = parts[-5]; workload = parts[-3]
             except IndexError:
                 continue
             df_t = load_profiler_tsv(prof_path)

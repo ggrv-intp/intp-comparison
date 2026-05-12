@@ -131,8 +131,12 @@ def _load_plotted_variants(results_dir) -> list[str]:
         out: list[str] = []
         for line in manifest.read_text().splitlines():
             line = line.split("#", 1)[0].strip()
-            if line:
-                out.append(line)
+            if not line:
+                continue
+            tok = line.split()[0]
+            if tok == "variant":
+                continue
+            out.append(tok)
         if out:
             return out
     return list(DEFAULT_PLOTTED_VARIANTS)
@@ -230,6 +234,8 @@ def collect_means(results_dir: Path) -> pd.DataFrame:
             env = parts[-6]; variant = parts[-5]; stage = parts[-4]
             wl = parts[-3]; rep = int(parts[-2].replace("rep", ""))
         except (IndexError, ValueError):
+            continue
+        if stage not in ("solo", "pairwise", "timeseries"):
             continue
         df = load_profiler_tsv(f)
         if df.empty:
@@ -1367,6 +1373,10 @@ def main() -> None:
     p.add_argument("results_dir", type=Path)
     p.add_argument("--out", type=Path, default=None,
                    help="Output directory (default: <results_dir>/plots)")
+    p.add_argument("--variants", type=str, default=None,
+                   help="Comma-separated variant list to plot (overrides "
+                        "variants.manifest and DEFAULT_PLOTTED_VARIANTS). "
+                        "Example: --variants v0.2,v1.1,v2,v3")
     args = p.parse_args()
     if not args.results_dir.exists():
         sys.exit(f"results_dir does not exist: {args.results_dir}")
@@ -1379,7 +1389,11 @@ def main() -> None:
     means = collect_means(args.results_dir)
     if means.empty:
         sys.exit("No profiler.tsv files found.")
-    plotted = _load_plotted_variants(args.results_dir)
+    if args.variants:
+        plotted = [v.strip() for v in args.variants.split(",") if v.strip()]
+        print(f"Plotted-variants source: --variants CLI flag")
+    else:
+        plotted = _load_plotted_variants(args.results_dir)
     pre = len(means)
     means = means[means["variant"].isin(plotted)].copy()
     if means.empty:
