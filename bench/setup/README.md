@@ -11,6 +11,7 @@ experiments.
 | `installimage-jammy.conf`     | Hetzner installimage config: Ubuntu 22.04 onto `nvme0n1`    |
 | `installimage-noble.conf`     | Hetzner installimage config: Ubuntu 24.04 onto `nvme1n1`    |
 | `setup-host.sh`               | Auto-detecting bootstrap script for either OS               |
+| `setup-host-legacy.sh`        | Minimal idempotent bootstrap for the U22 / kernel 5.15 leg of the legacy-V0 campaign |
 
 ## Read flow (docs -> findings)
 
@@ -193,6 +194,38 @@ The script's self-test prints a summary like:
 
 Anything reporting `FAIL` or `missing` will narrow the variant set you
 can run -- e.g. no BTF means v3.1 / v3 will refuse to attach.
+
+## Legacy U22 host (legacy-V0 campaign)
+
+When the operator boots the box into the Ubuntu 22.04 / kernel 5.15
+disk for the V0 measurement leg, the full `setup-host.sh` is overkill
+and risks touching things the legacy host should not change.
+`setup-host-legacy.sh` is the minimal idempotent helper for that leg.
+
+```bash
+# 1. Confirm you're on the right kernel.
+uname -r                                        # expect 5.15.*
+
+# 2. Bootstrap: SystemTap >= 4.6, kernel-headers + dbgsym for the
+#    running kernel, perf_event_paranoid=-1 and kernel.sysrq=1 in
+#    /etc/sysctl.d/99-intp-legacy.conf, and a checkout of the
+#    legacy-v0-campaign branch.
+sudo bash bench/setup/setup-host-legacy.sh
+
+# 3. Run the host-side preflight against V0 specifically.
+shared/intp-preflight.sh --variant v0
+
+# 4. Smoke test: one V0 rep against a short stress-ng workload.
+INTP_BENCH_V0_DEEP_CLEANUP_EVERY=1 \
+  bench/run-intp-bench.sh \
+    --stages solo --variants v0 --envs bare \
+    --workloads app10_search --reps 1 --duration 30
+```
+
+What `setup-host-legacy.sh` deliberately does not do: touch GRUB or
+boot order, install bpftrace / libbpf-dev (V3 / V3.1 are not in scope
+on the legacy host), or build any of the modern variants. It is safe
+to re-run; every step is a check-then-apply.
 
 ## Things this script deliberately does *not* do
 
