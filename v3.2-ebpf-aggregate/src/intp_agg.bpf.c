@@ -337,6 +337,85 @@ int tp_sched_switch(struct trace_event_raw_sched_switch *ctx)
 }
 
 /* =====================================================================
+ * nets -- network stack service time via softirq tracepoints
+ *
+ * On modern kernels (>=6.x) napi_poll is inlined; kprobes don't attach.
+ * irq:softirq_entry / softirq_exit fire for every NET_TX (vec=2) and
+ * NET_RX (vec=3) dispatch and capture the actual CPU time spent in
+ * the network bottom half -- same signal V2 reads from /proc/stat
+ * and V3.1 captures via bpftrace tracepoints.
+ *
+ * Per-CPU keyed because softirqs are non-preemptible on a CPU, so the
+ * entry/exit pair always lives on the same CPU.
+ * ===================================================================== */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u64);
+} softirq_tx_start SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u64);
+} softirq_rx_start SEC(".maps");
+
+SEC("tracepoint/irq/softirq_entry")
+int tp_softirq_entry(struct trace_event_raw_softirq *ctx)
+{
+    __u32 vec = BPF_CORE_READ(ctx, vec);
+    if (vec != 2 && vec != 3) return 0;
+    __u32 cpu = bpf_get_smp_processor_id();
+    __u64 ts  = bpf_ktime_get_ns();
+    if (vec == 2)
+        bpf_map_update_elem(&softirq_tx_start, &cpu, &ts, BPF_ANY);
+    else
+        bpf_map_update_elem(&softirq_rx_start, &cpu, &ts, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/irq/softirq_exit")
+int tp_softirq_exit(struct trace_event_raw_softirq *ctx)
+{
+    __u32 vec = BPF_CORE_READ(ctx, vec);
+    if (vec != 2 && vec != 3) return 0;
+    __u32 cpu = bpf_get_smp_processor_id();
+    __u64 now = bpf_ktime_get_ns();
+
+    __u64 *start_ts;
+    if (vec == 2)
+        start_ts = bpf_map_lookup_elem(&softirq_tx_start, &cpu);
+    else
+        start_ts = bpf_map_lookup_elem(&softirq_rx_start, &cpu);
+    if (!start_ts) return 0;
+    __u64 delta = now - *start_ts;
+
+    if (vec == 2)
+        bpf_map_delete_elem(&softirq_tx_start, &cpu);
+    else
+        bpf_map_delete_elem(&softirq_rx_start, &cpu);
+
+    /* softirqs run in interrupted context; current task is whoever was
+     * preempted by the interrupt. Per-PID attribution is structurally
+     * impossible at this site, so we only update agg_global. This
+     * matches V3's per-event model: the netif_receive_skb event there
+     * also lands under the interrupted task's PID approximately. */
+    struct intp_counters *g = agg_global_slot();
+    if (!g) return 0;
+    if (vec == 2) {
+        __sync_fetch_and_add(&g->nets_tx_lat_ns_sum, delta);
+        __sync_fetch_and_add(&g->nets_tx_lat_n, 1);
+    } else {
+        __sync_fetch_and_add(&g->nets_rx_lat_ns_sum, delta);
+        __sync_fetch_and_add(&g->nets_rx_lat_n, 1);
+    }
+    return 0;
+}
+
+/* =====================================================================
  * llcmr -- LLC miss ratio via perf_event BPF programs
  *
  * Userspace opens two perf_event counters (HW_CACHE_L3 references and
