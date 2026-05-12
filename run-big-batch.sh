@@ -118,14 +118,23 @@ COOLDOWN="${COOLDOWN:-10}"
 # vm      → stress-ng in QEMU/KVM guest (profiler measures qemu PID on host);
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
-BENCH_VARIANTS="${BENCH_VARIANTS:-v1,v2,v3.1,v3}"
-# HIBENCH_VARIANTS defaults to BENCH_VARIANTS. Kept as a separate knob so a
-# campaign can swap the profiler set for the HiBench segment alone — e.g.
-# trim a flaky variant out of HiBench while keeping it in the stress-ng
-# campaign. V1.1 in particular runs in @system (system-wide) mode under
-# HiBench (see METRICS-ALIGNMENT.md "V1.1 dual-mode design"), so it can
-# be included in HIBENCH_VARIANTS without losing block/cpu/llc capture.
-HIBENCH_VARIANTS="${HIBENCH_VARIANTS:-$BENCH_VARIANTS}"
+# Default measured matrix for the legacy-v0 campaign: V0 is back IN, V3.1 is
+# OUT. V3.1 (bpftrace) remains fully implemented under v3.1-bpftrace/ and can
+# be re-enabled via BENCH_VARIANTS="...,v3.1"; it is excluded by default
+# because this campaign is comparing V0's recalibrated baseline against the
+# operationally robust variants, not the bpftrace alternative.
+BENCH_VARIANTS="${BENCH_VARIANTS:-v0,v1,v1.1,v2,v3}"
+# HIBENCH_VARIANTS defaults to BENCH_VARIANTS, EXCEPT that V0 is excluded
+# from HiBench by default. Sustained-load HiBench on kernel 5.15 with V0
+# stap exposes the systemd-logind / stap_* module-accumulation cliff
+# documented in bench/findings/v0-baseline-failure-diagnosis.md, and the
+# recovery cost is reboot-level; HiBench is also the segment where the
+# rep-budget per workload is highest. V0 stays in the stress-ng segment
+# (shorter individual runs, deep cleanup every rep) and is intentionally
+# omitted from HiBench. To opt in explicitly:
+#   HIBENCH_VARIANTS="v0,v1,v1.1,v2,v3" ./run-big-batch.sh
+HIBENCH_VARIANTS_DEFAULT=$(echo "$BENCH_VARIANTS" | tr ',' '\n' | grep -vx 'v0' | paste -sd, -)
+HIBENCH_VARIANTS="${HIBENCH_VARIANTS:-$HIBENCH_VARIANTS_DEFAULT}"
 BENCH_WORKLOADS="${BENCH_WORKLOADS:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ubuntu:24.04}"
 VM_IMAGE="${VM_IMAGE:-}"

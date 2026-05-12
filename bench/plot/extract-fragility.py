@@ -123,10 +123,12 @@ def row_for(rep_dir: Path) -> dict | None:
         sample_loss_pct = 0.0
 
     stap_log = rep_dir / 'profiler.stap.log'
-    if variant in ('v0', 'v0.1', 'v1') and stap_log.exists():
+    if variant in ('v0', 'v0.1', 'v1', 'v1.1') and stap_log.exists():
         stap = parse_stap_log(stap_log)
     else:
         stap = empty_stap_metrics()
+
+    stall = count_stall_artifacts(rep_dir / 'stall-monitor')
 
     row = {
         'env': meta.get('env', ''),
@@ -142,7 +144,26 @@ def row_for(rep_dir: Path) -> dict | None:
         'notes': (meta.get('notes') or '').replace('\t', ' '),
     }
     row.update(stap)
+    row.update(stall)
     return row
+
+
+def count_stall_artifacts(stall_dir: Path) -> dict:
+    """Return counts from the V0 forensic watchdog directory, when present.
+
+    `heartbeats` is the count of `heartbeat-*.txt` snapshots (a coarse
+    proxy for monitor uptime). `stalls_detected` and `dumps_generated`
+    both count `stall-dump-<epoch>/` subdirs — the watchdog creates one
+    dump per detector firing, so the two columns are equal by construction
+    today but are kept separate so we can distinguish later if the
+    monitor grows lightweight-only detectors.
+    """
+    if not stall_dir.is_dir():
+        return {'heartbeats': 0, 'stalls_detected': 0, 'dumps_generated': 0}
+    heartbeats = sum(1 for _ in stall_dir.glob('heartbeat-*.txt'))
+    dumps = sum(1 for p in stall_dir.glob('stall-dump-*') if p.is_dir())
+    return {'heartbeats': heartbeats, 'stalls_detected': dumps,
+            'dumps_generated': dumps}
 
 
 COLUMNS = [
@@ -152,7 +173,9 @@ COLUMNS = [
     'stap_log_present', 'stap_log_bytes',
     'skipped_probes_lines', 'skipped_probes_total', 'skipped_fatal',
     'overload_lines', 'error_lines', 'warning_lines',
-    'probe_registration_failures', 'notes',
+    'probe_registration_failures',
+    'heartbeats', 'stalls_detected', 'dumps_generated',
+    'notes',
 ]
 
 
@@ -175,7 +198,9 @@ def aggregate(rows, out_path: Path) -> None:
         'sum_skipped_fatal', 'sum_overload_lines',
         'sum_error_lines', 'sum_warning_lines',
         'sum_probe_registration_failures',
+        'sum_stalls_detected', 'sum_dumps_generated',
         'runs_with_loss_gt_5pct', 'runs_with_zero_samples',
+        'runs_with_stall_dump',
     ]
     with out_path.open('w') as fh:
         fh.write('\t'.join(agg_cols) + '\n')
@@ -196,8 +221,11 @@ def aggregate(rows, out_path: Path) -> None:
                 'sum_error_lines': sum(r['error_lines'] for r in items),
                 'sum_warning_lines': sum(r['warning_lines'] for r in items),
                 'sum_probe_registration_failures': sum(r['probe_registration_failures'] for r in items),
+                'sum_stalls_detected': sum(r.get('stalls_detected', 0) for r in items),
+                'sum_dumps_generated': sum(r.get('dumps_generated', 0) for r in items),
                 'runs_with_loss_gt_5pct': sum(1 for r in items if r['sample_loss_pct'] > 5),
                 'runs_with_zero_samples': sum(1 for r in items if r['actual_samples'] == 0),
+                'runs_with_stall_dump': sum(1 for r in items if r.get('dumps_generated', 0) > 0),
             }
             fh.write('\t'.join(str(row[c]) for c in agg_cols) + '\n')
 
