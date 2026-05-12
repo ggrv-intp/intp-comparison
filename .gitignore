@@ -5,6 +5,7 @@
 v1.1-stap-helper/intp-helper
 v2-c-stable-abi/intp-hybrid
 v3-ebpf-libbpf/intp-ebpf
+v3.2-ebpf-aggregate/intp-ebpf-agg
 
 # Generic C/C++ build artifacts
 *.o
@@ -18,6 +19,10 @@ v3-ebpf-libbpf/intp-ebpf
 v3-ebpf-libbpf/*.skel.h
 v3-ebpf-libbpf/**/*.skel.h
 v3-ebpf-libbpf/build/
+v3.2-ebpf-aggregate/*.skel.h
+v3.2-ebpf-aggregate/**/*.skel.h
+v3.2-ebpf-aggregate/build/
+v3.2-ebpf-aggregate/src/vmlinux.h
 
 # Logs / dumps
 *.log
