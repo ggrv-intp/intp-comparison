@@ -119,18 +119,18 @@ log "sysctl: perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)  sy
 
 # -- 5. branch checkout / pull ----------------------------------------------
 if [ -d "$REPO_ROOT/.git" ]; then
-    log "syncing legacy-v0-campaign branch in $REPO_ROOT"
+    log "syncing main branch in $REPO_ROOT"
     (
         cd "$REPO_ROOT"
         git fetch --quiet origin || warn "git fetch failed"
-        if git rev-parse --verify --quiet legacy-v0-campaign >/dev/null; then
-            git checkout legacy-v0-campaign
-        elif git rev-parse --verify --quiet origin/legacy-v0-campaign >/dev/null; then
-            git checkout -b legacy-v0-campaign origin/legacy-v0-campaign
+        if git rev-parse --verify --quiet main >/dev/null; then
+            git checkout main
+        elif git rev-parse --verify --quiet origin/main >/dev/null; then
+            git checkout -b main origin/main
         else
-            die "branch legacy-v0-campaign not found locally or on origin"
+            die "branch main not found locally or on origin"
         fi
-        git pull --ff-only origin legacy-v0-campaign \
+        git pull --ff-only origin main \
             || warn "git pull --ff-only failed; resolve manually"
     )
 else
