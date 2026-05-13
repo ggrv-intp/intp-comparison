@@ -497,3 +497,64 @@ field.
 V3 is positioned at the **native eBPF** endpoint of the spectrum: same
 safety guarantees as V3.1, same cross-kernel portability as V2, but with
 the per-event cost profile of a compiled-C implementation.
+
+---
+
+## 13. Why this design is no longer the V3.2 endpoint
+
+V3 is retained for empirical evidence and per-event introspection, but
+**V3.2 supersedes it as the eBPF/CO-RE measured endpoint** for the
+SBAC-PAD 2026 campaign. The shift is architectural, not incremental:
+V3 streams events to userspace through a 16 MiB ring buffer; V3.2
+aggregates them in-kernel into hash and per-CPU array maps that
+userspace polls once per interval.
+
+### What V3.2 fixes
+
+The decision to introduce V3.2 was driven by three empirical findings
+documented in `docs/V3-OVERHEAD-FINDINGS.md`:
+
+1. **188-390x system-wide context-switch amplification.** V3's
+   ring-buffer streaming pattern forces a userspace consumer wakeup
+   plus an induced preemption of co-resident workers for every drain
+   cycle. The two mechanisms are structurally coupled (each wakeup
+   *is* a preemption opportunity) and contribute 50/50; the only way
+   to remove them is to not stream events at all. V3.2 does exactly
+   that.
+
+2. **mbw silent clipping at 100%.** V3's
+   `resctrl_read_mbm_delta()` clips at 100% whenever
+   `bytes/sec > INTP_MEM_BW_MBPS`, and the bimodal discrete-outlier
+   pattern (96/80/64/48/32/16/0) is per-channel zero reads at
+   multiples of 12.5% (8 DDR5 channels). V3.2 emits both `mbw_pct`
+   and `mbw_raw_mbps` so both failure modes are detectable; clipping
+   is opt-in via `--clip-mbw`.
+
+3. **`perf stat -e sched:sched_switch` under-reports by 3 orders of
+   magnitude** when a BPF program is attached to the same tracepoint.
+   This is not a V3 bug per se, but it means V3's overhead has to be
+   measured via `vmstat 1` (the kernel `/proc/stat::ctxt` counter),
+   not via perf. V3.2's amplification is bounded by
+   `test-no-ctxsw-amplification.sh` at ratio <= 1.10.
+
+### What V3.2 trades away (and why V3 stays)
+
+V3.2 loses per-event introspectability, MPSC FIFO ordering between
+probes, and sub-second temporal resolution. None of those are needed
+for the steady-state IntP workload the paper studies, but they *are*
+needed when debugging individual probe sites or chasing causal
+ordering bugs. V3 remains the right tool for that work and is
+retained in the repository as both the predecessor of record and the
+introspection profiler.
+
+### Where to look next
+
+- `v3.2-ebpf-aggregate/DESIGN.md` -- V3.2's design, including the
+  in-kernel-aggregation maps (`BPF_MAP_TYPE_HASH` keyed by
+  `(pid_tgid, metric_id)` plus `BPF_MAP_TYPE_PERCPU_ARRAY` for
+  global counters), the poll cycle, and the acceptance tests.
+- `docs/V3-OVERHEAD-FINDINGS.md` -- the empirical case for V3.2.
+- `docs/EXPERIMENT-STRATEGY.md` § "Why it lives next to V3 instead
+  of replacing it" -- the campaign-level decision.
+- Paper section VI (overhead decomposition) and section VIII
+  (in-kernel aggregation).

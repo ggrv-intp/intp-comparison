@@ -83,7 +83,13 @@ Each finding should include:
 
 ## Why this matters
 
-The dissertation compares historical portability (V0) versus modern
-reliability (V1.1 stap+helper, V2 procfs, V3.1 bpftrace, V3 eBPF/CO-RE).
-Keeping findings centralized and versioned in this directory makes that
-argument auditable and reproducible.
+The dissertation compares historical portability (V0 / V0.1 / V0.2)
+versus modern reliability (V1 / V1.1 stap+helper, V2 procfs,
+V3.1 bpftrace, V3 eBPF/CO-RE / **V3.2 eBPF in-kernel aggregation**).
+The four measured-result variants for the SBAC-PAD 2026 paper are
+**V0.2, V1.1, V2, V3.2**; V3 is retained as the predecessor of V3.2
+and the empirical motivation for the in-kernel-aggregation design
+(see `docs/V3-OVERHEAD-FINDINGS.md`). V3.1 stays runnable but is
+held out of the default matrix. Keeping findings centralized and
+versioned in this directory makes that argument auditable and
+reproducible.

@@ -4,7 +4,7 @@
 **Host:** intp-v1-baseline
 **Kernel:** 6.5.0-45-generic (`6.5.0-45.45~22.04.1` Ubuntu HWE)
 **OS:** Ubuntu 22.04.5 LTS
-**CPU:** Intel Xeon Gold 5412U (1 socket, 48 cores, 251 GB RAM)
+**CPU:** Intel Xeon Gold 5412U (Sapphire Rapids, 1 socket, 24 cores / 48 threads, 256 GB ECC RAM)
 
 ---
 
@@ -78,6 +78,18 @@ error: "MSR_IA32_QM_EVTSEL" redefined [-Werror]
 error: 'struct hw_perf_event' has no member named 'cqm_rmid'   (x2)
 Pass 4: compilation failed.  [man error::pass4]
 ```
+
+**Historical note:** the HWE 6.5.0-45 is not the first kernel on which
+`cqm_rmid` is missing. The field (and the `intel_cqm` perf PMU driver
+that populated it) was removed from mainline in **kernel 4.14**
+(November 2017, commit `c39a0e2c8850`); the replacement is the
+`resctrl` filesystem. The IntP 2022 rig only worked because some
+enterprise LTS lines carried vendor backports of `intel_cqm` until
+roughly 2019-2020, or because the rig used a hand-compiled kernel that
+restored the driver. On Ubuntu 22.04's stock 5.15 kernel the field is
+already absent; the HWE 6.5 used here is simply the point at which the
+failure becomes inescapable because no mainstream distro still ships
+the backport. None of those paths are portable today.
 
 ---
 

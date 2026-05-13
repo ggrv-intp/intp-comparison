@@ -141,20 +141,28 @@ No TODOs in this section.
 ### IV.A — Hardware platform — DRAM bandwidth verification
 
 > "the maximum sustainable DRAM bandwidth, derived from the IMC channel
-> count and DDR5 transfer rate, is [TODO: 281600 MB/s; cross-validate
-> against measured ceiling]."
+> count and DDR5 transfer rate, is **281,600 MB/s** (8 DDR5-4800
+> channels × 35.2 GB/s theoretical peak per channel, rounded). The
+> empirical ceiling reported by the calibration step on `intp-master`
+> is recorded alongside in `capabilities.env`."
 
 **Source in repo:**
-- 281600 MB/s default →
-  `bench/findings/v1-modernization-reliability-findings.md` and the V1.1
-  helper hardcoded defaults
-  (`v1.1-stap-helper/intp-helper.c`).
+- 281,600 MB/s default →
+  `bench/findings/v1-modernization-reliability-findings.md` (host
+  config snapshot), V1.1 helper hardcoded defaults
+  (`v1.1-stap-helper/intp-helper.c`), and the `INTP_MEM_BW_MBPS`
+  default exposed by `shared/intp-detect.sh`.
 - Cross-validation tool: `bench/calibration/` (Stream-like benchmark
   invoked via `bench/setup/setup-host.sh --calibrate`).
+- mbw normalization clip artifact at this ceiling →
+  `docs/V3-OVERHEAD-FINDINGS.md` § 3 and paper § IV-E.
 
-**Status:** partial. The 281600 MB/s number is the theoretical max from
-IMC channel count × DDR5 rate. The empirical ceiling from the calibration
-step should be reported next to it for honesty.
+**Status:** resolved. 281,600 MB/s is the canonical theoretical
+ceiling for the campaign; the empirical Stream measurement lives in
+`capabilities.env` next to each rep. V3.2 emits both `mbw_pct`
+(normalised against this ceiling) and `mbw_raw_mbps` (the raw byte
+rate) so consumers can detect either over-clipping or
+under-calibration directly from the TSV.
 
 ### IV.D — Reproducibility envelope
 

@@ -1,5 +1,15 @@
 # IntP Kernel 6.8.0 Compatibility Notes
 
+> **Scope clarification.** This document describes the patches needed
+> to run IntP on Ubuntu 24.04's stock 6.8 kernel. The removal of the
+> `cqm_rmid` field itself happened much earlier — in **kernel 4.14**
+> (November 2017, commit `c39a0e2c8850`) — along with the `intel_cqm`
+> perf PMU driver that populated it. The replacement is the `resctrl`
+> filesystem. Some enterprise LTS lines carried vendor backports of
+> `intel_cqm` until roughly 2019-2020 (the IntP 2022 rig depended on
+> that), but no mainstream distro still ships the backport today, so
+> 6.8 is simply the point at which the symptom becomes inescapable.
+
 ## Summary
 
 IntP has been successfully patched to work with kernel 6.8.0-90, with **6 out of 7 metrics functional**. LLC occupancy monitoring is temporarily disabled pending resctrl interface implementation.
@@ -81,19 +91,28 @@ netp    nets    blk     mbw     llcmr   llcocc  cpu
                                         Will be 0 until resctrl is implemented
 ```
 
-## Root Cause: Kernel 6.8.0 RDT Refactoring
+## Root Cause: long-completed RDT/CQM refactor finally visible on 6.8
 
 ### What Changed
 
-Kernel 6.8.0 refactored Intel's Resource Director Technology (RDT) / Cache QoS Monitoring (CQM):
+The Intel RDT / Cache QoS Monitoring (CQM) refactor that breaks V0 on
+kernel 6.8 was actually completed in **kernel 4.14** (November 2017,
+commit `c39a0e2c8850`). 6.8 is just the kernel on which Ubuntu
+ships no vendor backport at all:
 
-1. **Removed `cqm_rmid` field** from `struct hw_perf_event`
-2. **Moved MSR definitions** to kernel headers
-3. **Changed LLC monitoring interface** from perf events to resctrl filesystem
+1. **Removed `cqm_rmid` field** from `struct hw_perf_event` (4.14)
+2. **Removed the `intel_cqm` perf PMU driver** that populated the
+   field (4.14, same commit)
+3. **Moved MSR definitions** to kernel headers (so `intp.stp`'s own
+   `MSR_IA32_QM_CTR/QM_EVTSEL` redefinitions now cause a redefinition
+   error)
+4. **The replacement** is the `resctrl` filesystem
+   (`/sys/fs/resctrl/mon_data/mon_L3_XX/llc_occupancy`)
 
 ### Technical Details
 
-**Old Interface (Kernel ≤ 6.6):**
+**Old Interface (kernels with the `intel_cqm` driver — mainline ≤ 4.13,
+or later vendor-backported LTS):**
 
 ```c
 // Direct access to CQM RMID
@@ -104,7 +123,7 @@ wrmsr(MSR_IA32_QM_EVTSEL, QOS_L3_OCCUP_EVENT_ID, rr.rmid);
 rdmsrl(MSR_IA32_QM_CTR, val);
 ```
 
-**New Interface (Kernel ≥ 6.8):**
+**New Interface (mainline ≥ 4.14, including 5.15/6.5/6.8):**
 
 ```bash
 # Use resctrl filesystem

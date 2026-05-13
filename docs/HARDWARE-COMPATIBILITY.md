@@ -64,9 +64,15 @@ llcmr:  perf_hwcache > perf_raw (0x4F2E / 0x412E)
 ### 2.4 Known Errata
 
 - **Haswell-EP:** CMT only (no MBM). `mbw` falls to `perf_uncore_imc`.
-- **Kernel 6.8:** `cqm_rmid` removed from `struct hw_perf_event`. V0
-  breaks; V0.1+ handle this. SystemTap's `perf_rmid_read()` no longer
-  available.
+- **`cqm_rmid` removal:** the field was deleted from
+  `struct hw_perf_event` in **kernel 4.14** (November 2017, commit
+  `c39a0e2c8850`) together with the `intel_cqm` perf PMU driver.
+  Vendor backports kept it usable on some enterprise LTS kernels
+  until roughly 2019-2020; today no mainstream distro ships the
+  backport, so V0 will fail to compile on any current kernel
+  (Ubuntu 22.04's stock 5.15 already lacks the field; 6.8 is
+  simply when the failure becomes inescapable). V0.1+ handle this.
+  SystemTap's `perf_rmid_read()` is no longer available.
 - **RMID budget:** Each resctrl `mon_group` consumes 1 RMID.
   Haswell has 32, Broadwell+ has 128-256. IntP uses 1 group per run.
   Keep total mon_groups below 75% of `num_rmids`.

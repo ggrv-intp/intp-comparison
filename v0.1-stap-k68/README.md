@@ -5,8 +5,12 @@ SystemTap script to compile on kernel 6.8+ by:
 
 1. **Removing the `cqm_rmid` access**: The `get_llc_occupancy()` embedded C
    function no longer tries to read the `cqm_rmid` field from
-   `struct hw_perf_event`, which was removed in kernel 6.8. LLC occupancy
-   (llcocc) returns 0 in this variant.
+   `struct hw_perf_event`. That field (and the `intel_cqm` perf PMU driver
+   that populated it) was actually removed from mainline in kernel 4.14
+   (Nov 2017, commit `c39a0e2c8850`); kernel 6.8 is simply the point at
+   which no mainstream distro still ships the vendor backport, so the
+   failure becomes inescapable. LLC occupancy (llcocc) returns 0 in this
+   variant.
 
 2. **Removing MSR redefinitions**: Several MSR constants that IntP redefined
    now conflict with kernel headers. The redefinitions are removed and the

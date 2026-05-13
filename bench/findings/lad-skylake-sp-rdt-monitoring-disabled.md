@@ -94,14 +94,19 @@ software: **`llcocc` cannot be read via resctrl on this host.**
 `llcocc` (LLC occupancy) is one of the seven metrics defined in the
 IntP paper (Xavier et al., SBAC-PAD 2022, Sec. III-E). The original
 paper collects it by reading `task_struct->cqm_rmid` directly from
-the kernel (a field that was removed in kernel 6.8+).
+the kernel. That field, and the `intel_cqm` perf PMU driver that
+populated it, were removed from mainline in kernel 4.14 (November
+2017, commit `c39a0e2c8850`); vendor backports kept it usable on
+some enterprise LTS lines until roughly 2019-2020. The replacement
+is the `resctrl` filesystem.
 
 Alternative paths for collecting `llcocc` on modern hardware:
 
-- **V0 (kernel <=6.6):** reads `cqm_rmid` directly. Requires the
-  kernel to have monitoring enabled — when the resctrl driver does
-  not activate CMT, no RMID is allocated and the field returns
-  garbage or zero.
+- **V0 (requires `intel_cqm` backport):** reads `cqm_rmid` directly.
+  Requires the kernel to have monitoring enabled — when the resctrl
+  driver does not activate CMT, no RMID is allocated and the field
+  returns garbage or zero. In practice only available on heavily
+  backported kernels; mainline >= 4.14 drops the field entirely.
 - **V1 / V2 / V3.1 / V3:** read via the `resctrl` interface under
   `/sys/fs/resctrl/`. Requires `info/L3_MON/` to exist and
   mon_groups to be creatable with `mon_data/mon_L3_*/llc_occupancy`

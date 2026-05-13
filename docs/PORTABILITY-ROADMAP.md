@@ -25,7 +25,7 @@ architectures, and deployment environments.
 | 3.x | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | No resctrl |
 | 4.10+ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Intel RDT resctrl |
 | 5.1+ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | + AMD Rome PQoS |
-| 6.8+ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | cqm_rmid removed; V2 unaffected |
+| 6.8+ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | mainstream distros no longer ship the `intel_cqm` backport; V2 unaffected (resctrl-based). `cqm_rmid` itself was removed in 4.14 (Nov 2017, commit `c39a0e2c8850`). |
 | 6.19+ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | + ARM MPAM |
 
 **Minimum:** Any kernel with `/proc` and `/sys`. All 5 software metrics

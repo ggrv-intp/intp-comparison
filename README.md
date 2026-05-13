@@ -42,7 +42,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 
 | Variant | Status |
 | --------- | -------- |
-| V0 -- Original (SystemTap, <=6.6) | Complete (baseline; runs on Ubuntu 22.04 + kernel 6.5 HWE only) |
+| V0 -- Original (SystemTap, needs `intel_cqm` driver — mainline removed it in 4.14) | Complete (baseline; in practice runs only on Ubuntu 22.04 + kernel 6.5 HWE thanks to the Canonical backport) |
 | V0.1 -- Updated (SystemTap, 6.8+, LLC disabled) | Complete |
 | V0.2 -- Stap + userspace helper (SystemTap, 5.15 GA, V0-faithful, RCU-safe) | Scaffolded (helper + .stp template + generator complete; pending operator-side smoke test on a real U22 host) |
 | V1 -- Stap-native (SystemTap, 6.8+, mbw/llcocc disabled) | Complete |

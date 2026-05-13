@@ -12,10 +12,18 @@ embedded C functions `perf_kernel_start()` / `perf_kernel_read()` and
 
 Two distinct things later broke that design:
 
-1. **Kernel 6.0** removed `cqm_rmid` from `struct perf_event`. V0 no
-   longer compiles on kernel 6.x at all; that gap is documented in
-   `docs/VARIANT-COMPARISON.md` (V0.1 is the minimal patch that keeps
-   V0 compilable on kernel 6.8 by disabling LLC occupancy).
+1. **`cqm_rmid` was removed from `struct hw_perf_event` in kernel
+   4.14** (November 2017, commit `c39a0e2c8850`), together with the
+   `intel_cqm` perf PMU driver that populated it; the replacement is
+   the `resctrl` interface. V0 only compiles on kernels that either
+   (a) preserve the `intel_cqm` driver via a vendor backport (some
+   enterprise LTS lines carried this until ~2019-2020), or (b) were
+   hand-compiled with the driver restored. Empirically, on Ubuntu
+   22.04's stock 5.15 kernel the field is already absent, and 6.8 is
+   simply the point at which no mainstream distro still ships the
+   backport. V0.1 is the minimal patch that keeps V0 compilable on
+   kernel 6.8 by disabling LLC occupancy; that gap is documented in
+   `docs/VARIANT-COMPARISON.md`.
 
 2. **Ubuntu 22.04's 5.15 kernel** ships with RCU-checking backports
    from Canonical (`CONFIG_PROVE_RCU=y` plus stricter `lockdep` hits)

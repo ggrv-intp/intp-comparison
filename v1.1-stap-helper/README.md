@@ -53,7 +53,7 @@ The helper:
 | `INTP_HELPER_DATA_FILE` | `/tmp/intp-hw-data` | Output path |
 
 The defaults assume Xeon Gold 5412U (Sapphire Rapids, 8x DDR5-4800,
-45 MB L3). Override on other platforms.
+45 MiB L3). Override on other platforms.
 
 ## Graceful degradation
 

@@ -1,4 +1,4 @@
-# V0 -- Original IntP (SystemTap, kernel ≤6.6)
+# V0 -- Original IntP (SystemTap, requires `intel_cqm` driver)
 
 Reference baseline used for portability and metric-fidelity comparison.
 This directory holds the canonical V0 script (`intp.stp`, 660 lines)
@@ -12,7 +12,10 @@ The canonical script also remains useful for:
 - `docs/METRICS-DEEP-DIVE.md` and `docs/VARIANT-COMPARISON.md` to cite
   exact line numbers, and
 - `bench/findings/v0-baseline-failure-diagnosis.md` to document why
-  this script no longer compiles on kernel ≥6.8.
+  this script no longer compiles on current mainline kernels (the
+  underlying `cqm_rmid` field and `intel_cqm` perf PMU driver were
+  removed in kernel 4.14, Nov 2017; mainstream distros stopped
+  shipping the vendor backport around 2019-2020).
 
 ## Workflow
 
@@ -84,11 +87,15 @@ Constants **not** placed via the template:
 
 ## Status
 
-- Compiles only on kernel ≤6.6 (the `cqm_rmid` field of
-  `struct hw_perf_event` and the `MSR_IA32_QM_CTR` redefinitions used by
-  the embedded C blocks were removed in 6.8). For modern kernels use
-  V0.1 (`v0.1-stap-k68/`), V1 (`v1-stap-native/`), or V1.1
-  (`v1.1-stap-helper/`).
+- Compiles only on kernels that still carry the `intel_cqm` perf PMU
+  driver -- mainline removed it in **kernel 4.14** (Nov 2017, commit
+  `c39a0e2c8850`), and enterprise LTS vendor backports kept it
+  available until roughly 2019-2020. The `MSR_IA32_QM_CTR` /
+  `QM_EVTSEL` redefinitions in the embedded C blocks additionally
+  conflict with `<asm/msr-index.h>` on any kernel that already
+  defines them, which compounds the failure mode on modern headers.
+  For modern kernels use V0.1 (`v0.1-stap-k68/`), V1
+  (`v1-stap-native/`), or V1.1 (`v1.1-stap-helper/`).
 - Hardware constants (1 GbE NIC, 34 GB/s memory bandwidth, 34 MB LLC,
   IMC PMU type 14, CMT scale factor 49152) reflect the 2022 PUCRS dev
   machine. Variants V2/V3/V3.1 autodetect these via

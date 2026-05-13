@@ -20,7 +20,7 @@ findings in:
 
 ## Variants
 
-### V0 -- Original IntP (SystemTap, kernel <= 6.6)
+### V0 -- Original IntP (SystemTap, requires `intel_cqm` driver)
 
 **Status.** *Measured baseline on Ubuntu 22.04 + kernel 5.15 GA* for
 the legacy-V0 campaign. V0 was previously listed as "not built or run";
@@ -71,10 +71,18 @@ not aggregated by polling. The score sheet sets the upper bound that
 V2-V3 are measured against in Phase 3.
 
 **Deployment requirements.** SystemTap >= 4.9, kernel debuginfo for
-the running kernel, root, kernel <= 6.6 (the upper bound is hard:
-`cqm_rmid` and the surrounding CQM API were removed in 6.8). Module
-build takes 10-30 s at first run; SystemTap loads a per-script `.ko`
-into the kernel and the script runs there.
+the running kernel, root, and a kernel that still exposes the
+`intel_cqm` perf PMU driver. The field `cqm_rmid` (and the driver
+that populated it) was removed from mainline in kernel 4.14
+(November 2017, commit `c39a0e2c8850`); the replacement is the
+`resctrl` filesystem. V0 only builds against kernels that either
+preserve `intel_cqm` via a vendor backport (some enterprise LTS
+lines did so until ~2019-2020) or were hand-compiled with the
+driver restored. Empirically the field is already absent from
+Ubuntu 22.04's stock 5.15 kernel, and the 6.x line is simply the
+point at which no mainstream distro still carries the backport.
+Module build takes 10-30 s at first run; SystemTap loads a
+per-script `.ko` into the kernel and the script runs there.
 
 **Performance overhead.** Tracepoint and kprobe overhead is moderate
 (~hundreds of ns per event); MSR reads are CPU-broadcast via

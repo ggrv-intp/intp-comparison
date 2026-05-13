@@ -38,7 +38,7 @@ Two categories of workload are used in combination:
 | OS | Ubuntu 24.04.4 LTS (Noble Numbat) |
 | Kernel | 6.8.0-111-generic |
 | CPU | Intel Xeon Gold 5412U (Sapphire Rapids), 1 socket, 24C/48T |
-| LLC | 45 MB (host-calibrated: `LLC_SIZE_KB=46080`) |
+| LLC | 45 MiB (host-calibrated: `LLC_SIZE_KB=46080`) |
 | Memory | 256 GB ECC |
 | Memory bandwidth (theoretical) | 281,600 MB/s (host-calibrated) |
 | Storage | 2 × 1.92 TB NVMe (system on `nvme1n1p4`) |
@@ -398,7 +398,7 @@ distributed-cluster availability.
 - **Hardware constants.** The paper's V0 has hard-coded calibrations
   (1 GbE NIC, 34 GB/s memory bandwidth, 34 MB LLC, IMC PMU type 14,
   CMT scale factor 49152) tuned for the 2022 dev machine. V1
-  recalibrates: `LLC_SIZE_KB=46080` (45 MB), MBW max 281,600 MB/s,
+  recalibrates: `LLC_SIZE_KB=46080` (45 MiB), MBW max 281,600 MB/s,
   IMC PMU types in 78–89 for Sapphire Rapids.
 - **Distributed cluster.** The 16-node R810 cluster is not
   available, so the **scheduling-outcome experiments of paper

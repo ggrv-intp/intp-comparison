@@ -1,10 +1,19 @@
-# V3 -- Full eBPF/CO-RE IntP Implementation
+# V3 -- Full eBPF/CO-RE IntP Implementation (predecessor of V3.2)
 
 The dissertation's Phase 2 prototype: IntP implemented in C with libbpf
-and CO-RE (Compile Once, Run Everywhere). This is the canonical eBPF
-implementation, evaluated head-to-head against the SystemTap lineage
+and CO-RE (Compile Once, Run Everywhere). V3 was the original eBPF
+endpoint; **V3.2 (`v3.2-ebpf-aggregate/`) supersedes it as the
+measured eBPF endpoint** for the SBAC-PAD 2026 campaign by replacing
+V3's 16 MiB ring buffer with in-kernel counter aggregation. V3 is
+retained in the repository as the empirical-evidence predecessor and
+the introspection profiler; see `docs/V3-OVERHEAD-FINDINGS.md` for
+the measurement record (188-390x context-switch amplification, mbw
+silent clip) that motivated V3.2.
+
+V3 is still evaluated head-to-head against the SystemTap lineage
 (V0 original, V1 stap-native, V1.1 stap+helper), the framework-free V2,
-and the bpftrace-based V3.1.
+and the bpftrace-based V3.1, since the comparison is structural, not
+about the V3 vs V3.2 trade-off.
 
 ## Architecture
 

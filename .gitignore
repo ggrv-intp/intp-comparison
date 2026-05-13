@@ -50,3 +50,7 @@ venv/
 
 # Local-only rename artifacts (kept around the migration window)
 /rename-preview*.diff
+
+# Local Claude Code instructions (kept out of git on purpose)
+/CLAUDE.md
+/.claude/CLAUDE.md

@@ -21,7 +21,7 @@ output contract.
 1. Build/runtime compatibility restored on kernel 6.8 via SystemTap 5.2 and
    script fixes.
 2. Host-calibrated constants applied:
-   - LLC size: 46080 KB (45 MB).
+   - LLC size: 46080 KB (45 MiB).
    - Memory bandwidth max: 281600 MB/s.
    - IMC PMU types switched from legacy hardcode to host-valid values.
 3. LLC miss-ratio collection changed from fragile per-process sampling to a
@@ -89,14 +89,18 @@ This finding supports a two-layer conclusion:
 
 1. **V1 is a successful compatibility bridge** for reproducing the legacy
    methodology on modern kernels/hardware.
-2. **V1 is not the reliability endpoint**: V2/V3.1/V3 remain more robust for
-   sustained benchmarking because they avoid the high-friction SystemTap kernel
-   instrumentation path.
+2. **V1 is not the reliability endpoint**: V2/V3.1/V3/V3.2 remain more robust
+   for sustained benchmarking because they avoid the high-friction SystemTap
+   kernel instrumentation path. V1.1 (stap + userspace helper) recovers full
+   7-metric coverage on modern kernels without putting RCU-unsafe operations
+   in stap probe context.
 
 In practice:
 
 - Use V1 to preserve historical continuity and document legacy behavior.
-- Use V2/V3.1/V3 as the reliability baseline for final comparative claims.
+- Use V1.1, V2, or V3.2 as the reliability baseline for final comparative
+  claims (these are three of the four "measured result" variants for the
+  paper; the fourth is V0.2 on the U22 / kernel 5.15 leg).
 
 ---
 

@@ -14,8 +14,11 @@
 #   Ubuntu 22.04 5.15 GA kernel, RCU-checking backports from Canonical
 #   destabilise those code paths (visible as stapio orphans, stap_*
 #   module accumulation, and eventually systemd-logind deadlock via DBus
-#   pressure). The cqm_rmid removal in kernel 6.0 makes V0 unrunnable
-#   at all on kernel 6.x+. V0.2 keeps the V0 semantics for the RCU-safe
+#   pressure). The cqm_rmid field was actually removed in kernel 4.14
+#   (Nov 2017, commit c39a0e2c8850) together with the intel_cqm perf
+#   PMU driver; 6.x is just the point at which no mainstream distro
+#   still ships the vendor backport, so V0 stops compiling everywhere.
+#   V0.2 keeps the V0 semantics for the RCU-safe
 #   metrics and moves the two RCU-unsafe operations into a userspace
 #   helper that talks to the kernel via perf_event_open(2) and the
 #   resctrl mon_groups filesystem. Architecture mirrors v1.1-stap-helper
