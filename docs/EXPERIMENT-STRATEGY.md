@@ -460,6 +460,81 @@ zeros.
 
 ---
 
+## V3.2 — eBPF in-kernel aggregation (paper section VIII), 7/7 metrics
+
+### What's in scope
+
+V3.2 (`v3.2-ebpf-aggregate/`) is the in-kernel-aggregating variant
+specified in paper section VIII. It is the structural answer to the
+188-390x context-switch amplification documented in section V-D:
+same probe sites as V3, but every event lands as an atomic 64-bit
+increment in a `BPF_MAP_TYPE_PERCPU_ARRAY` counter slot rather than
+a record in the 16 MiB ring buffer. Userspace polls the counter map
+once per `--interval` instead of draining a stream.
+
+### Why it lives next to V3 instead of replacing it
+
+V3 trades off observability for portability; V3.2 trades it again for
+"non-amplification of the schedule clock". They are different points
+on the same axis, not refinements of each other. The paper reports V3
+unchanged; V3.2 is the additional data point requested by the section
+VIII discussion.
+
+### What still goes wrong
+
+1. **Loss of per-event introspection.** `--trace` is gone. If you need
+   to know *which* request added 200 us to `blk`, use V3, not V3.2.
+2. **mbw without a calibrated ceiling.** V3's silent clip masked the
+   misconfigured `mem_bw_max_bps`. V3.2 surfaces the raw MB/s in the
+   trailing `mbw_raw_mbps` column and warns on stderr the first time
+   `mbw_pct` exceeds 100. If you see the warning, recheck
+   `--mem-bw-max-bps` against the DDR ceiling for the box.
+3. **CO-RE limits** (Zhong et al. 2025): same as V3.
+
+### Acceptance gate
+
+V3.2 is the **only variant** that requires a pre-campaign acceptance
+test to be valid:
+
+```bash
+sudo make -C v3.2-ebpf-aggregate test-amplification
+```
+
+This runs `tests/integration/test-no-ctxsw-amplification.sh` against
+the three reference workloads (ref_cpu, ref_disk, ref_stream) and
+fails if the with-profiler / baseline context-switch ratio exceeds
+1.10. If V3.2 is failing this gate, the in-kernel aggregation is still
+feeding a userspace draining loop somewhere -- do not include V3.2 in
+the campaign until the gate is green.
+
+### Rule 2 — rebuild
+
+Same as V3. Any source change in `v3.2-ebpf-aggregate/` requires
+`make -C v3.2-ebpf-aggregate` before re-running.
+
+### Rule 3 — distributed mode
+
+Same as V3. The bench harness already routes V3.2 through the same
+container/VM machinery via `_inguest_profiler_cmd`.
+
+### Validation step
+
+```bash
+# Capability declaration (no probes; just print detect_all output).
+sudo ./intp-ebpf-agg --list-capabilities
+
+# All 7 metrics non-zero on a representative load.
+sudo ./intp-ebpf-agg --pids $(pgrep -nf stress-ng) -i 1 -d 30
+
+# Equivalence vs V3.
+sudo bash tests/integration/test-metrics-equivalence.sh
+
+# Cross-variant statistical agreement (V3 vs V3.2).
+sudo bash shared/validate-cross-variant.sh --start-workload --duration 30
+```
+
+---
+
 ## V3.1 — out of scope for this campaign
 
 V3.1 (`v3.1-bpftrace/`) is fully implemented and operational, but

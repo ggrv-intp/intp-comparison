@@ -594,3 +594,79 @@ SystemTap) and V1 (refactored SystemTap), evaluated on accuracy,
 overhead (Volpert et al. ICPE 2025 methodology), portability,
 deployment complexity, and execution-environment behaviour
 (bare-metal / container / VM).
+
+### V3.2 -- eBPF in-kernel aggregation (paper section VIII)
+
+**Architecture summary.** V3.2 is V3's structural alternative: a
+distinct point on the streaming-vs-aggregation axis the paper
+enumerates, not an optimization of V3. The same eBPF probe sites
+(net_dev_xmit, block_rq_complete, sched_switch, softirq_entry/exit,
+perf_event LLC counters) fire, but every event lands as a 64-bit
+atomic increment on a per-CPU counter slot
+(`BPF_MAP_TYPE_PERCPU_ARRAY`) and a per-TGID counter slot
+(`BPF_MAP_TYPE_HASH`), not as a record in a 16 MiB ring buffer.
+Userspace `nanosleep`s for `--interval` seconds, calls
+`bpf_map_lookup_elem` on `agg_global` once (returning one
+`struct intp_counters` per CPU), sums across CPUs, diffs against the
+previous snapshot, normalizes, and emits one TSV row. There is no
+`ring_buffer__poll`, no event handler dispatch table, no per-event
+work in userspace.
+
+**Backend / probe map.** Same as V3 except `nets` uses softirq
+tracepoints exclusively (kernel 6.x has napi_poll inlined, so the
+fentry/fexit and kprobe paths V3 documents are unreachable
+anyway):
+
+| metric | mechanism                                                                  |
+|--------|----------------------------------------------------------------------------|
+| netp   | tracepoint:net/net_dev_xmit + netif_receive_skb -> agg counters            |
+| nets   | tracepoint:irq/softirq_entry+exit vec={2,3} -> per-CPU keyed deltas        |
+| blk    | tracepoint:block/block_rq_issue + complete + (dev<<32)|sector key          |
+| cpu    | tracepoint:sched/sched_switch + task_oncpu_start hash                      |
+| llcmr  | perf_event programs scaled by sample_period (10000 -> 1000 retune)         |
+| mbw    | resctrl mbm_total_bytes + new dual reader (percent AND raw MB/s)           |
+| llcocc | resctrl llc_occupancy (unchanged)                                          |
+
+**Measurement fidelity.** Equivalent to V3 within the 15% relative
+tolerance the cross-variant equivalence test enforces. The
+`test-metrics-equivalence.sh` script makes the contract explicit.
+Per-event introspectability is lost; MPSC FIFO ordering between
+probes is lost; sample-loss visibility is lost. None of these are
+needed for the steady-state IntP workload the paper studies.
+
+**Deployment requirements.** Same as V3 (kernel 5.8+ with BTF,
+clang 11+, libbpf 0.8+, bpftool, libelf, zlib; CAP_BPF / CAP_PERFMON
+at runtime; resctrl for hardware metrics).
+
+**Performance characteristics.** The structural goal is to converge
+with V2 on scheduler-perturbation while keeping eBPF portability and
+the 7-metric coverage. The acceptance test enforces this:
+`test-no-ctxsw-amplification.sh` measures vmstat ctxt across a 90s
+window with and without the profiler and fails if the ratio exceeds
+1.10 (V3 fails this test at 188-390x).
+
+**mbw normalization.** V3.2 fixes the silent clip documented in
+paper section IV-E. The legacy V3 `resctrl_read_mbm_delta()` hard-
+clips at 100% (producing the bimodal discrete 96/80/64/48/32/16/0
+pattern when `mem_bw_max_bps` is misconfigured); V3.2's
+`resctrl_read_mbm_pct_and_raw()` returns the unclipped percent AND
+the raw MB/s in one counter step. A trailing `mbw_raw_mbps` TSV
+column carries the raw reading; `--no-raw-mbw` suppresses it for
+byte-compat. The clip-at-99 behavior is opt-in via `--clip-mbw`.
+
+**Known limitations.**
+
+1. *Loss of per-event introspection.* No `--trace` flag. Tools built
+   on V3.2 reason about intervals, not events.
+2. *Loss of MPSC FIFO ordering* between probes. A blk completion
+   that lands at the same instant as a sched_switch is unordered.
+3. *Per-PID nets attribution is structurally impossible.* Same as
+   V3: softirqs run in interrupted context. Only system-wide nets
+   is attributable.
+
+**Relationship to other variants.** V3.2 sits "below" V3 on the
+streaming-vs-aggregation axis (less observability, less amplification)
+and "above" V2 (eBPF probes with sub-microsecond cost vs. /proc
+polling). It does not replace V3 -- V3 remains the introspection
+profiler. V3.2 is the steady-state profiler the paper section VIII
+calls for.

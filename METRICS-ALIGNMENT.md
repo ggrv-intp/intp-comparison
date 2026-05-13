@@ -2,7 +2,7 @@
 
 Reference variant: **V0** (`v0-stap-classic/intp.stp`) — the original IntP design from Xavier & De Rose (SBAC-PAD 2022).
 
-This document tracks how each metric is computed across the 8 variants and which divergences have been corrected.
+This document tracks how each metric is computed across the 9 variants and which divergences have been corrected.
 
 ## Variant index
 
@@ -16,6 +16,7 @@ This document tracks how each metric is computed across the 8 variants and which
 | V2   | `v2-c-stable-abi/src/*.c`         | C, /proc + perf + resctrl         | any |
 | V3   | `v3-ebpf-libbpf/src/intp.{c,bpf.c}` | libbpf + tracepoints + kprobes  | ≥5.5 |
 | V3.1 | `v3.1-bpftrace/scripts/*.bt`      | bpftrace + Python aggregator      | ≥4.19 |
+| V3.2 | `v3.2-ebpf-aggregate/src/intp_agg.{c,bpf.c}` | libbpf + in-kernel counter map aggregation (no ring buffer) | ≥5.5 |
 
 ## Metric formulas
 
@@ -33,6 +34,29 @@ Legend:
 - `≡ V0` = mathematically identical to V0 (possibly with autodetected constants instead of hardcoded values)
 - **bold** = previously divergent, now patched to match V0
 - *italics* = remaining divergence not yet patched
+
+### V3.2 (in-kernel aggregation) — variant-specific notes
+
+V3.2 uses the same probe sites and same per-metric formulas as V3
+EXCEPT for the destination of the per-event update (`__sync_fetch_and_add`
+into a `BPF_MAP_TYPE_PERCPU_ARRAY` counter slot instead of
+`bpf_ringbuf_reserve`+submit). The values userspace divides through
+are computed against the same `interval_real` × normalization
+constants V3 uses.
+
+| Metric  | V3.2 vs V3                                                                  |
+|---------|-----------------------------------------------------------------------------|
+| netp    | ≡ V3 (same probes, same denominator)                                        |
+| nets    | ≡ V3 softirq path. V3.2 has only the softirq path (kprobe+kretprobe and fentry/fexit napi_poll fallbacks of V3 are dropped — on 6.x they're unreachable anyway because napi_poll is inlined) |
+| blk     | ≡ V3                                                                        |
+| cpu     | ≡ V3                                                                        |
+| llcmr   | ≡ V3 (sample_period scaling preserved)                                      |
+| **mbw** | **V3.2 emits BOTH `mbw_pct` (no silent clip, opt-in via `--clip-mbw`) AND `mbw_raw_mbps` (raw MB/s); the bimodal discrete 96/80/64/48/32/16/0 artifact V3 produces from the silent clip is gone. See paper section IV-E.** |
+| llcocc  | ≡ V3                                                                        |
+
+The trailing `mbw_raw_mbps` column is diagnostic, not metric. The
+first 7 TSV columns remain the canonical IntP fingerprint and are
+byte-compatible with V3.
 
 ## Patches applied (this campaign)
 

@@ -40,6 +40,7 @@ V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
 V4_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
 V5_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
 V6_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
+V6_2_BIN="$REPO_ROOT/v3.2-ebpf-aggregate/intp-ebpf-agg"
 
 # Defaults
 SIZE="${SIZE:-medium}"
@@ -364,6 +365,7 @@ start_profiler() {
         v2)   _start_v46_profiler v2 "$outfile" ;;
         v3.1) _start_v5_profiler "$outfile" ;;
         v3)   _start_v46_profiler v3 "$outfile" ;;
+        v3.2) _start_v46_profiler v3.2 "$outfile" ;;
         *)    warn "unknown variant $variant"; return 1 ;;
     esac
 }
@@ -384,7 +386,7 @@ stop_profiler() {
         pre_kids=$(pgrep -P "$PROFILER_PID" 2>/dev/null | tr '\n' ' ')
         log "  [stop_profiler] PROFILER_PID=$PROFILER_PID children='${pre_kids}'"
         _kill_tree KILL "$PROFILER_PID"
-        pkill -KILL -f 'intp-hybrid|intp-ebpf|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null
+        pkill -KILL -f 'intp-hybrid|intp-ebpf|intp-ebpf-agg|run-intp-bpftrace|orchestrator/aggregator\.py' 2>/dev/null
         pkill -KILL -f 'bpftrace -q' 2>/dev/null
         local k=0
         while [ $k -lt 8 ] && kill -0 "$PROFILER_PID" 2>/dev/null; do
@@ -593,8 +595,9 @@ _start_v46_profiler() {
     local bin log args=()
 
     case "$variant" in
-        v2) bin="$V4_BIN" ;;
-        v3) bin="$V6_BIN" ;;
+        v2)   bin="$V4_BIN" ;;
+        v3)   bin="$V6_BIN" ;;
+        v3.2) bin="$V6_2_BIN" ;;
     esac
     log="${outfile%.tsv}.${variant}.log"
 
@@ -606,6 +609,10 @@ _start_v46_profiler() {
     }
 
     args=(--interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --output tsv)
+    # V3.2 has a trailing mbw_raw_mbps column by default; suppress it
+    # so the captured TSV keeps the canonical 7-column shape the rest
+    # of the hibench pipeline expects.
+    [ "$variant" = "v3.2" ] && args+=(--no-raw-mbw)
     [ -n "$MEM_BW_MAX_BPS" ] && args+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
     [ -n "$LLC_SIZE_BYTES" ] && args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
     [ -n "$NIC_SPEED_BPS" ]  && args+=(--nic-speed-bps  "$NIC_SPEED_BPS")
@@ -1190,6 +1197,7 @@ preflight() {
             v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
             v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;
             v3) [ -x "$V6_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3 binary not found: $V6_BIN" ;;
+            v3.2) [ -x "$V6_2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.2 binary not found: $V6_2_BIN (run 'make -C $REPO_ROOT/v3.2-ebpf-aggregate')" ;;
             *)  die "unknown variant: $v" ;;
         esac
     done

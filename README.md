@@ -2,15 +2,15 @@
 
 <img src="docs/images/intp-comparison.png" alt="IntP Comparison — Linux interference profiler with multi-variant comparison of SystemTap, procfs, bpftrace, and eBPF/CO-RE instrumentation." width="720">
 
-This repository contains eight implementation variants of IntP, an interference
+This repository contains nine implementation variants of IntP, an interference
 profiler that collects 7 metrics from the Linux kernel. The variants are
 organized for systematic comparison as part of a Master's dissertation on
 kernel instrumentation for interference profiling (PPGCC/PUCRS, advisor
 Prof. Cesar De Rose). The research compares the original SystemTap-based IntP
 across kernel eras (V0 / V0.1 / V0.2), an RCU-safe stap+helper hybrid (V1.1),
 and modern instrumentation approaches (procfs polling — V2; bpftrace — V3.1;
-eBPF/CO-RE — V3) to evaluate portability, safety, and measurement fidelity
-tradeoffs.
+eBPF/CO-RE — V3 ring-buffer-streaming; eBPF/CO-RE — V3.2 in-kernel-aggregating)
+to evaluate portability, safety, and measurement fidelity tradeoffs.
 
 ## About
 
@@ -36,7 +36,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 1. Reproduce the original IntP baseline (V0) and document breakage on kernel 6.8+.
 2. Develop minimal patches to restore functionality on current kernels (V0.1, V1) and stap+helper hybrids that recover full metric coverage without RCU-unsafe operations: V0.2 on kernel 5.15 GA (Ubuntu 22.04, paper-faithful V0 semantics) and V1.1 on kernel 6.8+.
 3. Implement kernel-module-free alternatives using procfs/perf_event (V2), bpftrace (V3.1), and eBPF/CO-RE (V3).
-4. Compare all eight variants across portability, safety, deployment complexity, and measurement fidelity dimensions.
+4. Compare all nine variants across portability, safety, deployment complexity, and measurement fidelity dimensions.
 
 ### Status
 
@@ -49,7 +49,8 @@ the original SystemTap approach across kernel versions and hardware architecture
 | V1.1 -- Stap + userspace helper (SystemTap, 6.8+, full metrics, RCU-safe) | Complete (helper, `.stp`, and bench integration done; HiBench distributed-mode limitation documented in METRICS-ALIGNMENT.md) |
 | V2 -- C / procfs / perf_event / resctrl | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 | V3.1 -- bpftrace + Python orchestrator | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
-| V3 -- eBPF/CO-RE (libbpf) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
+| V3 -- eBPF/CO-RE (libbpf, ring-buffer-streaming) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
+| V3.2 -- eBPF/CO-RE (libbpf, in-kernel-aggregating, paper section VIII) | Implementation complete; pending bare-metal acceptance test (`make -C v3.2-ebpf-aggregate test-amplification`) on pantanal01 |
 
 ### Citation
 
@@ -59,23 +60,24 @@ If you use this software in your research, please cite it using the metadata in
 
 ## Variant Comparison
 
-| Feature                  | V0 classic | V0.1 k68 | V0.2 helper | V1 native | V1.1 helper | V2 stable-abi | V3.1 bpftrace | V3 ebpf-core |
-|--------------------------|:----------:|:--------:|:-----------:|:---------:|:-----------:|:-------------:|:-------------:|:------------:|
-| Kernel module required   |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |     No        |      No      |
-| Userspace helper         |    No      |   No     |     Yes     |    No     |     Yes     |      n/a      |     Yes       |     Yes      |
-| Debuginfo required       |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |   No (BTF)    |   No (BTF)   |
-| Kernel crash risk        |    High    |   High   |     Low     |    Low    |     Low     |     None      |    None       |     None     |
-| Min kernel version       |   <=6.6    |   6.8+   |  5.15 GA    |    6.8+   |     6.8+    |     4.10+     |    5.8+       |     5.8+     |
-| netp                     |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
-| nets (service-time)      |     x      |    x     |      x      |     x     |      x      |       ~       |       x       |       x      |
-| blk                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
-| mbw                      |     x      |    x     |      x      |     -     |      x      |       x       |       x       |       x      |
-| llcmr                    |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
-| llcocc                   |     x      |    -     |      x      |     -     |      x      |       x       |       x       |       x      |
-| cpu                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |
-| Framework                | SystemTap  | SystemTap| SystemTap+C | SystemTap | SystemTap+C |     None      |   bpftrace    |    libbpf    |
-| AMD EPYC compatible      |  Partial   |  Partial |   Partial   |  Partial  |   Partial   |      Yes      |     Yes       |      Yes     |
-| ARM server compatible    |    No      |   No     |     No      |    No     |     No      |    Partial    |   Partial     |    Partial   |
+| Feature                  | V0 classic | V0.1 k68 | V0.2 helper | V1 native | V1.1 helper | V2 stable-abi | V3.1 bpftrace | V3 ebpf-core | V3.2 ebpf-agg |
+|--------------------------|:----------:|:--------:|:-----------:|:---------:|:-----------:|:-------------:|:-------------:|:------------:|:-------------:|
+| Kernel module required   |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |     No        |      No      |      No       |
+| Userspace helper         |    No      |   No     |     Yes     |    No     |     Yes     |      n/a      |     Yes       |     Yes      |      Yes      |
+| Debuginfo required       |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |   No (BTF)    |   No (BTF)   |   No (BTF)    |
+| Kernel crash risk        |    High    |   High   |     Low     |    Low    |     Low     |     None      |    None       |     None     |     None      |
+| Min kernel version       |   <=6.6    |   6.8+   |  5.15 GA    |    6.8+   |     6.8+    |     4.10+     |    5.8+       |     5.8+     |     5.8+      |
+| netp                     |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |       x       |
+| nets (service-time)      |     x      |    x     |      x      |     x     |      x      |       ~       |       x       |       x      |       x       |
+| blk                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |       x       |
+| mbw                      |     x      |    x     |      x      |     -     |      x      |       x       |       x       |       x      | x + raw MB/s  |
+| llcmr                    |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |       x       |
+| llcocc                   |     x      |    -     |      x      |     -     |      x      |       x       |       x       |       x      |       x       |
+| cpu                      |     x      |    x     |      x      |     x     |      x      |       x       |       x       |       x      |       x       |
+| Framework                | SystemTap  | SystemTap| SystemTap+C | SystemTap | SystemTap+C |     None      |   bpftrace    |    libbpf    |    libbpf     |
+| Per-event introspection  |    Yes     |   Yes    |     Yes     |    Yes    |     Yes     |      No       |     Yes       |     Yes      |      No       |
+| AMD EPYC compatible      |  Partial   |  Partial |   Partial   |  Partial  |   Partial   |      Yes      |     Yes       |      Yes     |      Yes      |
+| ARM server compatible    |    No      |   No     |     No      |    No     |     No      |    Partial    |   Partial     |    Partial   |    Partial    |
 
 x = supported, ~ = polling approximation, - = disabled in this build
 
@@ -111,7 +113,8 @@ x = supported, ~ = polling approximation, - = disabled in this build
 |-- v1.1-stap-helper/          Kernel 6.8+, stap + userspace helper (full 7 metrics, RCU-safe)
 |-- v2-c-stable-abi/           Pure C: procfs / perf_event_open / resctrl
 |-- v3.1-bpftrace/             bpftrace scripts + Python orchestrator + resctrl
-|-- v3-ebpf-libbpf/            Full eBPF/CO-RE with libbpf
+|-- v3-ebpf-libbpf/            Full eBPF/CO-RE with libbpf (ring-buffer-streaming)
+|-- v3.2-ebpf-aggregate/       Full eBPF/CO-RE with libbpf (in-kernel-aggregating, paper section VIII)
 |-- VERSIONS.md                Variant-naming map (current vs legacy pre-2026-05-05)
 ```
 
@@ -209,6 +212,29 @@ sudo ./intp-ebpf -p <PID> -i <interval_ms>
 ```
 
 Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
+
+### V3.2 -- eBPF/CO-RE in-kernel aggregating
+
+```bash
+cd v3.2-ebpf-aggregate
+make
+sudo ./intp-ebpf-agg --pids <PID> --interval <seconds>
+
+# Critical acceptance gate before campaign inclusion:
+sudo make test-amplification
+```
+
+V3.2 is the in-kernel-aggregating variant specified in paper section
+VIII: same probe set as V3, but the 16 MiB ring buffer is replaced
+with per-CPU + per-PID counter maps polled once per `--interval`.
+The userspace consumer is no longer draining a continuous event
+stream, which is supposed to eliminate the 188-390x context-switch
+amplification documented in paper section V-D.
+
+Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc (same as
+V3). Adds a trailing `mbw_raw_mbps` diagnostic column to the TSV
+output (suppressible via `--no-raw-mbw`); the first 7 columns stay
+byte-compatible with V3.
 
 ## Documentation
 
