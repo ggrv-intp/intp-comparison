@@ -328,6 +328,24 @@ write_ssh_setup() {
         fi
     fi
     # 3) Pre-populate known_hosts with the host's sshd key under each alias.
+    #    Cover not just the netns aliases but also the kernel hostname /
+    #    FQDN / actual NIC IPs — Hadoop and HiBench prepare scripts ssh to
+    #    the host's identity (not just localhost) and prompt interactively
+    #    if those names aren't in known_hosts. Collect them dynamically.
+    local -a aliases=( intp-host intp-app "$HOST_IP" "$GUEST_IP" localhost localhost.localdomain 127.0.0.1 ::1 )
+    local n
+    for n in $(hostname -s 2>/dev/null) $(hostname -f 2>/dev/null) $(hostname -I 2>/dev/null); do
+        [ -n "$n" ] && aliases+=( "$n" )
+    done
+    # Dedup preserving order.
+    local -A seen=()
+    local -a uniq=()
+    for n in "${aliases[@]}"; do
+        [ -n "${seen[$n]:-}" ] && continue
+        seen[$n]=1
+        uniq+=( "$n" )
+    done
+
     local host_key_pub=/etc/ssh/ssh_host_ed25519_key.pub
     if [ -r "$host_key_pub" ]; then
         local host_key
@@ -336,14 +354,14 @@ write_ssh_setup() {
         touch "$kh"
         chmod 600 "$kh"
         local alias
-        for alias in intp-host intp-app "$HOST_IP" "$GUEST_IP" localhost 127.0.0.1; do
+        for alias in "${uniq[@]}"; do
             # ssh-keygen -F returns 0 if the alias already has a key entry; only
             # append when missing to avoid duplicates.
             if ! ssh-keygen -F "$alias" -f "$kh" >/dev/null 2>&1; then
                 echo "$alias $host_key" >> "$kh"
             fi
         done
-        log "populated $kh for: intp-host intp-app $HOST_IP $GUEST_IP localhost 127.0.0.1"
+        log "populated $kh for: ${uniq[*]}"
     else
         warn "$host_key_pub not readable — skipping known_hosts pre-population"
     fi
@@ -352,17 +370,28 @@ write_ssh_setup() {
     local sshcfg="$ssh_dir/config"
     touch "$sshcfg"
     chmod 600 "$sshcfg"
-    if ! grep -q '^# IntP distributed-mode block' "$sshcfg" 2>/dev/null; then
-        cat >> "$sshcfg" <<EOF
+    if grep -q '^# IntP distributed-mode block' "$sshcfg" 2>/dev/null; then
+        # Refresh the block in place so re-running the script picks up any
+        # new hostname/IP without leaving stale aliases.
+        local tmp
+        tmp="$(mktemp)"
+        awk '
+            /^# IntP distributed-mode block/ { skip=1 }
+            skip && /^$/ { skip=0; next }
+            !skip { print }
+        ' "$sshcfg" > "$tmp"
+        mv "$tmp" "$sshcfg"
+        chmod 600 "$sshcfg"
+    fi
+    cat >> "$sshcfg" <<EOF
 
 # IntP distributed-mode block (added by setup-distributed-mode.sh)
-Host intp-host intp-app $HOST_IP $GUEST_IP
+Host ${uniq[*]}
     StrictHostKeyChecking accept-new
     LogLevel ERROR
     BatchMode yes
 EOF
-        log "appended SSH client block for intp-host/intp-app/$HOST_IP/$GUEST_IP to $sshcfg"
-    fi
+    log "wrote SSH client block to $sshcfg for: ${uniq[*]}"
 }
 
 cmd_init() {

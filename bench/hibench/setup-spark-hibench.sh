@@ -132,7 +132,11 @@ ensure_hadoop_localmode_runtime() {
 }
 
 ensure_localhost_ssh_noninteractive() {
-    # HiBench prepare scripts can invoke ssh localhost; make this non-interactive.
+    # HiBench prepare scripts can invoke ssh to the host's own hostname,
+    # FQDN, or IPv4/IPv6 addresses (Hadoop start-dfs.sh, MR daemon launches,
+    # HiBench bayes/pagerank prepare via spark-submit --master local).
+    # Whitelisting only 'localhost' leaves prompts on every other identity
+    # the kernel resolves the host to. Collect them all idempotently.
     local ssh_dir="/root/.ssh"
     mkdir -p "$ssh_dir"
     chmod 700 "$ssh_dir"
@@ -147,26 +151,45 @@ ensure_localhost_ssh_noninteractive() {
     pubkey=$(cat "$ssh_dir/id_rsa.pub")
     grep -qxF "$pubkey" "$ssh_dir/authorized_keys" || echo "$pubkey" >> "$ssh_dir/authorized_keys"
 
-    touch "$ssh_dir/known_hosts"
-    chmod 600 "$ssh_dir/known_hosts"
-    for h in localhost localhost.localdomain 127.0.0.1; do
-        ssh-keyscan -H "$h" >> "$ssh_dir/known_hosts" 2>/dev/null || true
+    # Build the full identity list. Some hostname flags may be empty
+    # (no FQDN, no global IPv6); set -u-safe via the [ -n ] guard.
+    local -a host_names=( localhost localhost.localdomain 127.0.0.1 ::1 )
+    local n
+    for n in $(hostname -s 2>/dev/null) $(hostname -f 2>/dev/null) $(hostname -I 2>/dev/null); do
+        [ -n "$n" ] && host_names+=( "$n" )
+    done
+    # Dedup preserving order (requires bash 4+; Ubuntu ships 5).
+    local -A seen=()
+    local -a uniq=()
+    for n in "${host_names[@]}"; do
+        [ -n "${seen[$n]:-}" ] && continue
+        seen[$n]=1
+        uniq+=( "$n" )
     done
 
-    mkdir -p /etc/ssh/ssh_config.d
-    cat > /etc/ssh/ssh_config.d/99-hibench-localhost.conf <<'EOF'
-Host localhost localhost.localdomain 127.0.0.1
-    StrictHostKeyChecking no
-    UserKnownHostsFile /root/.ssh/known_hosts
-    LogLevel ERROR
-EOF
+    touch "$ssh_dir/known_hosts"
+    chmod 600 "$ssh_dir/known_hosts"
+    for n in "${uniq[@]}"; do
+        # -T 5: cap probe at 5s so a missing IPv6 listener doesn't stall.
+        ssh-keyscan -H -T 5 "$n" 2>/dev/null >> "$ssh_dir/known_hosts" || true
+    done
+    sort -u "$ssh_dir/known_hosts" -o "$ssh_dir/known_hosts"
 
-    # If sshd exists, refresh to ensure localhost auth path is ready.
+    mkdir -p /etc/ssh/ssh_config.d
+    {
+        printf 'Host %s\n' "${uniq[*]}"
+        printf '    StrictHostKeyChecking accept-new\n'
+        printf '    UserKnownHostsFile /root/.ssh/known_hosts\n'
+        printf '    LogLevel ERROR\n'
+        printf '    BatchMode yes\n'
+    } > /etc/ssh/ssh_config.d/99-hibench-localhost.conf
+
+    # If sshd exists, refresh to ensure auth path is ready.
     if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^ssh\.service'; then
         systemctl restart ssh >/dev/null 2>&1 || true
     fi
 
-    log "localhost SSH configured for non-interactive HiBench prepare"
+    log "non-interactive SSH configured for: ${uniq[*]}"
 }
 
 install_os_deps() {
