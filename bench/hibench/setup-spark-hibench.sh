@@ -10,13 +10,20 @@
 # - install Python benchmark dependencies (numpy, matplotlib, pandas, scipy)
 #
 # Environment overrides:
-#   SPARK_VERSION   (default: 3.5.3)
-#   HADOOP_PROFILE  (default: 3)
-#   HIBENCH_REF     (default: master)
-#   INSTALL_ROOT    (default: /opt)
-#   JOBS_DIR        (default: /var/lib/hibench)
-#   HIBENCH_SCALE   (default: small  = "medium" in run-hibench-subset.sh --size medium)
-#   SKIP_DATA_PREP  (default: 0)   set to 1 to skip dataset generation
+#   SPARK_VERSION             (default: 3.5.3)
+#   HADOOP_PROFILE            (default: 3)
+#   HIBENCH_REF               (default: master)
+#   INSTALL_ROOT              (default: /opt)
+#   JOBS_DIR                  (default: /var/lib/hibench)
+#   HIBENCH_SCALE             (default: small)
+#   SKIP_DATA_PREP            (default: 0)   set to 1 to skip dataset generation
+#   SCALA_FULL_VERSION        (default: 2.12.18) only consulted when direct-version mode is on
+#   HIBENCH_MVN_DIRECT_VERSIONS (default: 0) when 1, pass -Dspark.version / -Dscala.version
+#                             literally instead of relying on HiBench's -Dspark=<X.Y>
+#                             profile shortcut. Required on the U22/5.15 legacy leg
+#                             where the cloned HiBench master lacks a profile that
+#                             matches the requested Spark major.minor and the build
+#                             fails with literal '${spark.version}' in dep coordinates.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -30,6 +37,8 @@ INSTALL_ROOT="${INSTALL_ROOT:-/opt}"
 JOBS_DIR="${JOBS_DIR:-/var/lib/hibench}"
 HIBENCH_SCALE="${HIBENCH_SCALE:-small}"
 SKIP_DATA_PREP="${SKIP_DATA_PREP:-0}"
+SCALA_FULL_VERSION="${SCALA_FULL_VERSION:-2.12.18}"
+HIBENCH_MVN_DIRECT_VERSIONS="${HIBENCH_MVN_DIRECT_VERSIONS:-0}"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { log "WARN: $*" >&2; }
@@ -44,6 +53,30 @@ HIBENCH_HOME="${HIBENCH_HOME:-$INSTALL_ROOT/HiBench}"
 HADOOP_HOME="${HADOOP_HOME:-/opt/hadoop}"
 HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-$HADOOP_HOME/etc/hadoop}"
 SCALA_VERSION="2.12"
+
+# Build the Maven version arguments once. Two shapes:
+#   profile shortcut (default):   -Dspark=<major.minor> -Dscala=<binary>
+#       Relies on HiBench's parent pom defining a profile activated by the
+#       'spark' property. Works when the cloned HiBench supports the
+#       requested Spark major.minor.
+#   direct versions (toggle on):  -Dspark.version=<full> -Dscala.binary.version=<binary>
+#                                 -Dscala.version=<full>
+#       Bypasses the profile mechanism and pins the dep coords directly.
+#       Use on the U22/5.15 legacy leg (HIBENCH_MVN_DIRECT_VERSIONS=1).
+if [ "$HIBENCH_MVN_DIRECT_VERSIONS" = "1" ]; then
+    MVN_VERSION_ARGS=(
+        "-Dspark.version=$SPARK_VERSION"
+        "-Dscala.binary.version=$SCALA_VERSION"
+        "-Dscala.version=$SCALA_FULL_VERSION"
+    )
+    log_mvn_mode() { log "Maven version mode: direct (spark.version=$SPARK_VERSION scala.version=$SCALA_FULL_VERSION)"; }
+else
+    MVN_VERSION_ARGS=(
+        "-Dspark=$(echo "$SPARK_VERSION" | cut -d. -f1-2)"
+        "-Dscala=$SCALA_VERSION"
+    )
+    log_mvn_mode() { log "Maven version mode: profile shortcut (-Dspark=$(echo "$SPARK_VERSION" | cut -d. -f1-2) -Dscala=$SCALA_VERSION)"; }
+fi
 
 ensure_hadoop_localmode_runtime() {
     local helper="$SCRIPT_DIR/setup-hadoop-localmode.sh"
@@ -212,6 +245,8 @@ build_hibench() {
     fi
     log "using Java 8 at $build_java_home for HiBench build (Scala 2.10 compat)"
 
+    log_mvn_mode
+
     if [ -f "$autogen_jar" ] && [ ! -f "$sparkbench_jar" ]; then
         log "autogen present but sparkbench JAR missing — building sparkbench module…"
         (
@@ -220,8 +255,7 @@ build_hibench() {
             MAVEN_OPTS="-Xmx2g" mvn -q \
                 -pl sparkbench/assembly -am \
                 -Psparkbench \
-                -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
-                -Dscala="$SCALA_VERSION" \
+                "${MVN_VERSION_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
         ) || { warn "sparkbench build failed — check Maven output above"; return 1; }
         log "sparkbench build complete"
@@ -236,22 +270,20 @@ build_hibench() {
             MAVEN_OPTS="-Xmx2g" mvn -q \
                 -pl autogen,sparkbench/assembly -am \
                 -Psparkbench \
-                -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
-                -Dscala="$SCALA_VERSION" \
+                "${MVN_VERSION_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
         ) || { warn "HiBench partial build failed"; return 1; }
         log "HiBench partial build complete"
         return 0
     fi
 
-    log "building HiBench for Spark $(echo "$SPARK_VERSION" | cut -d. -f1-2) — takes 5–15 min…"
+    log "building HiBench for Spark $SPARK_VERSION — takes 5–15 min…"
     (
         cd "$HIBENCH_HOME"
         JAVA_HOME="$build_java_home" \
         MAVEN_OPTS="-Xmx2g" mvn -q \
             -Psparkbench \
-            -Dspark="$(echo "$SPARK_VERSION" | cut -d. -f1-2)" \
-            -Dscala="$SCALA_VERSION" \
+            "${MVN_VERSION_ARGS[@]}" \
             -DskipTests \
             -T "$(nproc)" \
             clean package 2>&1 | tail -20
