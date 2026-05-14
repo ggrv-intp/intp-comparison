@@ -24,6 +24,15 @@
 #                             where the cloned HiBench master lacks a profile that
 #                             matches the requested Spark major.minor and the build
 #                             fails with literal '${spark.version}' in dep coordinates.
+#   KAFKA_VERSION             (default: 3.1.0) only consulted in direct-version mode;
+#                             HiBench's default is 0.8.2.1 which doesn't exist for
+#                             scala_2.12. Mirrors what HiBench's spark3.3 profile sets.
+#   KAFKA_BINARY_VERSION      (default: same as SCALA_VERSION, i.e. 2.12)
+#   HIBENCH_MVN_EXTRA_ARGS    (default: empty) extra -D args appended to every mvn
+#                             invocation, word-split. Use this to chase further
+#                             pinned deps that the missing profile would have set,
+#                             e.g. HIBENCH_MVN_EXTRA_ARGS="-Dhadoop.version=3.3.6
+#                             -Dflume.version=1.9.0".
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -39,6 +48,9 @@ HIBENCH_SCALE="${HIBENCH_SCALE:-small}"
 SKIP_DATA_PREP="${SKIP_DATA_PREP:-0}"
 SCALA_FULL_VERSION="${SCALA_FULL_VERSION:-2.12.18}"
 HIBENCH_MVN_DIRECT_VERSIONS="${HIBENCH_MVN_DIRECT_VERSIONS:-0}"
+KAFKA_VERSION="${KAFKA_VERSION:-3.1.0}"
+KAFKA_BINARY_VERSION="${KAFKA_BINARY_VERSION:-2.12}"
+HIBENCH_MVN_EXTRA_ARGS="${HIBENCH_MVN_EXTRA_ARGS:-}"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { log "WARN: $*" >&2; }
@@ -68,8 +80,10 @@ if [ "$HIBENCH_MVN_DIRECT_VERSIONS" = "1" ]; then
         "-Dspark.version=$SPARK_VERSION"
         "-Dscala.binary.version=$SCALA_VERSION"
         "-Dscala.version=$SCALA_FULL_VERSION"
+        "-Dkafka.version=$KAFKA_VERSION"
+        "-Dkafka.binary.version=$KAFKA_BINARY_VERSION"
     )
-    log_mvn_mode() { log "Maven version mode: direct (spark.version=$SPARK_VERSION scala.version=$SCALA_FULL_VERSION)"; }
+    log_mvn_mode() { log "Maven version mode: direct (spark.version=$SPARK_VERSION scala.version=$SCALA_FULL_VERSION kafka.version=$KAFKA_VERSION)"; }
 else
     MVN_VERSION_ARGS=(
         "-Dspark=$(echo "$SPARK_VERSION" | cut -d. -f1-2)"
@@ -77,6 +91,11 @@ else
     )
     log_mvn_mode() { log "Maven version mode: profile shortcut (-Dspark=$(echo "$SPARK_VERSION" | cut -d. -f1-2) -Dscala=$SCALA_VERSION)"; }
 fi
+
+# Optional extra -D args, word-split. Intentional split to allow multiple -Dk=v
+# entries from a single env var.
+# shellcheck disable=SC2206
+MVN_EXTRA_ARGS=($HIBENCH_MVN_EXTRA_ARGS)
 
 ensure_hadoop_localmode_runtime() {
     local helper="$SCRIPT_DIR/setup-hadoop-localmode.sh"
@@ -256,6 +275,7 @@ build_hibench() {
                 -pl sparkbench/assembly -am \
                 -Psparkbench \
                 "${MVN_VERSION_ARGS[@]}" \
+                "${MVN_EXTRA_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
         ) || { warn "sparkbench build failed — check Maven output above"; return 1; }
         log "sparkbench build complete"
@@ -271,6 +291,7 @@ build_hibench() {
                 -pl autogen,sparkbench/assembly -am \
                 -Psparkbench \
                 "${MVN_VERSION_ARGS[@]}" \
+                "${MVN_EXTRA_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
         ) || { warn "HiBench partial build failed"; return 1; }
         log "HiBench partial build complete"
@@ -284,6 +305,7 @@ build_hibench() {
         MAVEN_OPTS="-Xmx2g" mvn -q \
             -Psparkbench \
             "${MVN_VERSION_ARGS[@]}" \
+            "${MVN_EXTRA_ARGS[@]}" \
             -DskipTests \
             -T "$(nproc)" \
             clean package 2>&1 | tail -20
