@@ -24,9 +24,18 @@
 #                             where the cloned HiBench master lacks a profile that
 #                             matches the requested Spark major.minor and the build
 #                             fails with literal '${spark.version}' in dep coordinates.
-#   KAFKA_VERSION             (default: 3.1.0) only consulted in direct-version mode;
-#                             HiBench's default is 0.8.2.1 which doesn't exist for
-#                             scala_2.12. Mirrors what HiBench's spark3.3 profile sets.
+#   KAFKA_VERSION             (default: 1.1.1) only consulted in direct-version mode
+#                             (legacy/U22 leg). HiBench's common/pom.xml hardcodes
+#                             0.8.2.1 which doesn't exist for scala_2.12; the
+#                             auto-patcher rewrites that literal to ${kafka.version}
+#                             so this override takes effect. 1.1.1 is the last Kafka
+#                             with the legacy AdminUtils / ZKStringSerializer API
+#                             that hibench-common's MetricsUtil.scala references —
+#                             Kafka 2.x+ drops those classes and fails compile with
+#                             32 errors. Streaming workloads can't run against Spark
+#                             3.5 anyway; this just keeps the unused code compilable.
+#                             Not needed on the U24/6.8 leg (profile-shortcut mode
+#                             gets kafka.version from HiBench's spark<X.Y> profile).
 #   KAFKA_BINARY_VERSION      (default: same as SCALA_VERSION, i.e. 2.12)
 #   HIBENCH_MVN_EXTRA_ARGS    (default: empty) extra -D args appended to every mvn
 #                             invocation, word-split. Use this to chase further
@@ -48,7 +57,11 @@ HIBENCH_SCALE="${HIBENCH_SCALE:-small}"
 SKIP_DATA_PREP="${SKIP_DATA_PREP:-0}"
 SCALA_FULL_VERSION="${SCALA_FULL_VERSION:-2.12.18}"
 HIBENCH_MVN_DIRECT_VERSIONS="${HIBENCH_MVN_DIRECT_VERSIONS:-0}"
-KAFKA_VERSION="${KAFKA_VERSION:-3.1.0}"
+# KAFKA_VERSION default is for the legacy/U22 leg (HIBENCH_MVN_DIRECT_VERSIONS=1).
+# 1.1.1 is the last Kafka release with the AdminUtils API that hibench-common
+# references; raising this breaks the build with 32 Scala compile errors. The
+# U24 leg ignores this var (its spark<X.Y> profile sets kafka.version itself).
+KAFKA_VERSION="${KAFKA_VERSION:-1.1.1}"
 KAFKA_BINARY_VERSION="${KAFKA_BINARY_VERSION:-2.12}"
 HIBENCH_MVN_EXTRA_ARGS="${HIBENCH_MVN_EXTRA_ARGS:-}"
 
