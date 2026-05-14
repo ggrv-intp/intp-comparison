@@ -278,10 +278,27 @@ _patch_hibench_poms_for_direct_versions() {
     fi
 
     # 2. Disable streaming subpackage in hibench-common (Kafka 0.8 vs 1.x API).
-    local common_streaming="$HIBENCH_HOME/common/src/main/scala/com/intel/hibench/common/streaming"
-    if [ -d "$common_streaming" ] && [ ! -d "${common_streaming}.disabled" ]; then
-        log "disabling $common_streaming (Kafka API drift, dead code with Spark 3.5)"
-        mv "$common_streaming" "${common_streaming}.disabled"
+    #    Must move OUT of src/main/scala/ — scala-maven-plugin recursively globs
+    #    **/*.scala there, so renaming the parent dir to .disabled is not enough
+    #    (the compiler still descends into it). Park sources under common/ but
+    #    outside the compile root so they're preserved for future reference.
+    local common_scala_root="$HIBENCH_HOME/common/src/main/scala/com/intel/hibench/common"
+    local common_streaming="$common_scala_root/streaming"
+    local common_streaming_legacy_disabled="$common_scala_root/streaming.disabled"
+    local stash_dir="$HIBENCH_HOME/common/.streaming-src-disabled"
+    if [ -d "$common_streaming" ]; then
+        log "disabling $common_streaming → $stash_dir (Kafka API drift, dead code with Spark 3.5)"
+        mkdir -p "$stash_dir"
+        rm -rf "$stash_dir/streaming"
+        mv "$common_streaming" "$stash_dir/streaming"
+    fi
+    # Recover from the previous broken layout: directory renamed to
+    # streaming.disabled but still inside src/main/scala (got compiled anyway).
+    if [ -d "$common_streaming_legacy_disabled" ]; then
+        log "relocating stale $common_streaming_legacy_disabled → $stash_dir"
+        mkdir -p "$stash_dir"
+        rm -rf "$stash_dir/streaming"
+        mv "$common_streaming_legacy_disabled" "$stash_dir/streaming"
     fi
 
     # 3. Comment out streaming + structuredStreaming modules in sparkbench parent pom.
