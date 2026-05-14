@@ -245,6 +245,22 @@ _find_java8_home() {
     done
 }
 
+# In direct-version mode we bypass HiBench's spark<X.Y> profile, but some HiBench
+# poms hardcode the version of the artifact the profile would have overridden
+# (instead of referencing ${kafka.version} etc.). Replace those literals with
+# property refs so -Dkafka.version=... actually takes effect. Idempotent.
+_patch_hibench_poms_for_direct_versions() {
+    [ "$HIBENCH_MVN_DIRECT_VERSIONS" = "1" ] || return 0
+
+    local common_pom="$HIBENCH_HOME/common/pom.xml"
+    if [ -f "$common_pom" ] && grep -q '<artifactId>kafka_\${scala.binary.version}</artifactId>' "$common_pom"; then
+        if grep -A1 '<artifactId>kafka_\${scala.binary.version}</artifactId>' "$common_pom" | grep -q '<version>0.8.2.1</version>'; then
+            log "patching kafka version literal in $common_pom → \${kafka.version}"
+            sed -i.bak '/<artifactId>kafka_\${scala.binary.version}</,/<\/dependency>/ { s|<version>0\.8\.2\.1</version>|<version>${kafka.version}</version>| }' "$common_pom"
+        fi
+    fi
+}
+
 build_hibench() {
     local autogen_jar="$HIBENCH_HOME/autogen/target/autogen-8.0-SNAPSHOT-jar-with-dependencies.jar"
     local sparkbench_jar="$HIBENCH_HOME/sparkbench/assembly/target/sparkbench-assembly-8.0-SNAPSHOT-dist.jar"
@@ -252,6 +268,8 @@ build_hibench() {
         log "HiBench already built at $HIBENCH_HOME — skipping build"
         return 0
     fi
+
+    _patch_hibench_poms_for_direct_versions
 
     # Scala 2.10 (used by hibench-common) requires Java 8 to compile.
     local build_java_home
@@ -273,7 +291,7 @@ build_hibench() {
             JAVA_HOME="$build_java_home" \
             MAVEN_OPTS="-Xmx2g" mvn -q \
                 -pl sparkbench/assembly -am \
-                -Psparkbench \
+                -Psparkbench -U \
                 "${MVN_VERSION_ARGS[@]}" \
                 "${MVN_EXTRA_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
@@ -289,7 +307,7 @@ build_hibench() {
             JAVA_HOME="$build_java_home" \
             MAVEN_OPTS="-Xmx2g" mvn -q \
                 -pl autogen,sparkbench/assembly -am \
-                -Psparkbench \
+                -Psparkbench -U \
                 "${MVN_VERSION_ARGS[@]}" \
                 "${MVN_EXTRA_ARGS[@]}" \
                 -DskipTests clean package 2>&1 | tail -20
@@ -303,7 +321,7 @@ build_hibench() {
         cd "$HIBENCH_HOME"
         JAVA_HOME="$build_java_home" \
         MAVEN_OPTS="-Xmx2g" mvn -q \
-            -Psparkbench \
+            -Psparkbench -U \
             "${MVN_VERSION_ARGS[@]}" \
             "${MVN_EXTRA_ARGS[@]}" \
             -DskipTests \
