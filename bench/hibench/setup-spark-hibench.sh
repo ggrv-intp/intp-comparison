@@ -325,6 +325,31 @@ _patch_hibench_poms_for_direct_versions() {
             fi
         done
     fi
+
+    # 5. sparkbench-ml uses com.github.fommil.netlib.BLAS in its data generators
+    #    (SVMDataGenerator, LinearRegressionDataGenerator). Spark 2.x bundled
+    #    that package transitively via spark-mllib; Spark 3.0+ moved to
+    #    dev.ludovic.netlib and stopped re-exporting it. The standalone
+    #    com.github.fommil.netlib:core:1.1.2 artifact is still on Maven Central
+    #    and works as a drop-in (pure-Java F2J impl, BLAS.getInstance() falls
+    #    back to it when no native binding is present). Inject it as an
+    #    explicit dependency in sparkbench/ml/pom.xml.
+    local ml_pom="$HIBENCH_HOME/sparkbench/ml/pom.xml"
+    if [ -f "$ml_pom" ] && ! grep -q 'com\.github\.fommil\.netlib' "$ml_pom"; then
+        log "injecting com.github.fommil.netlib:core dependency into $ml_pom"
+        awk '
+            BEGIN { inserted = 0 }
+            /<\/dependencies>/ && !inserted {
+                print "    <dependency>"
+                print "      <groupId>com.github.fommil.netlib</groupId>"
+                print "      <artifactId>core</artifactId>"
+                print "      <version>1.1.2</version>"
+                print "    </dependency>"
+                inserted = 1
+            }
+            { print }
+        ' "$ml_pom" > "$ml_pom.tmp" && mv "$ml_pom.tmp" "$ml_pom"
+    fi
 }
 
 build_hibench() {
