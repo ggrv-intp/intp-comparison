@@ -37,6 +37,10 @@ V3_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
 V3_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
 V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
 V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
+V0_2_TEMPLATE="$REPO_ROOT/v0.2-stap-helper/intp.stp.template"
+V0_2_GENERATOR="$REPO_ROOT/v0.2-stap-helper/generate-stp.sh"
+V0_2_RECAL_STP="$REPO_ROOT/v0.2-stap-helper/intp.recal.stp"
+V0_2_HELPER="$REPO_ROOT/v0.2-stap-helper/intp-helper"
 V4_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
 V5_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
 V6_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
@@ -357,9 +361,10 @@ restore_cpu_env() {
 
 start_profiler() {
     local variant="$1" outfile="$2"
-    PROFILER_PID="" STAP_PID="" STAP_COLLECTOR_PID="" V1_1_HELPER_PID=""
+    PROFILER_PID="" STAP_PID="" STAP_COLLECTOR_PID="" V1_1_HELPER_PID="" V0_2_HELPER_PID=""
 
     case "$variant" in
+        v0.2) _start_v0_2_profiler "$outfile" ;;
         v1)   _start_v3_profiler "$outfile" ;;
         v1.1) _start_v1_1_profiler "$outfile" ;;
         v2)   _start_v46_profiler v2 "$outfile" ;;
@@ -426,7 +431,19 @@ stop_profiler() {
         V1_1_HELPER_PID=""
     fi
 
-    if [ "$variant" = "v1" ] || [ "$variant" = "v1.1" ]; then
+    # V0.2 helper cleanup (same architecture as V1.1, separate /tmp data file)
+    if [ -n "$V0_2_HELPER_PID" ]; then
+        kill -TERM "$V0_2_HELPER_PID" 2>/dev/null || true
+        local k2=0
+        while [ $k2 -lt 8 ] && kill -0 "$V0_2_HELPER_PID" 2>/dev/null; do
+            sleep 0.25; k2=$((k2 + 1))
+        done
+        kill -KILL "$V0_2_HELPER_PID" 2>/dev/null || true
+        wait "$V0_2_HELPER_PID" 2>/dev/null || true
+        V0_2_HELPER_PID=""
+    fi
+
+    if [ "$variant" = "v1" ] || [ "$variant" = "v1.1" ] || [ "$variant" = "v0.2" ]; then
         stap_deep_cleanup "post-hibench-${outfile##*/}"
     fi
 
@@ -574,6 +591,115 @@ _start_v1_1_profiler() {
 
     {
         printf '# variant=v1.1 hibench mode=@system helper=%s\n' "$STAP_TARGET"
+        printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
+    } > "$outfile"
+
+    local ib="$intestbench" of="$outfile" iv="$INTERVAL"
+    (
+        while true; do
+            local line ts
+            ts=$(date +%s.%N)
+            line=$(grep -E '^[0-9]' "$ib" 2>/dev/null | tail -1 || true)
+            [ -n "$line" ] && printf '%s\t%s\n' "$ts" "$line" >> "$of"
+            sleep "$iv"
+        done
+    ) &
+    STAP_COLLECTOR_PID=$!
+}
+
+_start_v0_2_profiler() {
+    # V0.2 = V0-faithful stap + userspace helper, targeting kernel 5.15 GA.
+    # Same architecture as V1.1, with two differences:
+    #   1. The .stp script is regenerated per-run from intp.stp.template by
+    #      generate-stp.sh, which substitutes calibration constants from
+    #      intp-detect.sh output (DRAM bw, L3 size, IMC PMU type).
+    #   2. Helper writes to /tmp/intp-v0.2-hw-data (V1.1 uses /tmp/intp-hw-data),
+    #      so the two variants' helpers can coexist conceptually.
+    # HiBench-specific: stap runs in SYSTEM-WIDE mode ("@system") — same
+    # rationale as V1.1: HiBench's Spark Driver is launched after stap attach,
+    # often inside netns intp-app, so per-process probes miss it.
+    local outfile="$1"
+
+    V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
+    stap_deep_cleanup "pre-hibench-v0.2-run-${V3_RUN_COUNT}"
+    if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+        log "[v0.2] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+        [ "$DRY_RUN" -eq 0 ] && sleep 8
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        {
+            printf '# variant=v0.2 hibench target=%s helper=%s mode=@system\n' "@system" "$STAP_TARGET"
+            printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
+        } > "$outfile"
+        STAP_PID=$$
+        return 0
+    fi
+
+    if [ ! -x "$V0_2_GENERATOR" ]; then
+        warn "[v0.2] generator not executable: $V0_2_GENERATOR"
+        return 1
+    fi
+    if [ ! -x "$V0_2_HELPER" ]; then
+        warn "[v0.2] helper not built: $V0_2_HELPER"
+        return 1
+    fi
+
+    # Regenerate the calibrated stp script from template + intp-detect.sh.
+    local kv_log="${outfile%.tsv}.v0.2-calibration.kv"
+    if ! "$V0_2_GENERATOR" > "$kv_log" 2>"${kv_log%.kv}.err"; then
+        warn "[v0.2] generate-stp.sh failed (rc=$?); see ${kv_log%.kv}.err"
+        return 1
+    fi
+
+    # Capture IMC PMU type / DRAM bw / L3 size for the helper. The helper
+    # also accepts user overrides via INTP_HELPER_IMC_PMU_TYPE_{FIRST,LAST}
+    # which are passed through from the parent env (e.g. SPR's 73-80 range).
+    local detect_out
+    detect_out="$("$REPO_ROOT/shared/intp-detect.sh" 2>/dev/null || true)"
+    # shellcheck disable=SC2046
+    eval "$(echo "$detect_out" | grep -E '^INTP_[A-Z0-9_]+=' || true)"
+
+    local helper_log="${outfile%.tsv}.helper.log"
+    rm -f /tmp/intp-v0.2-hw-data
+    INTP_HELPER_DRAM_BW_MBPS="${INTP_MEM_BW_MBPS:-}" \
+    INTP_HELPER_L3_SIZE_KB="${INTP_LLC_SIZE_KB:-}" \
+    INTP_HELPER_IMC_PMU_TYPE="${INTP_IMC_PMU_TYPE:-}" \
+    INTP_HELPER_DATA_FILE="/tmp/intp-v0.2-hw-data" \
+        "$V0_2_HELPER" "$STAP_TARGET" > "$helper_log" 2>&1 &
+    V0_2_HELPER_PID=$!
+    sleep 0.3
+
+    local stap_log="${outfile%.tsv}.stap.log"
+    stap --suppress-handler-errors -g \
+        -B CONFIG_MODVERSIONS=y \
+        -DMAXSKIPPED=1000000 \
+        -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
+        -DSTP_OVERLOAD_INTERVAL=1000000000LL \
+        "$V0_2_RECAL_STP" "@system" > "$stap_log" 2>&1 &
+    STAP_PID=$!
+
+    local intestbench=""
+    for _ in $(seq 1 "$STAP_WAIT_MAX"); do
+        intestbench=$(find /proc/systemtap -name intestbench 2>/dev/null | head -1)
+        [ -n "$intestbench" ] && break
+        sleep 1
+    done
+
+    if [ -z "$intestbench" ]; then
+        warn "[v0.2] intestbench did not appear after ${STAP_WAIT_MAX}s for HiBench"
+        kill "$STAP_PID" 2>/dev/null || true
+        wait "$STAP_PID" 2>/dev/null || true
+        STAP_PID=""
+        kill "$V0_2_HELPER_PID" 2>/dev/null || true
+        wait "$V0_2_HELPER_PID" 2>/dev/null || true
+        V0_2_HELPER_PID=""
+        stap_deep_cleanup "v0.2-startup-timeout"
+        return 1
+    fi
+
+    {
+        printf '# variant=v0.2 hibench mode=@system helper=%s\n' "$STAP_TARGET"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
     } > "$outfile"
 
@@ -1193,6 +1319,13 @@ preflight() {
                 command -v stap >/dev/null 2>&1 || die "stap not found (required for v1.1)"
                 [ -f "$V1_1_STP" ] || die "V1.1 script not found: $V1_1_STP"
                 [ -x "$V1_1_HELPER" ] || die "V1.1 helper not built: $V1_1_HELPER (run 'make -C $REPO_ROOT/v1.1-stap-helper')"
+                ;;
+            v0.2)
+                [ "$DRY_RUN" -eq 1 ] && continue
+                command -v stap >/dev/null 2>&1 || die "stap not found (required for v0.2)"
+                [ -f "$V0_2_TEMPLATE" ] || die "V0.2 template not found: $V0_2_TEMPLATE"
+                [ -x "$V0_2_GENERATOR" ] || die "V0.2 generator not executable: $V0_2_GENERATOR"
+                [ -x "$V0_2_HELPER" ] || die "V0.2 helper not built: $V0_2_HELPER (run 'make -C $REPO_ROOT/v0.2-stap-helper')"
                 ;;
             v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
             v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;

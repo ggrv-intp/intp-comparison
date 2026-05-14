@@ -258,6 +258,7 @@ run_step "v1 deps check" bash -lc '
   && test -f v1-stap-native/intp-resctrl.stp \
   && test -x shared/intp-resctrl-helper.sh
 '
+run_step "build v0.2" make -C v0.2-stap-helper all
 run_step "build v2" make -C v2-c-stable-abi all
 run_step "build v3" make -C v3-ebpf-libbpf all
 run_step "build v3.2" make -C v3.2-ebpf-aggregate all
