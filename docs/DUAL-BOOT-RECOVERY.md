@@ -174,8 +174,7 @@ Verify the next boot lands on 5.15 by rebooting and running
 
 The legacy-host setup script (`bench/setup/setup-host-legacy.sh`) is
 the canonical source of truth for what U22 should look like. Two
-defensive additions are tracked in the post-batch follow-up
-(see `CLAUDE-CODE-UPDATE-PLAN.md` Section 3.3):
+defensive additions are tracked in the post-batch follow-up:
 
 1. At the **end** of the script, after the 5.15 kernel and headers
    are installed, run the `apt-mark hold` block above automatically
