@@ -195,6 +195,24 @@ patch_hibench_for_hadoop_local() {
     local confdir="$HIBENCH_HOME/conf"
     [ -d "$confdir" ] || die "HiBench conf dir missing: $confdir (run setup-spark-hibench.sh first)"
 
+    # Ensure the files we're about to sed actually exist. HiBench ships
+    # hadoop.conf and spark.conf as .template files; hibench.conf is a
+    # direct file. On a fresh checkout this function runs before
+    # setup-spark-hibench.sh's configure_hibench, so we have to seed
+    # hadoop.conf ourselves. Idempotent — cp -f is a no-op once the
+    # destination exists.
+    for f in hadoop.conf hibench.conf; do
+        if [ ! -f "$confdir/$f" ]; then
+            if [ -f "$confdir/$f.template" ]; then
+                cp -f "$confdir/$f.template" "$confdir/$f"
+                log "seeded $confdir/$f from template"
+            else
+                : > "$confdir/$f"
+                log "no template for $f; created empty $confdir/$f"
+            fi
+        fi
+    done
+
     # Tell HiBench where the hadoop binary lives
     sed -i "s|^hibench\.hadoop\.home.*|hibench.hadoop.home               $HADOOP_HOME|" \
         "$confdir/hadoop.conf"
@@ -293,7 +311,14 @@ log "=== Hadoop local-mode setup for HiBench ==="
 install_python2_for_hibench
 install_hadoop_binary
 configure_hadoop_for_localmode
-patch_hibench_for_hadoop_local
+# SKIP_HIBENCH_PATCH=1 lets the parent setup-spark-hibench.sh skip this step
+# because its configure_hibench does the same work via the _set_prop helper
+# (replace-or-append) without depending on the template file existing yet.
+if [ "${SKIP_HIBENCH_PATCH:-0}" != "1" ]; then
+    patch_hibench_for_hadoop_local
+else
+    log "SKIP_HIBENCH_PATCH=1 — orchestrator will configure HiBench conf"
+fi
 ensure_data_dirs
 
 if [ "${SKIP_DATA_PREP:-0}" != "1" ]; then

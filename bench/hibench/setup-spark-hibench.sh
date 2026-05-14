@@ -116,8 +116,11 @@ ensure_hadoop_localmode_runtime() {
 
     # HiBench depends on python2 loader + Hadoop CLI even in file:/// local mode.
     # Delegate provisioning to the dedicated helper to keep this script simple.
+    # SKIP_HIBENCH_PATCH=1: this script's configure_hibench owns HiBench conf;
+    # the helper's patch step would duplicate writes AND fail when hadoop.conf
+    # hasn't been seeded from its template yet (helper runs before configure).
     log "ensuring Hadoop local-mode runtime (python2 + hadoop cli)"
-    SKIP_DATA_PREP=1 SKIP_SMOKE=1 \
+    SKIP_DATA_PREP=1 SKIP_SMOKE=1 SKIP_HIBENCH_PATCH=1 \
     HIBENCH_HOME="$HIBENCH_HOME" \
     INSTALL_ROOT="$INSTALL_ROOT" \
     JOBS_DIR="$JOBS_DIR" \
@@ -486,6 +489,7 @@ configure_hibench() {
     # Local-mode: use explicit file:// paths so prepare/run scripts don't expect HDFS.
     _set_prop "$confdir/hibench.conf" "hibench.workload.input"  "file://$JOBS_DIR/input"
     _set_prop "$confdir/hibench.conf" "hibench.workload.output" "file://$JOBS_DIR/output"
+    _set_prop "$confdir/hibench.conf" "hibench.workload.scratch" "file://$JOBS_DIR/scratch"
 }
 
 prepare_datasets() {
