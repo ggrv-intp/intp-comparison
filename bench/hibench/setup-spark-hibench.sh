@@ -258,19 +258,55 @@ _find_java8_home() {
     done
 }
 
-# In direct-version mode we bypass HiBench's spark<X.Y> profile, but some HiBench
-# poms hardcode the version of the artifact the profile would have overridden
-# (instead of referencing ${kafka.version} etc.). Replace those literals with
-# property refs so -Dkafka.version=... actually takes effect. Idempotent.
+# In direct-version mode we bypass HiBench's spark<X.Y> profile, but HiBench's
+# poms hardcode several versions the profile would have overridden, AND its
+# common/streaming code uses Kafka 0.8.x API (ZkClient/AdminUtils with old
+# signatures) that no longer compiles against any Kafka with a scala_2.12 build
+# (Kafka 1.0+). Streaming workloads can't run against Spark 3.5 either, so this
+# function disables them entirely so the rest of HiBench (micro, ml, sql, graph,
+# websearch) builds clean. Idempotent.
 _patch_hibench_poms_for_direct_versions() {
     [ "$HIBENCH_MVN_DIRECT_VERSIONS" = "1" ] || return 0
 
+    # 1. Rewrite kafka version literal to a property so -Dkafka.version takes effect.
     local common_pom="$HIBENCH_HOME/common/pom.xml"
     if [ -f "$common_pom" ] && grep -q '<artifactId>kafka_\${scala.binary.version}</artifactId>' "$common_pom"; then
         if grep -A1 '<artifactId>kafka_\${scala.binary.version}</artifactId>' "$common_pom" | grep -q '<version>0.8.2.1</version>'; then
             log "patching kafka version literal in $common_pom → \${kafka.version}"
             sed -i.bak '/<artifactId>kafka_\${scala.binary.version}</,/<\/dependency>/ { s|<version>0\.8\.2\.1</version>|<version>${kafka.version}</version>| }' "$common_pom"
         fi
+    fi
+
+    # 2. Disable streaming subpackage in hibench-common (Kafka 0.8 vs 1.x API).
+    local common_streaming="$HIBENCH_HOME/common/src/main/scala/com/intel/hibench/common/streaming"
+    if [ -d "$common_streaming" ] && [ ! -d "${common_streaming}.disabled" ]; then
+        log "disabling $common_streaming (Kafka API drift, dead code with Spark 3.5)"
+        mv "$common_streaming" "${common_streaming}.disabled"
+    fi
+
+    # 3. Comment out streaming + structuredStreaming modules in sparkbench parent pom.
+    local sparkbench_pom="$HIBENCH_HOME/sparkbench/pom.xml"
+    if [ -f "$sparkbench_pom" ]; then
+        for mod in streaming structuredStreaming; do
+            if grep -q "^[[:space:]]*<module>$mod</module>" "$sparkbench_pom"; then
+                log "commenting <module>$mod</module> in $sparkbench_pom"
+                sed -i.bak "s|<module>$mod</module>|<!-- <module>$mod</module> disabled (direct-versions mode) -->|" "$sparkbench_pom"
+            fi
+        done
+    fi
+
+    # 4. Remove sparkbench-streaming + sparkbench-structuredStreaming deps from
+    # the assembly pom so it doesn't try to pull artifacts that are no longer built.
+    local assembly_pom="$HIBENCH_HOME/sparkbench/assembly/pom.xml"
+    if [ -f "$assembly_pom" ]; then
+        for mod in sparkbench-streaming sparkbench-structuredStreaming; do
+            if grep -q "<artifactId>$mod</artifactId>" "$assembly_pom"; then
+                log "removing <dependency> on $mod from $assembly_pom"
+                # Multi-line sed: when we see <dependency>, accumulate until
+                # </dependency>, then drop the whole block if it mentions $mod.
+                sed -i.bak "/<dependency>/{:a;N;/<\\/dependency>/!ba; /$mod/d}" "$assembly_pom"
+            fi
+        done
     fi
 }
 
