@@ -422,6 +422,36 @@ build_hibench() {
     log "HiBench build complete"
 }
 
+_ensure_conf_file() {
+    # Ensure $1 exists. Prefer copying from $1.template if present; otherwise
+    # create empty. Idempotent. HiBench's conf layout has drifted across
+    # releases — some files ship as templates, some as direct files, and on
+    # newer master there is no hadoop.conf.template at all.
+    local target="$1"
+    [ -f "$target" ] && return 0
+    if [ -f "${target}.template" ]; then
+        cp -f "${target}.template" "$target"
+        log "created $target from template"
+    else
+        : > "$target"
+        log "no template found for $(basename "$target"); created empty file"
+    fi
+}
+
+_set_prop() {
+    # Set HiBench-style "key   value" property: replace line if key exists,
+    # otherwise append. Safe under set -e. Uses '|' delimiter for sed so
+    # paths with '/' don't need escaping.
+    local file="$1" key="$2" value="$3"
+    local key_re
+    key_re="$(printf '%s' "$key" | sed 's|[.[\*^$]|\\&|g')"
+    if grep -qE "^${key_re}([[:space:]]|$)" "$file"; then
+        sed -i "s|^${key_re}[[:space:]].*|${key}             ${value}|" "$file"
+    else
+        printf '%-34s %s\n' "$key" "$value" >> "$file"
+    fi
+}
+
 configure_hibench() {
     log "configuring HiBench for local Spark"
     mkdir -p "$JOBS_DIR" "$JOBS_DIR/spark-local" "$JOBS_DIR/report"
@@ -432,44 +462,30 @@ configure_hibench() {
     local exec_instances=$(( ncores / 4 > 1 ? ncores / 4 : 1 ))
     local shuffle_par=$(( ncores * 4 ))
 
-    # Start from templates if conf files don't exist yet
-    [ -f "$confdir/hadoop.conf" ] || cp -f "$confdir/hadoop.conf.template" "$confdir/hadoop.conf"
-    [ -f "$confdir/spark.conf" ]  || cp -f "$confdir/spark.conf.template"  "$confdir/spark.conf"
-    [ -f "$confdir/hibench.conf" ] || cp -f "$confdir/hibench.conf.template" "$confdir/hibench.conf"
+    _ensure_conf_file "$confdir/hadoop.conf"
+    _ensure_conf_file "$confdir/spark.conf"
+    _ensure_conf_file "$confdir/hibench.conf"
 
-    sed -i "s|^hibench\.hadoop\.home.*|hibench.hadoop.home             $HADOOP_HOME|" "$confdir/hadoop.conf"
-    sed -i "s|^hibench\.hdfs\.master.*|hibench.hdfs.master             file:///|" "$confdir/hadoop.conf"
-    grep -q '^hibench.hadoop.configure.dir' "$confdir/hadoop.conf" || \
-        printf 'hibench.hadoop.configure.dir      %s\n' "$HADOOP_CONF_DIR" >> "$confdir/hadoop.conf"
-    grep -q '^hibench.hadoop.executable' "$confdir/hadoop.conf" || \
-        printf 'hibench.hadoop.executable         %s/bin/hadoop\n' "$HADOOP_HOME" >> "$confdir/hadoop.conf"
-    grep -q '^hibench.hadoop.release' "$confdir/hadoop.conf" || \
-        printf 'hibench.hadoop.release            apache\n' >> "$confdir/hadoop.conf"
+    _set_prop "$confdir/hadoop.conf" "hibench.hadoop.home"          "$HADOOP_HOME"
+    _set_prop "$confdir/hadoop.conf" "hibench.hdfs.master"          "file:///"
+    _set_prop "$confdir/hadoop.conf" "hibench.hadoop.configure.dir" "$HADOOP_CONF_DIR"
+    _set_prop "$confdir/hadoop.conf" "hibench.hadoop.executable"    "$HADOOP_HOME/bin/hadoop"
+    _set_prop "$confdir/hadoop.conf" "hibench.hadoop.release"       "apache"
 
-    sed -i "s|^hibench\.spark\.home.*|hibench.spark.home               $SPARK_HOME|" "$confdir/spark.conf"
-    sed -i "s|^hibench\.spark\.master.*|hibench.spark.master             local[$ncores]|" "$confdir/spark.conf"
-    sed -i "s|^spark\.executor\.instances.*|spark.executor.instances             $exec_instances|" "$confdir/spark.conf"
-    sed -i "s|^spark\.executor\.cores.*|spark.executor.cores                 4|" "$confdir/spark.conf"
-    sed -i "s|^spark\.executor\.memory.*|spark.executor.memory                8g|" "$confdir/spark.conf"
-    sed -i "s|^spark\.driver\.memory.*|spark.driver.memory                  8g|" "$confdir/spark.conf"
-    grep -q '^hibench.spark.deploymode' "$confdir/spark.conf" || \
-        printf '\nhibench.spark.deploymode          client\n' >> "$confdir/spark.conf"
-    grep -q '^spark.sql.shuffle.partitions' "$confdir/spark.conf" || \
-        printf 'spark.sql.shuffle.partitions      %s\n' "$shuffle_par" >> "$confdir/spark.conf"
+    _set_prop "$confdir/spark.conf" "hibench.spark.home"          "$SPARK_HOME"
+    _set_prop "$confdir/spark.conf" "hibench.spark.master"        "local[$ncores]"
+    _set_prop "$confdir/spark.conf" "hibench.spark.deploymode"    "client"
+    _set_prop "$confdir/spark.conf" "spark.executor.instances"    "$exec_instances"
+    _set_prop "$confdir/spark.conf" "spark.executor.cores"        "4"
+    _set_prop "$confdir/spark.conf" "spark.executor.memory"       "8g"
+    _set_prop "$confdir/spark.conf" "spark.driver.memory"         "8g"
+    _set_prop "$confdir/spark.conf" "spark.sql.shuffle.partitions" "$shuffle_par"
 
-    sed -i "s|^hibench\.scale\.profile.*|hibench.scale.profile             $HIBENCH_SCALE|" "$confdir/hibench.conf"
-    sed -i "s|^hibench\.report\.dir.*|hibench.report.dir              $JOBS_DIR/report|" "$confdir/hibench.conf"
+    _set_prop "$confdir/hibench.conf" "hibench.scale.profile"   "$HIBENCH_SCALE"
+    _set_prop "$confdir/hibench.conf" "hibench.report.dir"      "$JOBS_DIR/report"
     # Local-mode: use explicit file:// paths so prepare/run scripts don't expect HDFS.
-    if grep -q '^hibench.workload.input' "$confdir/hibench.conf"; then
-        sed -i "s|^hibench\.workload\.input.*|hibench.workload.input            file://$JOBS_DIR/input|" "$confdir/hibench.conf"
-    else
-        printf 'hibench.workload.input            file://%s/input\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
-    fi
-    if grep -q '^hibench.workload.output' "$confdir/hibench.conf"; then
-        sed -i "s|^hibench\.workload\.output.*|hibench.workload.output           file://$JOBS_DIR/output|" "$confdir/hibench.conf"
-    else
-        printf 'hibench.workload.output           file://%s/output\n' "$JOBS_DIR" >> "$confdir/hibench.conf"
-    fi
+    _set_prop "$confdir/hibench.conf" "hibench.workload.input"  "file://$JOBS_DIR/input"
+    _set_prop "$confdir/hibench.conf" "hibench.workload.output" "file://$JOBS_DIR/output"
 }
 
 prepare_datasets() {
