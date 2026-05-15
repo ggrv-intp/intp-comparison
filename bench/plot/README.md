@@ -14,7 +14,7 @@ covers the **standalone** invocation flow.
 
 | Script | Input | Output | Use when |
 |---|---|---|---|
-| `plot-intp-bench.py`        | a `bench-full/` directory (one campaign) | `<input>/plots/fig*.png` + `aggregate-means.csv` | re-rendering the 14 cross-variant figures from solo / pairwise / overhead / timeseries data |
+| `plot-intp-bench.py`        | a `bench-full/` directory (one campaign) | `<input>/plots/{png,pdf}/fig*.{png,pdf}` + `aggregate-means.csv` | re-rendering the cross-variant figure set (fig00 - fig14, plus fig01b / fig04b / fig04c) from solo / pairwise / overhead / timeseries data |
 | `plot-hibench.py`           | a `hibench/` directory (one or more workload sweeps) | `<input>/plots/fig*.png` | rendering the HiBench-specific resource-family figures |
 | `plot-pca-correlation-circle.py` | an `aggregate-means.{tsv,csv}` from a single campaign | `fig_pca_correlation_circle.png` | publication-grade single-figure biplot for the SBAC-PAD short paper |
 | `extract-fragility.py`      | a `bench-full/` directory (SystemTap stap.log per run) | `<input>/fragility-summary.tsv` and `fragility-aggregated.tsv` | quantifying probe skips, overload, sample loss for the V0 / V0.1 / V1 / V1.1 stap variants |
@@ -73,7 +73,10 @@ python3 bench/plot/plot-intp-bench.py results/<campaign>/bench-full \
     --out /tmp/fig-iteration
 ```
 
-Produces `fig00_*.png` … `fig14_*.png` plus `aggregate-means.csv`.
+Produces `fig00_*` … `fig14_*` plus the b-suffixed siblings
+(`fig01b_per_variant_bars`, `fig04b_overhead_cpu_jiffies`,
+`fig04c_overhead_sched_switch`), each emitted as both PNG (under
+`plots/png/`) and PDF (under `plots/pdf/`), and also `aggregate-means.csv`.
 Every figure is auto-skipped when its required input subtree is empty
 (e.g. no `timeseries/` data → no fig03), so it is safe to point at a
 partial run.
@@ -142,10 +145,10 @@ INTP_INTERVAL=0.5 python3 bench/plot/extract-fragility.py \
 
 ## Output sizing
 
-All `plot-*.py` scripts cap PNG output at ~1900 px per side (the
-threshold above which several downstream readers reject images).
-Re-style the figures by editing the constants at the top of each
-script (`MAX_PIXELS`, `SAVE_DPI`, `setup_style()`).
+All `plot-*.py` scripts cap PNG output at ~2600 px per side and render
+at 160 DPI. Re-style the figures by editing the constants at the top
+of each script (`MAX_PIXELS`, `SAVE_DPI`, `setup_style()`). The
+companion PDF (vector) export bypasses the pixel cap.
 
 ## Replaying an archived campaign
 

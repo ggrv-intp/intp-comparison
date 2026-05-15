@@ -144,21 +144,33 @@ side -- the plotter will merge them if you point it at a parent dir.
 
 ## Figures produced
 
-| File                              | Source stage   | Maps to                              |
-| --------------------------------- | -------------- | ------------------------------------ |
-| `fig01_per_app_bars.png`          | solo           | per-workload bars                    |
-| `fig02_pca_kmeans.png`            | solo           | PCA + k-means clustering             |
-| `fig03_timeseries.png`            | timeseries     | long-trace metric profile            |
-| `fig04_overhead_bars.png`         | overhead       | Volpert et al. 2025                  |
-| `fig05_fidelity_matrix.png`       | solo + GT      | new (Pearson r vs ground truth)      |
-| `fig06_env_heatmap.png`           | solo (envs)    | dissertation Phase 3                 |
-| `fig07_pairwise_heatmap_<env>.png`| pairwise       | new (cross-variant interference map) |
-| `fig08_metric_availability.png`   | any            | new (V0.1 llcocc=0 etc.)               |
+| File                                  | Source stage   | Maps to                                                          |
+| ------------------------------------- | -------------- | ---------------------------------------------------------------- |
+| `fig00_canonical_intp_fig4.png`       | solo           | IntP Fig. 4 canonical reproduction (single panel per variant)    |
+| `fig01_per_workload_bars.png`         | solo           | per-workload bars, variants compared                             |
+| `fig01b_per_variant_bars.png`         | solo           | dual view — per-(env, variant) workload x metric heatmap         |
+| `fig02_pca_kmeans.png`                | solo           | PCA + k-means clustering (joint fit, variants overlaid)          |
+| `fig03_timeseries.png`                | timeseries     | long-trace metric profile (IntP Fig. 3)                          |
+| `fig04_overhead_throughput.png`       | overhead       | Volpert et al. 2025 — stress-ng bogo-ops/s slowdown              |
+| `fig04b_overhead_cpu_jiffies.png`     | overhead       | Volpert et al. 2025 — extra system-wide CPU jiffies              |
+| `fig04c_overhead_sched_switch.png`    | overhead       | Volpert et al. 2025 — sched:sched_switch perturbation            |
+| `fig05_fidelity_matrix.png`           | solo + GT      | Pearson r vs ground truth                                        |
+| `fig06_env_heatmap.png`               | solo (envs)    | dissertation Phase 3 (cross-env ratios; >=2 envs required)       |
+| `fig07_pairwise_heatmap_<env>.png`    | pairwise       | cross-variant interference map per env                           |
+| `fig08_metric_availability.png`       | any            | which (variant, metric) pairs reported non-zero signal           |
+| `fig09_radar_fingerprint.png`         | solo           | per-workload polar fingerprint, variants overlaid                |
+| `fig10_workload_clustermap.png`       | solo           | hierarchical (Ward) workload clustermap per variant              |
+| `fig11_idi_bars.png`                  | pairwise       | IADA Fig. 6 — interference degradation by resource family        |
+| `fig12_pairwise_timeseries.png`       | timeseries     | IntP Fig. 8 — mixed-load resource-family trace                   |
+| `fig13_iada_segmented.png`            | timeseries     | IADA Fig. 5 — segmented Loess-smoothed interference trace        |
+| `fig14_variant_resource_heatmap.png`  | solo+pairwise  | variant x resource summary heatmap                               |
 
 Companion CSVs (`overhead_summary.csv`, `fidelity_matrix.csv`,
 `env_ratio.csv`, `pairwise_means.csv`, `metric_availability.csv`,
-`aggregate-means.csv`) make every figure reproducible / regenerable
-without re-running the experiment.
+`aggregate-means.csv`, `idi_resource.csv`, `variant_resource_summary.csv`)
+make every figure reproducible / regenerable without re-running the
+experiment. Each figure is also emitted as a vector PDF under
+`plots/pdf/`.
 
 ## Repetitions and confidence intervals
 
