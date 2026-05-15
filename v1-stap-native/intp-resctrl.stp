@@ -30,9 +30,18 @@
 
 global interval = 1
 
+# Online CPU count, detected dynamically at module load via num_online_cpus().
+# Used by print_cpu_report to normalise scheduler-tracked run_ns against the
+# capacity window (window_ns × cores). Replaces the previous hardcoded
+# `CPU_TOTAL_CORES = 48` so the same script works across 1-socket / multi-
+# socket hosts and any core count.
+function intp_num_online_cpus:long() %{ STAP_RETVALUE = num_online_cpus(); %}
+
 probe begin
 {
-	printf("IntP v1 (stap-native, no helper)\n")
+	CPU_TOTAL_CORES = intp_num_online_cpus()
+	if (CPU_TOTAL_CORES < 1) CPU_TOTAL_CORES = 1
+	printf("IntP v1 (stap-native, no helper) — detected %d online CPUs\n", CPU_TOTAL_CORES)
 	printf("Tracing processes named \"%s\"\n", @1)
 	printf("Note: mbw and llcocc are reported as 0 in this build (see v1.1).\n\n")
 }
@@ -263,7 +272,8 @@ function print_netphy_report()
 
 global cpu_sched_in_ns, cpu_run_ns
 global cpu_sched_in_update
-global CPU_TOTAL_CORES = 48
+# Initialised at module load by `probe begin` via intp_num_online_cpus().
+global CPU_TOTAL_CORES = 1
 
 probe scheduler.ctxswitch
 {

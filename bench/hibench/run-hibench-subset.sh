@@ -561,12 +561,26 @@ _start_v1_1_profiler() {
     V1_1_HELPER_PID=$!
     sleep 0.3
 
+    # Calibrate v1.1's nic_bytes_per_sec from intp-detect.sh so the netphy
+    # report normalises against the actual NIC line rate, not a hardcoded
+    # 1 GbE constant. Passed via stap -G; if detect fails the script keeps
+    # its 125000000 default.
+    local v1_1_extra=()
+    local detect_out
+    detect_out="$("$REPO_ROOT/shared/intp-detect.sh" 2>/dev/null || true)"
+    # shellcheck disable=SC2046
+    eval "$(echo "$detect_out" | grep -E '^INTP_NIC_SPEED_MBPS=' || true)"
+    if [ -n "${INTP_NIC_SPEED_MBPS:-}" ] && [ "$INTP_NIC_SPEED_MBPS" -gt 0 ] 2>/dev/null; then
+        v1_1_extra+=(-G "nic_bytes_per_sec=$((INTP_NIC_SPEED_MBPS * 125000))")
+    fi
+
     local stap_log="${outfile%.tsv}.stap.log"
     stap --suppress-handler-errors -g \
         -B CONFIG_MODVERSIONS=y \
         -DMAXSKIPPED=1000000 \
         -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
         -DSTP_OVERLOAD_INTERVAL=1000000000LL \
+        "${v1_1_extra[@]}" \
         "$V1_1_STP" "@system" > "$stap_log" 2>&1 &
     STAP_PID=$!
 

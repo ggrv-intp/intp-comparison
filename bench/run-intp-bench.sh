@@ -1803,11 +1803,28 @@ run_profiler_systemtap() {
     target=$(_detect_stap_target "$pid")
     log "  [$variant] stap target=$target (pid=$pid)"
 
+    # Variant-specific stap globals (v1.1 takes NIC line rate via -G so the
+    # netphy denominator adapts to 1/10/25/40/100 GbE without recompiling).
+    # `capabilities.env` was written at orchestrator startup but not eval'd
+    # into this shell; sourcing it here is cheap and keeps the function
+    # self-contained.
+    local extra_stap_args=()
+    if [ "$variant" = "v1.1" ]; then
+        local nic_mbps="${INTP_NIC_SPEED_MBPS:-}"
+        if [ -z "$nic_mbps" ] && [ -f "$OUTPUT_DIR/capabilities.env" ]; then
+            nic_mbps=$(awk -F= '/^INTP_NIC_SPEED_MBPS=/{print $2}' "$OUTPUT_DIR/capabilities.env" | head -1)
+        fi
+        if [ -n "$nic_mbps" ] && [ "$nic_mbps" -gt 0 ] 2>/dev/null; then
+            extra_stap_args+=(-G "nic_bytes_per_sec=$((nic_mbps * 125000))")
+        fi
+    fi
+
     stap --suppress-handler-errors -g \
         -B CONFIG_MODVERSIONS=y \
         -DMAXSKIPPED=1000000 \
         -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
         -DSTP_OVERLOAD_INTERVAL=1000000000LL \
+        "${extra_stap_args[@]}" \
         "$stp" "$target" > "$stap_log" 2>&1 &
     local stap_pid=$!
 

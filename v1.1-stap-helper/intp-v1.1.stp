@@ -54,9 +54,24 @@
 
 global interval = 1
 
+# Physical NIC line rate in bytes/sec, used by print_netphy_report.
+# Default is 1 GbE (125 MB/s); the orchestrator overrides via
+# `stap -G nic_bytes_per_sec=$((INTP_NIC_SPEED_MBPS * 125000))` so the
+# same script works for 1/10/25/40/100 GbE hosts without recompiling.
+global nic_bytes_per_sec = 125000000
+
+# Online CPU count, detected dynamically at module load via num_online_cpus().
+# Used by print_cpu_report to normalise scheduler-tracked run_ns against the
+# capacity window (window_ns × cores). Replaces the previous hardcoded
+# `CPU_TOTAL_CORES = 48` so the same script works across 1-socket / multi-
+# socket hosts and any core count.
+function intp_num_online_cpus:long() %{ STAP_RETVALUE = num_online_cpus(); %}
+
 probe begin
 {
-	printf("IntP v1.1 (stap + userspace helper)\n")
+	CPU_TOTAL_CORES = intp_num_online_cpus()
+	if (CPU_TOTAL_CORES < 1) CPU_TOTAL_CORES = 1
+	printf("IntP v1.1 (stap + userspace helper) — detected %d online CPUs\n", CPU_TOTAL_CORES)
 %( @1 == "@system" %?
 	printf("Mode: SYSTEM-WIDE (no PID filter; matches V2/V3/V3.1 semantics)\n")
 	/* Seed accounting state so every `nprocs > 0` gate opens immediately
@@ -348,7 +363,7 @@ function print_netstack_report()
 function print_netphy_report()
 {
 	tput_eq = @sum(net_tput)/runtime_procfs
-	util = (tput_eq*10000/125000000)/100
+	util = (tput_eq*10000/nic_bytes_per_sec)/100
 
 	if(util>=100){
 		util=99
@@ -364,7 +379,8 @@ function print_netphy_report()
 
 global cpu_sched_in_ns, cpu_run_ns
 global cpu_sched_in_update
-global CPU_TOTAL_CORES = 48
+# Initialised at module load by `probe begin` via intp_num_online_cpus().
+global CPU_TOTAL_CORES = 1
 
 probe scheduler.ctxswitch
 {

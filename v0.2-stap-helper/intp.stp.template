@@ -125,28 +125,52 @@ probe process(@1).end, process(@1).thread.end {
 
 ####
 #	Block IO call statistics
+#
+#	V0 used kernel.trace("block_rq_complete") only, computing service-time
+#	as ($rq->io_start_time_ns − local_clock_ns()) inside the same probe.
+#	`io_start_time_ns` is set by the block layer via ktime_get_ns, while
+#	`local_clock_ns()` is sched_clock — on multi-socket hosts those two
+#	clock sources live in different domains, so on 48-thread Sapphire
+#	Rapids the `delta > 0 && delta < 10s` sanity gate rejects ~all events
+#	and blk reads 0% (verified empirically here; same diagnosis as v1.1's
+#	METRICS-ALIGNMENT.md). The V0 print_block_report formula was also
+#	dimensionally inconsistent (svctm divided by runtime_procfs as if it
+#	were a sum rather than an average, then multiplied by op-rate).
+#
+#	V0.2 keeps V0's *interface* (block_rq_issue/complete kernel tracepoints,
+#	no PID filter, system-wide accumulation) but pairs issue↔complete via
+#	an associative array keyed by the request pointer — both timestamps
+#	come from local_clock_ns(), eliminating the cross-clock skew. The
+#	report formula is also corrected to the canonical disk-busy fraction:
+#	  util = sum(svctm_ns) / interval_ns × 100
+#	This matches V1.1/V2/V3 semantics so the v0.2 leg remains comparable;
+#	V0/V0.1/V1 stay untouched for paper byte-fidelity.
 ####
 
 global block_op_dep
 global block_tput, block_cput
 
-global block_queued_time, block_srv_time
+global block_srv_time
 
-probe kernel.trace("block_rq_complete") {
+# Cap the in-flight request map to bound memory under heavy I/O.
+global rq_issue_ns%[16384]
+
+probe kernel.trace("block_rq_issue")?, kernel.trace("block:block_rq_issue")? {
+	rq_issue_ns[$rq] = local_clock_ns()
+}
+
+probe kernel.trace("block_rq_complete")?, kernel.trace("block:block_rq_complete")? {
 	data_len = $rq->__data_len
 	block_tput <<< data_len
 	block_cput <<< data_len
 
 	if (data_len > 0) {
-		time = local_clock_ns();
-		start_time_ns = $rq->start_time_ns
-		io_start_time_ns = $rq->io_start_time_ns
-
-		if(($rq->start_time_ns - io_start_time_ns) < 0) {
-			block_queued_time <<< io_start_time_ns - start_time_ns
-		}
-		if($rq->io_start_time_ns > 0 && (io_start_time_ns - time) < 0) {
-			block_srv_time <<< (time - io_start_time_ns)
+		if ($rq in rq_issue_ns) {
+			delta = local_clock_ns() - rq_issue_ns[$rq]
+			delete rq_issue_ns[$rq]
+			if (delta > 0 && delta < 10000000000) {
+				block_srv_time <<< delta
+			}
 		}
 		block_op_dep += 1
 	}
@@ -154,25 +178,23 @@ probe kernel.trace("block_rq_complete") {
 
 function print_block_report()
 {
-    if(@count(block_srv_time)) {svctm = @avg(block_srv_time)} else {svctm = 0}
-
-    block_op_dep = block_op_dep/runtime_procfs
-    svctm = svctm/runtime_procfs
-    svctm_ms = (svctm/1000/1000)/100
-    svctm_ms_abs = (svctm/1000/1000)%100
-    util = ((svctm/1000/1000) * block_op_dep)/100
-    util_abs = ((svctm/1000/1000) * block_op_dep)%100
-    if(util > 100) {util = 100;	util_abs = 0}
-	if(util_abs >= 100) {util_abs=util_abs/10}
-
-	printf("# ioblock %d %d %d.%.2d: %d.%02d%%\n", svctm, block_op_dep, svctm_ms, svctm_ms_abs, util, util_abs)
-
-	if(util>=100){
-		util=99
+	if (runtime_procfs <= 0) {
+		delete block_op_dep
+		delete block_srv_time
+		return 0
 	}
 
+	sum_svctm_ns = 0
+	if (@count(block_srv_time)) {
+		sum_svctm_ns = @sum(block_srv_time)
+	}
+	window_ns = runtime_procfs * 1000000000
+
+	util = (sum_svctm_ns * 100) / window_ns
+	if (util < 0) util = 0
+	if (util >= 100) util = 99
+
 	delete block_op_dep
-	delete block_queued_time
 	delete block_srv_time
 	return util
 }
@@ -302,10 +324,21 @@ global uticks, kticks, ticks
 
 probe perf.sw.cpu_clock!, timer.profile {
 %( @1 == "@system" %?
-	if (!user_mode())
-		kticks <<< 1
-	else
-		uticks <<< 1
+	/* System-wide: filter out the idle thread (swapper, pid()==0) so
+	 * uticks+kticks accumulate only non-idle samples. `ticks` keeps
+	 * counting every sample (including idle) so the V0 formula
+	 *   util = (uticks + kticks) / ticks
+	 * naturally yields the system-wide non-idle fraction, no
+	 * CPU_TOTAL_CORES normalisation required. Without this filter,
+	 * idle samples land in kticks (timer fires in kernel-mode IRQ
+	 * context while interrupting the idle thread), saturating the
+	 * metric at ~100% on idle-heavy workloads. */
+	if (pid() != 0) {
+		if (!user_mode())
+			kticks <<< 1
+		else
+			uticks <<< 1
+	}
 %:
 	if([tid()] in mpids) {
 		if (!user_mode())
