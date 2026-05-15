@@ -381,6 +381,9 @@ def load_hibench_dir(hibench_dir: Path) -> tuple[pd.DataFrame, list[Path]]:
         sys.exit(f"No aggregate-means.tsv found under {hibench_dir}")
     merged = pd.concat(frames, ignore_index=True)
     merged = merged[merged["profile"].isin(PROFILE_ORDER)]
+    for col in METRICS:
+        if col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce")
     return merged.reset_index(drop=True), run_dirs
 
 
