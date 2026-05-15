@@ -47,7 +47,19 @@ global interval = 1
 
 probe begin
 {
+%( @1 == "@system" %?
+	printf("IntP v0.2 (stap + userspace helper) — SYSTEM-WIDE mode (HiBench / netns)\n")
+	/* No process(@1).begin will fire in @system mode, so seed the per-process
+	 * accounting state here: initial_time anchors `runtime`, and nprocs=1 /
+	 * started=1 open any nprocs-gated logic that V0 carried over. mpids stays
+	 * empty; the netfilter / cpu probes drop their pid filter in @system mode
+	 * (mirrors v1.1-stap-helper/intp-v1.1.stp). */
+	initial_time = gettimeofday_ns()
+	nprocs = 1
+	started = 1
+%:
 	printf("Tracing block I/O for processes named \"%s\". Monitoring will process as soon as the application begin\n", @1);
+%)
 	printf("NOTE: mbw and llcocc come from /tmp/intp-v0.2-hw-data (v0.2 helper must be running)\n\n")
 }
 
@@ -63,6 +75,10 @@ global exitcounter = 0
 global mpids
 global nprocs = 0
 
+%( @1 == "@system" %?
+	/* System-wide mode: no per-process attach. mpids[] stays empty; nprocs
+	 * is seeded to 1 in `probe begin` so all metric gates open. */
+%:
 probe process(@1).begin, process(@1).thread.begin {
 	if (initial_time == 0) {
 		initial_time = gettimeofday_ns();
@@ -105,6 +121,7 @@ probe process(@1).end, process(@1).thread.end {
 		}
 	}
 }
+%)
 
 ####
 #	Block IO call statistics
@@ -168,17 +185,29 @@ global net_tput
 global flows
 
 probe netfilter.ip.local_out {
+%( @1 == "@system" %?
+	if (length > 0) {
+		net_tput <<< length
+	}
+%:
 	if(([pid()] in mpids) && length > 0) {
 		net_tput <<< length
 		if(!([saddr,daddr,dport] in flows))
 			flows[saddr,daddr,dport] = pid()
 	}
+%)
 }
 
 probe netfilter.ip.local_in {
+%( @1 == "@system" %?
+	if (length > 0) {
+		net_tput <<< length
+	}
+%:
 	if(([daddr,saddr,sport] in flows) && length > 0) {
 		net_tput <<< length
 	}
+%)
 }
 
 global net_sent_req
@@ -272,12 +301,19 @@ function print_netphy_report()
 global uticks, kticks, ticks
 
 probe perf.sw.cpu_clock!, timer.profile {
+%( @1 == "@system" %?
+	if (!user_mode())
+		kticks <<< 1
+	else
+		uticks <<< 1
+%:
 	if([tid()] in mpids) {
 		if (!user_mode())
 			kticks <<< 1
 		else
 			uticks <<< 1
 	}
+%)
 
 	ticks <<< 1
 }
@@ -305,8 +341,16 @@ function print_cpu_report()
 global llc_load, llc_load_misses
 global llc_load_t, llc_load_misses_t
 
+%( @1 == "@system" %?
+/* System-wide LLC monitoring: perf events attach on every CPU without a
+ * .process() filter, so misses on any task (including HiBench's Spark
+ * Driver launched after stap attach or inside a netns) accumulate. */
+probe perf.type(3).config(0x000002){llc_load <<< 1; llc_load_t+=1}
+probe perf.type(3).config(0x010002){llc_load_misses <<< 1; llc_load_misses_t+=1}
+%:
 probe perf.type(3).config(0x000002).process(@1){llc_load <<< 1; llc_load_t+=1}
 probe perf.type(3).config(0x010002).process(@1){llc_load_misses <<< 1; llc_load_misses_t+=1}
+%)
 
 function print_cache_report()
 {
