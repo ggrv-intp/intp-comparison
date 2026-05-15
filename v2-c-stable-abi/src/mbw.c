@@ -1,10 +1,10 @@
 /*
  * mbw.c -- memory bandwidth utilization, four-backend hierarchy.
  *
- *   1. mbw_resctrl_mbm   resctrl mbm_total_bytes (Intel/AMD/ARM where supported)
- *   2. mbw_perf_imc      Intel uncore IMC CAS_COUNT.RD/WR (CAP_SYS_ADMIN)
- *   3. mbw_perf_amd_df   AMD Data Fabric DRAM data beats (CAP_SYS_ADMIN)
- *   4. mbw_perf_arm_cmn  ARM CMN HN-F memory traffic (CAP_SYS_ADMIN)
+ *   1. mbw_perf_imc      Intel uncore IMC CAS_COUNT.RD/WR (CAP_SYS_ADMIN)
+ *   2. mbw_perf_amd_df   AMD Data Fabric DRAM data beats (CAP_SYS_ADMIN)
+ *   3. mbw_perf_arm_cmn  ARM CMN HN-F memory traffic (CAP_SYS_ADMIN)
+ *   4. mbw_resctrl_mbm   resctrl mbm_total_bytes fallback (when uncore PMU unavailable)
  *
  * Normalization: detected mem_bw_max_bps unless overridden by --mem-bw-max-bps.
  * Each backend reports its source via metric_sample_t.backend_id.
@@ -235,7 +235,7 @@ static backend_t b_arm_cmn = {
 
 static metric_t m = {
     .metric_name = "mbw",
-    .backends    = { &b_resctrl, &b_imc, &b_amd_df, &b_arm_cmn },
+    .backends    = { &b_imc, &b_amd_df, &b_arm_cmn, &b_resctrl },
     .n_backends  = 4,
 };
 
