@@ -149,8 +149,8 @@ RESOURCE_COLORS = {
 # Style helpers
 # ---------------------------------------------------------------------------
 
-MAX_PIXELS = 1900
-SAVE_DPI = 130
+MAX_PIXELS = 2600
+SAVE_DPI = 160
 
 
 def _clamp_figsize(width: float, height: float) -> tuple[float, float]:
@@ -271,6 +271,77 @@ def _make_axes_grid(fig, n: int, sharey: bool = False, polar: bool = False,
     return axes, nrows, ncols
 
 
+def _centered_suptitle(fig, axes, text, fontsize: float = 11,
+                       gap_pixels: float = 12,
+                       extra_artists=(),
+                       **kwargs) -> None:
+    """Centered, tight-gap suptitle. See `plot-intp-bench.py` for the full
+    contract — same implementation, duplicated here because the two plot
+    scripts are independent entry points. Pass `extra_artists` (e.g. a
+    `fig.legend` strip placed above the panels) so the suptitle clears
+    them too."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    visible = [ax for ax in axes if ax.get_visible()]
+    if not visible:
+        fig.suptitle(text, fontsize=fontsize, **kwargs)
+        return
+    pos = [ax.get_position() for ax in visible]
+    x_mid = (min(p.x0 for p in pos) + max(p.x1 for p in pos)) / 2
+    inv = fig.transFigure.inverted()
+    bboxes = [ax.get_tightbbox(renderer) for ax in visible]
+    bboxes += [a.get_window_extent(renderer) for a in extra_artists]
+    bboxes = [b for b in bboxes if b is not None]
+    top_frac = max(inv.transform((0, b.y1))[1] for b in bboxes)
+    gap_frac = (inv.transform((0, gap_pixels))[1]
+                - inv.transform((0, 0))[1])
+    y = min(0.995, top_frac + gap_frac)
+    fig.suptitle(text, x=x_mid, y=y, fontsize=fontsize, ha="center",
+                 va="bottom", **kwargs)
+
+
+def _legend_above_axes(fig, axes, handles, labels, *, ncol,
+                       fontsize: float = 9, gap_pixels: float = 8,
+                       title_reserve_pixels: float = 55,
+                       **kwargs):
+    """Place a horizontal legend strip directly above the tight bbox of
+    `axes` (i.e. above per-panel subplot titles), centered on the axes'
+    x-range. Automatically calls `subplots_adjust(top=…)` to push the
+    panels down enough to fit the legend plus `title_reserve_pixels` of
+    extra headroom for a suptitle. Returns the legend so the caller can
+    pass it to `_centered_suptitle(..., extra_artists=[leg])`. Call
+    after `fig.tight_layout()`."""
+    # Estimate legend block height from font metrics rather than placing
+    # the legend, measuring, and re-anchoring — Legend.set_loc lands
+    # awkwardly on polar axes and older matplotlib lacks the API
+    # entirely. fontsize ≈ pt; 1pt ≈ 1.333px at 96 DPI scales linearly
+    # with the figure's save DPI. We use the figure's actual dpi here.
+    n_lines = 2 if kwargs.get("title") else 1
+    leg_h_pixels = n_lines * fontsize * (fig.dpi / 72.0) * 1.5 + 10
+    fig_h_px = fig.get_size_inches()[1] * fig.dpi
+    leg_h_frac = leg_h_pixels / fig_h_px
+    gap_frac = gap_pixels / fig_h_px
+    title_reserve_frac = title_reserve_pixels / fig_h_px
+    reserve = leg_h_frac + gap_frac + title_reserve_frac
+    current_top = fig.subplotpars.top
+    new_top = max(0.55, min(current_top, 1.0 - reserve))
+    fig.subplots_adjust(top=new_top)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    inv = fig.transFigure.inverted()
+    visible = [ax for ax in axes if ax.get_visible()]
+    pos = [ax.get_position() for ax in visible]
+    x_mid = (min(p.x0 for p in pos) + max(p.x1 for p in pos)) / 2
+    tb = [ax.get_tightbbox(renderer) for ax in visible]
+    top_frac = max(inv.transform((0, b.y1))[1]
+                   for b in tb if b is not None)
+    gap = inv.transform((0, gap_pixels))[1] - inv.transform((0, 0))[1]
+    return fig.legend(handles, labels, loc="lower center",
+                      bbox_to_anchor=(x_mid, top_frac + gap),
+                      ncol=ncol, frameon=False, fontsize=fontsize,
+                      **kwargs)
+
+
 def _ordered_profiles(values) -> list[str]:
     present = set(values)
     return [p for p in PROFILE_ORDER if p in present]
@@ -385,12 +456,12 @@ def fig_fingerprint(df: pd.DataFrame, outdir: Path) -> None:
             ymax = sub[METRICS].max().max() if not sub.empty else 1.0
             ax.set_ylim(0, max(1.0, ymax * 1.18))
         handles, labels = axes_flat[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02),
-                   ncol=len(METRICS), frameon=False, fontsize=9)
-        fig.suptitle(f"HiBench: IntP metric fingerprint — profile={profile}",
-                     fontsize=11.5, y=1.06)
         fig.tight_layout()
+        leg = _legend_above_axes(fig, axes_flat, handles, labels,
+                                 ncol=len(METRICS), fontsize=9)
+        _centered_suptitle(fig, axes_flat,
+                           f"HiBench: IntP metric fingerprint — profile={profile}",
+                           fontsize=11.5, extra_artists=[leg])
         _save(fig, outdir / f"fig01_fingerprint_{profile}.png",
               f"fig01[{profile}]")
         plt.close(fig)
@@ -448,12 +519,13 @@ def fig_sensitivity(df: pd.DataFrame, outdir: Path) -> None:
                          f"Δ({target} − standard)", fontsize=9)
             ax.set_ylabel("Δ metric value")
         handles, labels = axes[0][0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02),
-                   ncol=len(METRICS), frameon=False, fontsize=8.5)
-        fig.suptitle(f"HiBench: sensitivity to '{target}' co-runner pressure",
-                     fontsize=11, y=1.05)
         fig.tight_layout()
+        flat = [a for r in axes for a in r]
+        leg = _legend_above_axes(fig, flat, handles, labels,
+                                 ncol=len(METRICS), fontsize=8.5)
+        _centered_suptitle(fig, flat,
+                           f"HiBench: sensitivity to '{target}' co-runner pressure",
+                           fontsize=11, extra_artists=[leg])
         # Sanitise profile name for filename ("netp-extreme" -> "netp_extreme")
         slug = target.replace("-", "_")
         _save(fig, outdir / f"fig02_sensitivity_{slug}.png", f"fig02[{target}]")
@@ -496,12 +568,13 @@ def fig_metric_compare(df: pd.DataFrame, outdir: Path) -> None:
                 ax.set_ylabel(f"{metric} (%)")
             ax.set_ylim(0, max(0.5, ymax_row * 1.15))
         handles, labels = axes[0][0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02),
-                   ncol=len(variants), frameon=False, fontsize=9)
-        fig.suptitle(f"HiBench: per-profile variant comparison — metric={metric}",
-                     fontsize=11.5, y=1.06)
         fig.tight_layout()
+        flat = [a for r in axes for a in r]
+        leg = _legend_above_axes(fig, flat, handles, labels,
+                                 ncol=len(variants), fontsize=9)
+        _centered_suptitle(fig, flat,
+                           f"HiBench: per-profile variant comparison — metric={metric}",
+                           fontsize=11.5, extra_artists=[leg])
         _save(fig, outdir / f"fig03_metric_compare_{metric}.png",
               f"fig03[{metric}]")
         plt.close(fig)
@@ -546,13 +619,14 @@ def fig_per_workload_bars(df: pd.DataFrame, outdir: Path) -> None:
                 ax.set_ylabel("metric value (%)", fontsize=8)
         handles = [plt.Rectangle((0, 0), 1, 1, color=VARIANT_COLORS.get(v, "C0"))
                    for v in variants]
-        fig.legend(handles, variants, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.02),
-                   ncol=len(variants), frameon=False, fontsize=8.5,
-                   title="variant", title_fontsize=8.5)
-        fig.suptitle(f"Per-workload variant fingerprint — profile={profile}  "
-                     f"(IntP Fig. 4 reproduction)", y=1.04, fontsize=11)
         fig.tight_layout()
+        leg = _legend_above_axes(fig, axes_flat, handles, variants,
+                                 ncol=len(variants), fontsize=8.5,
+                                 title="variant", title_fontsize=8.5)
+        _centered_suptitle(fig, axes_flat,
+                           f"Per-workload variant fingerprint — profile={profile}  "
+                           f"(IntP Fig. 4 reproduction)",
+                           fontsize=11, extra_artists=[leg])
         suffix = f"_{profile}" if len(profiles) > 1 else ""
         _save(fig, outdir / f"fig04_per_workload_bars{suffix}.png", f"fig04-{profile}")
         plt.close(fig)
@@ -602,14 +676,14 @@ def fig_radar(df: pd.DataFrame, outdir: Path) -> None:
         ax.grid(linewidth=0.4, alpha=0.5)
     handles = [plt.Line2D([0], [0], color=VARIANT_COLORS.get(v, "C0"),
                           linewidth=2.4, label=v) for v in variants]
-    fig.legend(handles=handles, loc="upper center",
-               bbox_to_anchor=(0.5, 1.02),
-               ncol=len(variants), frameon=False, fontsize=9.5,
-               title="variant", title_fontsize=9.5)
-    fig.suptitle(f"HiBench: per-workload radar fingerprint — profile={profile}  "
-                 f"(metrics scaled to per-metric maximum)",
-                 y=1.06, fontsize=10.5)
     fig.tight_layout()
+    leg = _legend_above_axes(fig, axes_flat, handles, variants,
+                             ncol=len(variants), fontsize=9.5,
+                             title="variant", title_fontsize=9.5)
+    _centered_suptitle(fig, axes_flat,
+                       f"HiBench: per-workload radar fingerprint — profile={profile}  "
+                       f"(metrics scaled to per-metric maximum)",
+                       fontsize=10.5, extra_artists=[leg])
     _save(fig, outdir / "fig05_radar_fingerprint.png", "fig05")
 
 
@@ -657,9 +731,9 @@ def fig_pca(df: pd.DataFrame, outdir: Path) -> None:
         ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
     for j in range(last + 1, rows * cols):
         axes[j // cols][j % cols].axis("off")
-    fig.suptitle("HiBench workloads in PCA space (IntP Fig. 5 reproduction)",
-                 y=1.02, fontsize=11)
     fig.tight_layout()
+    _centered_suptitle(fig, axes.ravel().tolist(),
+                       "HiBench workloads in PCA space (IntP Fig. 5 reproduction)")
     _save(fig, outdir / "fig06_pca_workloads.png", "fig06")
 
 
@@ -737,14 +811,17 @@ def fig_timeseries(run_dirs: list[Path], outdir: Path) -> None:
                 if hh:
                     handles, labels = hh, ll; break
             if handles: break
-        if handles:
-            fig.legend(handles, labels, loc="upper center",
-                       bbox_to_anchor=(0.5, 1.02),
-                       ncol=len(METRICS), frameon=False, fontsize=8.5)
-        fig.suptitle(f"HiBench timeseries — profile={profile}  "
-                     f"(IntP Fig. 3 / IADA Fig. 5 reproduction)",
-                     y=1.06, fontsize=11)
         fig.tight_layout()
+        flat = [a for r in axes for a in r]
+        extras = []
+        if handles:
+            extras.append(_legend_above_axes(
+                fig, flat, handles, labels,
+                ncol=len(METRICS), fontsize=8.5))
+        _centered_suptitle(fig, flat,
+                           f"HiBench timeseries — profile={profile}  "
+                           f"(IntP Fig. 3 / IADA Fig. 5 reproduction)",
+                           fontsize=11, extra_artists=extras)
         suffix = f"_{profile}" if len(profiles) > 1 else ""
         _save(fig, outdir / f"fig07_timeseries{suffix}.png", f"fig07-{profile}")
 
@@ -849,13 +926,16 @@ def fig_canonical_intp_fig4(df: pd.DataFrame, outdir: Path) -> None:
             if ci % ncols == 0:
                 ax.set_ylabel("interference (%)")
         handles, labels = axes_flat[0].get_legend_handles_labels()
-        if handles:
-            fig.legend(handles, labels, loc="upper center",
-                       bbox_to_anchor=(0.5, 1.02),
-                       ncol=len(METRICS), frameon=False, fontsize=9)
-        fig.suptitle(f"HiBench: IntP Fig. 4 — interference ratios per "
-                     f"workload  (profile={profile})", y=1.06, fontsize=11.5)
         fig.tight_layout()
+        extras = []
+        if handles:
+            extras.append(_legend_above_axes(
+                fig, axes_flat, handles, labels,
+                ncol=len(METRICS), fontsize=9))
+        _centered_suptitle(fig, axes_flat,
+                           f"HiBench: IntP Fig. 4 — interference ratios per "
+                           f"workload  (profile={profile})",
+                           fontsize=11.5, extra_artists=extras)
         _save(fig, outdir / f"fig00_canonical_intp_fig4_{profile}.png",
               f"fig00[{profile}]")
         plt.close(fig)
@@ -936,13 +1016,17 @@ def fig_resource_timeseries(run_dirs: list[Path], outdir: Path) -> None:
                 if hh:
                     handles, labels = hh, ll; break
             if handles: break
-        if handles:
-            fig.legend(handles, labels, loc="upper center",
-                       bbox_to_anchor=(0.5, 1.02),
-                       ncol=len(handles), frameon=False, fontsize=9)
-        fig.suptitle(f"HiBench resource-family timeseries — profile={profile}  "
-                     f"(IntP Fig. 8 reproduction)", y=1.06, fontsize=11)
         fig.tight_layout()
+        flat = [a for r in axes for a in r]
+        extras = []
+        if handles:
+            extras.append(_legend_above_axes(
+                fig, flat, handles, labels,
+                ncol=len(handles), fontsize=9))
+        _centered_suptitle(fig, flat,
+                           f"HiBench resource-family timeseries — profile={profile}  "
+                           f"(IntP Fig. 8 reproduction)",
+                           fontsize=11, extra_artists=extras)
         suffix = f"_{profile}" if len(profiles) > 1 else ""
         _save(fig, outdir / f"fig09_resource_timeseries{suffix}.png",
               f"fig09-{profile}")
@@ -1011,8 +1095,9 @@ def fig_variant_resource_heatmap(df: pd.DataFrame, outdir: Path) -> None:
     if im is not None:
         fig.colorbar(im, ax=axes_flat, fraction=0.035, shrink=0.7,
                      label="mean interference (%)")
-    fig.suptitle("HiBench variant × resource family — mean interference",
-                 y=1.00, fontsize=12)
+    _centered_suptitle(fig, axes_flat,
+                       "HiBench variant × resource family — mean interference",
+                       fontsize=12)
     _save(fig, outdir / "fig10_variant_resource_heatmap.png", "fig10")
 
 
@@ -1097,8 +1182,9 @@ def fig_hibench_coverage(df: pd.DataFrame, outdir: Path) -> None:
     if im is not None:
         fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.04, shrink=0.85,
                      label="coverage = value / max(value across variants)")
-    fig.suptitle(f"HiBench Spark workloads — metric coverage per variant  "
-                 f"(profile={profile})", y=1.02, fontsize=11.5)
+    _centered_suptitle(fig, axes.ravel().tolist(),
+                       f"HiBench Spark workloads — metric coverage per variant  "
+                       f"(profile={profile})", fontsize=11.5)
     _save(fig, outdir / "fig08_hibench_coverage.png", "fig08")
     plt.close(fig)
 
@@ -1193,8 +1279,9 @@ def fig_workload_clustermap(df: pd.DataFrame, outdir: Path) -> None:
         return
     fig.colorbar(im, ax=axes_flat, shrink=0.7,
                  label="metric value (%)")
-    fig.suptitle(f"HiBench: hierarchical workload clustermap — "
-                 f"profile={profile}", y=1.02, fontsize=11)
+    _centered_suptitle(fig, axes_flat,
+                       f"HiBench: hierarchical workload clustermap — "
+                       f"profile={profile}")
     _save(fig, outdir / "fig12_workload_clustermap.png", "fig12")
     plt.close(fig)
 

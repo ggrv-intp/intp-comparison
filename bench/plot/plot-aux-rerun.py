@@ -118,7 +118,7 @@ def plot_noise_floor_distribution(run_dir, out_dir):
     # y-axis convention so netp ends up at the top).
     rows = list(reversed(METRICS))
 
-    fig, ax = plt.subplots(figsize=(9.0, 0.55 * len(rows) + 1.2))
+    fig, ax = plt.subplots(figsize=(8.2, 0.55 * len(rows) + 1.2))
     for i, m in enumerate(rows):
         v = np.asarray(data[m], dtype=float)
         if v.size == 0:
@@ -146,10 +146,16 @@ def plot_noise_floor_distribution(run_dir, out_dir):
         # Mean: small black diamond
         ax.scatter(mean, i, marker="D", s=22, color="white",
                    edgecolor="black", linewidth=0.9, zorder=6)
-        # Inline numeric label: median (p5–p95) on the right edge
-        label = f"  median {med:5.1f}   p5–p95 [{p5:5.1f}, {p95:5.1f}]"
-        ax.text(101, i, label, va="center", ha="left", fontsize=8.5,
-                family="DejaVu Sans Mono")
+        # Two-column numeric table on the right margin. Median is always
+        # printed so each row carries its floor value at a glance; the
+        # p5–p95 bracket is suppressed for distributions with no spread
+        # (p5 == p95), which otherwise just restate the median.
+        ax.text(110, i, f"{med:5.1f}", va="center", ha="right",
+                fontsize=8.5, family="DejaVu Sans Mono")
+        if (p95 - p5) > 0.05:
+            ax.text(114, i, f"[{p5:4.1f}, {p95:5.1f}]",
+                    va="center", ha="left",
+                    fontsize=8.5, family="DejaVu Sans Mono")
 
     # Annotate the two metrics whose magnitude needs context.
     for i, m in enumerate(rows):
@@ -164,19 +170,28 @@ def plot_noise_floor_distribution(run_dir, out_dir):
                     ha="center", va="top", fontsize=7.5, style="italic",
                     color="#444")
 
+    # Headers for the right-margin numeric table.
+    top_y = len(rows) - 0.45
+    ax.text(110, top_y, "median", va="bottom", ha="right",
+            fontsize=8, style="italic", color="#666",
+            family="DejaVu Sans Mono")
+    ax.text(114, top_y, "p5–p95", va="bottom", ha="left",
+            fontsize=8, style="italic", color="#666",
+            family="DejaVu Sans Mono")
+
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([METRIC_LABEL[m] for m in rows], fontsize=9)
-    ax.set_xlim(-1, 165)            # extra room on the right for inline text
+    ax.set_xlim(-1, 142)
     ax.set_xticks([0, 25, 50, 75, 100])
     ax.set_xlabel("Value (% scale, 0–100)")
     ax.grid(axis="x", alpha=0.30)
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
-    ax.set_title(
+    fig.suptitle(
         f"V3 noise floor — HiBench stack UP and IDLE   "
         f"(n={n_total} = 12 reps × 90 s; bar = IQR, line = p5–p95, "
         f"|=median, ◇=mean)",
-        fontsize=9.5, loc="left",
+        fontsize=9.5, y=0.985,
     )
     fig.tight_layout()
     for ext in ("png", "pdf"):

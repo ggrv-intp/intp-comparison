@@ -40,8 +40,10 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import warnings
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -111,12 +113,15 @@ RESOURCE_COLORS = {
 
 VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
 VARIANT_COLORS = {
-    "v0":   "#7f7f7f",
-    "v0.1": "#bcbd22",
-    "v1":   "#17becf",
-    "v1.1": "#aec7e8",
-    "v2":   "#1f77b4",
-    "v3":   "#2ca02c",
+    "v0":   "#7f7f7f",  # gray
+    "v0.1": "#bcbd22",  # olive
+    "v0.2": "#c7c7c7",  # light gray
+    "v1":   "#17becf",  # cyan
+    "v1.1": "#aec7e8",  # light blue
+    "v2":   "#1f77b4",  # blue
+    "v3":   "#2ca02c",  # green
+    "v3.1": "#ff7f0e",  # orange
+    "v3.2": "#d62728",  # red
 }
 # Default plotted-variant set for the legacy-v0 campaign. The 2x2 panel grid
 # in _grid_dims expects 4. If <results_dir>/variants.manifest exists, it
@@ -150,11 +155,11 @@ ENV_ORDER = [
 # Style
 # ---------------------------------------------------------------------------
 
-# Hard cap on output PNG dimensions (pixels). Many downstream readers reject
-# images whose long side ≥ 2000 px. We pick 1900 to leave headroom for tight
-# bbox padding.
-MAX_PIXELS = 1900
-SAVE_DPI = 130
+# Hard cap on output PNG dimensions (pixels). Set well clear of the legacy
+# ≥ 2000-px threshold but still comfortable for paper viewers and embedded
+# document workflows.
+MAX_PIXELS = 2600
+SAVE_DPI = 160
 
 
 def setup_style() -> None:
@@ -322,6 +327,45 @@ def _make_axes_grid(fig, n: int, sharey: bool = False, polar: bool = False,
     return axes, nrows, ncols
 
 
+def _centered_suptitle(fig, axes, text, fontsize: float = 11,
+                       gap_pixels: float = 12, **kwargs) -> None:
+    """Place a suptitle centered horizontally on the bounding box of `axes`
+    and `gap_pixels` above the tallest panel-with-title in pixel space.
+
+    Two problems are solved at once:
+    - When a colorbar is attached on the right via `fig.colorbar(im,
+      ax=axes_flat, ...)`, the panel grid is shifted left and a default
+      `x=0.5` suptitle appears visually off-center. We center on the
+      panel-grid bbox instead.
+    - The previous convention of `y=1.02` placed the suptitle outside
+      the figure; with `bbox_inches="tight"` the saved image grew up to
+      include it, leaving a blank band between title and first row. We
+      measure the pixel top of each axis's *tight* bbox (which already
+      includes the per-panel subplot title) and place the suptitle a
+      fixed pixel gap above that — uniform visual spacing across
+      figures of different physical sizes.
+
+    Call after the colorbar is attached so axis positions reflect the
+    final layout."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    visible = [ax for ax in axes if ax.get_visible()]
+    if not visible:
+        fig.suptitle(text, fontsize=fontsize, **kwargs)
+        return
+    pos = [ax.get_position() for ax in visible]
+    x_mid = (min(p.x0 for p in pos) + max(p.x1 for p in pos)) / 2
+    inv = fig.transFigure.inverted()
+    tb_px = [ax.get_tightbbox(renderer) for ax in visible]
+    top_frac = max(inv.transform((0, b.y1))[1]
+                   for b in tb_px if b is not None)
+    gap_frac = (inv.transform((0, gap_pixels))[1]
+                - inv.transform((0, 0))[1])
+    y = min(0.995, top_frac + gap_frac)
+    fig.suptitle(text, x=x_mid, y=y, fontsize=fontsize, ha="center",
+                 va="bottom", **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Fig 01 — IntP Fig. 4: per-workload panel grid, variants compared
 # ---------------------------------------------------------------------------
@@ -414,7 +458,7 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
     # app15_query_inerge — ~19 chars at 7-pt) sit fully in the inter-panel
     # gutter without crossing into the adjacent panel's heatmap.
     fig = plt.figure(figsize=_clamp_figsize(5.6 * ncols, panel_h * nrows))
-    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=3.2, hspace=0.55)
+    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=3.2, hspace=0.30)
     im = None
     for idx, (env, variant) in enumerate(pairs):
         ax = axes_flat[idx]
@@ -449,7 +493,8 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
         ax.grid(False)
     if im is not None:
         fig.colorbar(im, ax=axes_flat, shrink=0.6, label="interference (%)")
-    fig.suptitle("Per (env, variant) workload fingerprint", y=1.02, fontsize=11)
+    _centered_suptitle(fig, axes_flat,
+                       "Per (env, variant) workload fingerprint")
     _save(fig, outdir / "fig01b_per_variant_bars.png", "fig01b")
 
 
@@ -501,6 +546,46 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
     km = KMeans(n_clusters=k, n_init=10, random_state=42).fit(means_per_wl.values)
     cluster_of = dict(zip(means_per_wl.index, km.labels_))
 
+    # Map each workload to a short metric-profile family inferred from its
+    # name (appNN[a-z]*_<family>), then map family → canonical profile
+    # token (net, streaming, query, …). The cluster label is built from
+    # the distinct profiles present in the cluster, joined with "/", so
+    # readers see "net" / "streaming/io" instead of opaque "cluster 1".
+    def _workload_family(wl: str) -> str:
+        m = re.match(r"app\d+[a-z]*_(.*)", wl)
+        return m.group(1) if m else wl
+
+    family_to_profile = {
+        "ml_llc":         "cache",
+        "streaming":      "streaming",
+        "ordering":       "ordering",
+        "classification": "classification",
+        "search":         "search",
+        "sort_net":       "sort/net",
+        "tcp_veth":       "veth",
+        "udp_veth":       "veth",
+        "query_scan":     "query",
+        "query_join":     "query",
+        "query_inerge":   "query",
+        "query_merge":    "query",
+    }
+    profile_of = {wl: family_to_profile.get(_workload_family(wl),
+                                            _workload_family(wl))
+                  for wl in workloads}
+
+    def _cluster_label(members: list[str]) -> str:
+        cnt = Counter(profile_of[m] for m in members)
+        # Keep profiles in descending count order; ties broken by first
+        # appearance. Show up to two profiles to keep labels short.
+        ordered = [p for p, _ in cnt.most_common()]
+        if len(ordered) <= 2:
+            return "/".join(ordered)
+        return "/".join(ordered[:2]) + "/…"
+
+    cluster_members = {c: [wl for wl in workloads if cluster_of[wl] == c]
+                       for c in range(k)}
+    cluster_label_of = {c: _cluster_label(cluster_members[c]) for c in range(k)}
+
     cluster_palette = plt.get_cmap("Set2")
     variant_markers = {
         "v0": "X", "v0.1": "x", "v0.2": "P",
@@ -547,8 +632,6 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
     ax.axvline(0, color="gray", linewidth=0.5, linestyle=":")
     ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
     ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
-    ax.set_title(f"PCA + k-means clustering of workloads — env={env} "
-                 f"(joint fit, variants overlaid)", fontsize=10)
 
     # In-axes legends: variant (marker), workload-cluster (colour).
     from matplotlib.lines import Line2D
@@ -559,7 +642,7 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
     clu_handles = [Line2D([0], [0], marker="o", color="w",
                           markerfacecolor=cluster_palette(c),
                           markeredgecolor="black", markersize=8,
-                          label=f"cluster {c+1}")
+                          label=cluster_label_of[c] or f"cluster {c+1}")
                    for c in range(k)]
     leg1 = ax.legend(handles=var_handles, loc="upper left",
                      title="variant", fontsize=8, title_fontsize=8.5)
@@ -576,12 +659,13 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
     y_cur = 0.93
     line_h = 0.034
     for c in range(k):
-        members = [wl for wl in workloads if cluster_of[wl] == c]
+        members = cluster_members[c]
         if not members:
             continue
         side.text(0.0, y_cur, "■", color=cluster_palette(c),
                   fontsize=14, va="top")
-        side.text(0.10, y_cur - 0.005, f"cluster {c+1}  (n={len(members)})",
+        header = cluster_label_of[c] or f"cluster {c+1}"
+        side.text(0.10, y_cur - 0.005, header,
                   fontsize=9, fontweight="bold", va="top")
         y_cur -= line_h
         for wl in members:
@@ -591,6 +675,10 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
         y_cur -= line_h * 0.4
 
     fig.tight_layout()
+    _centered_suptitle(fig, [ax, side],
+                       f"PCA + k-means clustering of workloads — env={env} "
+                       f"(joint fit, variants overlaid)",
+                       fontsize=10.5)
     _save(fig, outdir / "fig02_pca_kmeans.png", "fig02")
 
 
@@ -1006,7 +1094,8 @@ def fig_pairwise_heatmap(means: pd.DataFrame, outdir: Path) -> None:
             5.2 * ncols, (0.30 * len(workloads) + 1.4) * nrows))
         # Long workload names ("cpu_v_cache", "tcp_v_tcp_veth") need extra
         # horizontal gap to keep y-labels out of the adjacent panel.
-        axes_flat, _, _ = _make_axes_grid(fig, nv, sharey=True, wspace=1.4)
+        axes_flat, _, _ = _make_axes_grid(fig, nv, sharey=True, wspace=1.4,
+                                          hspace=0.30)
         im = None
         for idx, variant in enumerate(variants):
             ax = axes_flat[idx]
@@ -1027,7 +1116,8 @@ def fig_pairwise_heatmap(means: pd.DataFrame, outdir: Path) -> None:
             ax.grid(False)
         if im is not None:
             fig.colorbar(im, ax=axes_flat, shrink=0.8, label="interference (%)")
-        fig.suptitle(f"Pairwise interference signal — env={env}", y=1.02, fontsize=11)
+        _centered_suptitle(fig, axes_flat,
+                           f"Pairwise interference signal — env={env}")
         _save(fig, outdir / f"fig07_pairwise_heatmap_{env}.png", f"fig07-{env}")
 
 
@@ -1150,7 +1240,7 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
                                             0.32 * sub["workload"].nunique() + 1.4))
     # Wide wspace: stress-ng workload labels are 12-18 chars and must not
     # bleed into the adjacent panel's plot area.
-    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=1.6)
+    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=1.6, hspace=0.30)
     im = None
     for idx, variant in enumerate(variants):
         ax = axes_flat[idx]
@@ -1174,7 +1264,8 @@ def fig_workload_clustermap(means: pd.DataFrame, outdir: Path) -> None:
         plt.close(fig)
         return
     fig.colorbar(im, ax=axes_flat, shrink=0.7, label="interference (%)")
-    fig.suptitle(f"Hierarchical workload clustermap — env={env}", y=1.02, fontsize=11)
+    _centered_suptitle(fig, axes_flat,
+                       f"Hierarchical workload clustermap — env={env}")
     _save(fig, outdir / "fig10_workload_clustermap.png", "fig10")
 
 
