@@ -249,41 +249,89 @@ detect_btf() {
 }
 
 # -- IMC PMU type detection ---------------------------------------------------
-# V0 needs the perf_event_attr.type value of the uncore IMC PMU. Modern Intel
-# hosts expose this under /sys/devices/uncore_imc/type (single-channel naming)
-# or /sys/devices/uncore_imc_<N>/type (per-channel, e.g. Sapphire Rapids 0..7).
-# OPERATOR: validate against actual host output; the template assumes a single
-# shared type across channels, but real Sapphire Rapids may expose a different
-# type per channel — confirm with `cat /sys/devices/uncore_imc_*/type`.
+# V0/V0.2 need the perf_event_attr.type values of the uncore IMC PMUs. Modern
+# Intel hosts expose these under:
+#   /sys/devices/uncore_imc/type                          (single-channel naming)
+#   /sys/devices/uncore_imc_<N>/type                      (per-channel, e.g. SPR 0..7)
+#   /sys/devices/uncore_imc_free_running[_<N>]/type       (firmware-managed pseudo;
+#                                                          NOT usable via perf_event_open
+#                                                          the same way — must be FILTERED)
+#
+# On Sapphire Rapids (verified Xeon Gold 5412U, kernel 5.15):
+#   uncore_imc_0..7              types 73..80   ← real, perf_event_open-friendly
+#   uncore_imc_free_running_0..3 types 81..84   ← skip
+#
+# If we counted all 12 directories naively, downstream code that loops over
+# the "channel range" would try to open types 81-84 and either fail or
+# return garbage, undercounting/zeroing mbw.
+#
+# We emit:
+#   INTP_IMC_PMU_TYPE=<min>             back-compat shortcut (= FIRST)
+#   INTP_IMC_PMU_TYPE_FIRST=<min>       inclusive lower bound of usable types
+#   INTP_IMC_PMU_TYPE_LAST=<max>        inclusive upper bound of usable types
+#   INTP_IMC_CHANNEL_COUNT=<real>       count of usable channels (real, not pseudo)
+#
+# The helper / orchestrator should consume FIRST/LAST as the iteration
+# range. Assumes types within the range are consecutive (true on every
+# Intel platform we've observed); if not, the helper's per-type
+# perf_event_open already tolerates individual failures and skips bad
+# entries.
 
 detect_imc() {
-    local first_type=""
+    local types=""
     local channel_count=0
 
-    if [ -d /sys/devices/uncore_imc ] && [ -f /sys/devices/uncore_imc/type ]; then
-        first_type=$(cat /sys/devices/uncore_imc/type 2>/dev/null) || first_type=""
-        channel_count=1
-    fi
+    # Pattern: name must end in `_<digits>` (e.g., uncore_imc_3 / uncore_imc_11)
+    # — this drops `uncore_imc_free_running` and any future firmware-managed
+    # pseudo PMU directories that share the `uncore_imc_` prefix.
+    local d base
+    for d in /sys/devices/uncore_imc_*; do
+        [ -d "$d" ] || continue
+        [ -f "$d/type" ] || continue
+        base="${d##*/}"                              # e.g. uncore_imc_free_running_0
+        case "$base" in
+            uncore_imc_[0-9]|uncore_imc_[0-9][0-9])
+                : # accept
+                ;;
+            *)
+                continue  # drop free_running / future pseudos
+                ;;
+        esac
+        local t
+        t=$(cat "$d/type" 2>/dev/null) || continue
+        [ -n "$t" ] || continue
+        types="$types $t"
+        channel_count=$(( channel_count + 1 ))
+    done
 
-    if [ -z "$first_type" ] || [ "$channel_count" -eq 0 ]; then
-        local d
-        for d in /sys/devices/uncore_imc_*; do
-            [ -d "$d" ] || continue
-            [ -f "$d/type" ] || continue
-            if [ -z "$first_type" ]; then
-                first_type=$(cat "$d/type" 2>/dev/null) || first_type=""
+    # Fall back to single-channel naming if no per-channel dirs matched.
+    if [ -z "$types" ]; then
+        if [ -d /sys/devices/uncore_imc ] && [ -f /sys/devices/uncore_imc/type ]; then
+            local t
+            t=$(cat /sys/devices/uncore_imc/type 2>/dev/null) || t=""
+            if [ -n "$t" ]; then
+                types="$t"
+                channel_count=1
             fi
-            channel_count=$(( channel_count + 1 ))
-        done
+        fi
     fi
 
-    if [ -z "$first_type" ]; then
+    if [ -z "$types" ]; then
         echo "INTP_IMC_PMU_TYPE=0"
+        echo "INTP_IMC_PMU_TYPE_FIRST=0"
+        echo "INTP_IMC_PMU_TYPE_LAST=0"
         echo "INTP_IMC_CHANNEL_COUNT=0"
         return
     fi
 
-    echo "INTP_IMC_PMU_TYPE=$first_type"
+    # Sort numerically; take min as FIRST and max as LAST.
+    local first last
+    first=$(echo "$types" | tr ' ' '\n' | grep -v '^$' | sort -n | head -1)
+    last=$(echo  "$types" | tr ' ' '\n' | grep -v '^$' | sort -n | tail -1)
+
+    echo "INTP_IMC_PMU_TYPE=$first"
+    echo "INTP_IMC_PMU_TYPE_FIRST=$first"
+    echo "INTP_IMC_PMU_TYPE_LAST=$last"
     echo "INTP_IMC_CHANNEL_COUNT=$channel_count"
 }
 

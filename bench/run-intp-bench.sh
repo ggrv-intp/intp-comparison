@@ -2007,9 +2007,17 @@ run_profiler_systemtap_v0_2() {
     fi
 
     rm -f /tmp/intp-v0.2-hw-data
+    # IMC_PMU_TYPE_FIRST/LAST come from intp-detect.sh's filtered scan of
+    # /sys/devices/uncore_imc_<N>/type (free_running pseudos excluded). The
+    # helper iterates the full range so multi-channel hosts (SPR: 8 real
+    # channels, types 73-80) get accurate mbw; without this it falls back
+    # to a single type and undercounts by channel_count×. Parent-env
+    # overrides take precedence.
     INTP_HELPER_DRAM_BW_MBPS="${INTP_MEM_BW_MBPS:-}" \
     INTP_HELPER_L3_SIZE_KB="${INTP_LLC_SIZE_KB:-}" \
     INTP_HELPER_IMC_PMU_TYPE="${INTP_IMC_PMU_TYPE:-}" \
+    INTP_HELPER_IMC_PMU_TYPE_FIRST="${INTP_HELPER_IMC_PMU_TYPE_FIRST:-${INTP_IMC_PMU_TYPE_FIRST:-}}" \
+    INTP_HELPER_IMC_PMU_TYPE_LAST="${INTP_HELPER_IMC_PMU_TYPE_LAST:-${INTP_IMC_PMU_TYPE_LAST:-}}" \
     INTP_HELPER_DATA_FILE="/tmp/intp-v0.2-hw-data" \
         "$V0_2_HELPER" "$target" >"$helper_log" 2>&1 &
     helper_pid=$!

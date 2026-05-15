@@ -666,9 +666,14 @@ _start_v0_2_profiler() {
         return 1
     fi
 
-    # Capture IMC PMU type / DRAM bw / L3 size for the helper. The helper
-    # also accepts user overrides via INTP_HELPER_IMC_PMU_TYPE_{FIRST,LAST}
-    # which are passed through from the parent env (e.g. SPR's 73-80 range).
+    # Capture IMC PMU range / DRAM bw / L3 size for the helper. intp-detect.sh
+    # filters out firmware-managed `uncore_imc_free_running_*` pseudos (whose
+    # types — 81-84 on SPR Xeon Gold 5412U — are not openable via the same
+    # perf_event_open path) and emits INTP_IMC_PMU_TYPE_{FIRST,LAST} as the
+    # usable range. We forward both to the helper so it iterates every real
+    # channel; without _FIRST/_LAST the helper falls back to single-type and
+    # undercounts mbw by channel_count×. Explicit parent-env overrides
+    # (INTP_HELPER_IMC_PMU_TYPE_{FIRST,LAST}) still win — see helper docs.
     local detect_out
     detect_out="$("$REPO_ROOT/shared/intp-detect.sh" 2>/dev/null || true)"
     # shellcheck disable=SC2046
@@ -679,6 +684,8 @@ _start_v0_2_profiler() {
     INTP_HELPER_DRAM_BW_MBPS="${INTP_MEM_BW_MBPS:-}" \
     INTP_HELPER_L3_SIZE_KB="${INTP_LLC_SIZE_KB:-}" \
     INTP_HELPER_IMC_PMU_TYPE="${INTP_IMC_PMU_TYPE:-}" \
+    INTP_HELPER_IMC_PMU_TYPE_FIRST="${INTP_HELPER_IMC_PMU_TYPE_FIRST:-${INTP_IMC_PMU_TYPE_FIRST:-}}" \
+    INTP_HELPER_IMC_PMU_TYPE_LAST="${INTP_HELPER_IMC_PMU_TYPE_LAST:-${INTP_IMC_PMU_TYPE_LAST:-}}" \
     INTP_HELPER_DATA_FILE="/tmp/intp-v0.2-hw-data" \
         "$V0_2_HELPER" "$STAP_TARGET" > "$helper_log" 2>&1 &
     V0_2_HELPER_PID=$!
