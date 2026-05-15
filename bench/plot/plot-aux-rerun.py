@@ -95,32 +95,88 @@ def parse_vmstat_cs(path):
 # --- Figure 1: noise-floor distribution -------------------------------------
 
 def plot_noise_floor_distribution(run_dir, out_dir):
+    """Horizontal per-metric strip: one row per metric, full 0-100 axis.
+
+    Earlier renderings (boxplot, then violin+jitter) tried to show seven
+    distributions with very different magnitudes on the same y-scale; the
+    five near-zero metrics collapsed to slivers and the reader could not
+    distinguish 0 from 5. The current layout puts each metric on its own
+    horizontal row, draws a coloured bar from 0 to the median, a thin
+    p5–p95 whisker, the mean as a tick, and prints the median value
+    inline. The two metrics that actually carry distribution shape (mbw
+    saturation artifact, llcocc heap-footprint band) get a wider IQR
+    block so their structure is still legible."""
     data = collect_noise_floor(run_dir)
     n_total = sum(len(v) for v in data.values()) // len(METRICS)
 
-    fig, ax = plt.subplots(figsize=(8.0, 4.5))
-    positions = np.arange(len(METRICS))
-    box_data = [data[m] for m in METRICS]
+    palette = {
+        "netp":   "#e377c2", "nets":   "#9467bd", "blk":    "#2ca02c",
+        "mbw":    "#1f77b4", "llcmr":  "#d62728", "llcocc": "#ff7f0e",
+        "cpu":    "#000000",
+    }
+    # Render top-to-bottom in canonical metric order (reversed for matplotlib
+    # y-axis convention so netp ends up at the top).
+    rows = list(reversed(METRICS))
 
-    bp = ax.boxplot(
-        box_data, positions=positions, widths=0.55, patch_artist=True,
-        medianprops=dict(color="black", linewidth=1.3),
-        flierprops=dict(marker=".", markersize=2, alpha=0.35),
-    )
-    palette = plt.cm.tab10(np.linspace(0, 1, len(METRICS)))
-    for patch, c in zip(bp["boxes"], palette):
-        patch.set_facecolor(c)
-        patch.set_alpha(0.55)
+    fig, ax = plt.subplots(figsize=(9.0, 0.55 * len(rows) + 1.2))
+    for i, m in enumerate(rows):
+        v = np.asarray(data[m], dtype=float)
+        if v.size == 0:
+            continue
+        med = float(np.median(v))
+        mean = float(np.mean(v))
+        p5, p25, p75, p95 = (float(x) for x in np.percentile(v, [5, 25, 75, 95]))
+        col = palette[m]
 
-    ax.set_xticks(positions)
-    ax.set_xticklabels([METRIC_LABEL[m] for m in METRICS], rotation=18, ha="right")
-    ax.set_ylabel("Value (% scale, 0-100)")
-    ax.set_ylim(-3, 105)
-    ax.grid(axis="y", alpha=0.35)
+        # 0-100 light backdrop: signals "this is the full possible range"
+        ax.barh(i, 100, height=0.78, color="#eeeeee", edgecolor="none",
+                zorder=1)
+        # p5-p95 whisker (thin)
+        ax.hlines(i, p5, p95, color=col, alpha=0.55, linewidth=1.3,
+                  zorder=2)
+        # IQR (p25-p75) thick band — visually dominant for distributions
+        # with shape (mbw, llcocc); near-zero for the floor metrics.
+        ax.barh(i, p75 - p25, left=p25, height=0.46, color=col,
+                alpha=0.85, edgecolor="black", linewidth=0.4, zorder=3)
+        # Median tick (white slot through the IQR for legibility)
+        ax.vlines(med, i - 0.30, i + 0.30, color="white", linewidth=2.4,
+                  zorder=4)
+        ax.vlines(med, i - 0.30, i + 0.30, color="black", linewidth=1.0,
+                  zorder=5)
+        # Mean: small black diamond
+        ax.scatter(mean, i, marker="D", s=22, color="white",
+                   edgecolor="black", linewidth=0.9, zorder=6)
+        # Inline numeric label: median (p5–p95) on the right edge
+        label = f"  median {med:5.1f}   p5–p95 [{p5:5.1f}, {p95:5.1f}]"
+        ax.text(101, i, label, va="center", ha="left", fontsize=8.5,
+                family="DejaVu Sans Mono")
+
+    # Annotate the two metrics whose magnitude needs context.
+    for i, m in enumerate(rows):
+        if m == "mbw":
+            ax.text(50, i - 0.42, "saturation artifact of predecessor "
+                    "normaliser (not a real signal)",
+                    ha="center", va="top", fontsize=7.5, style="italic",
+                    color="#444")
+        if m == "llcocc":
+            ax.text(50, i - 0.42, "≈ resident JVM heap footprint of "
+                    "HiBench stack (NameNode/DataNode/Master/Worker)",
+                    ha="center", va="top", fontsize=7.5, style="italic",
+                    color="#444")
+
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([METRIC_LABEL[m] for m in rows], fontsize=9)
+    ax.set_xlim(-1, 165)            # extra room on the right for inline text
+    ax.set_xticks([0, 25, 50, 75, 100])
+    ax.set_xlabel("Value (% scale, 0–100)")
+    ax.grid(axis="x", alpha=0.30)
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
     ax.set_title(
-        f"V3 noise floor — HiBench stack UP and IDLE\n"
-        f"(n={n_total} samples = 12 reps × 90 s, system-wide eBPF)",
-        fontsize=10,
+        f"V3 noise floor — HiBench stack UP and IDLE   "
+        f"(n={n_total} = 12 reps × 90 s; bar = IQR, line = p5–p95, "
+        f"|=median, ◇=mean)",
+        fontsize=9.5, loc="left",
     )
     fig.tight_layout()
     for ext in ("png", "pdf"):
@@ -220,7 +276,7 @@ def plot_exp5_sched_switch(run_dir, out_dir):
                capsize=3, label="with V3", color="#1f77b4", alpha=0.55, hatch="//")
         ax.set_title(
             "sched:sched_switch over 90 s — perf counter only\n"
-            "⚠ vmstat ground-truth not captured in this run; counter drop may be artefactual",
+            "⚠ vmstat ground-truth not captured in this run; counter drop may be artifactual",
             fontsize=9.5)
 
     ax.set_xticks(x)

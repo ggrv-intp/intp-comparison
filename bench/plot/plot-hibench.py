@@ -974,37 +974,45 @@ def fig_variant_resource_heatmap(df: pd.DataFrame, outdir: Path) -> None:
     rdf = pd.DataFrame(rows)
     rdf.to_csv(outdir / "variant_resource_summary.csv", index=False)
     profiles = _ordered_profiles(rdf["profile"].unique())
-    fig, axes = plt.subplots(
-        1, len(profiles),
-        figsize=_clamp_figsize(3.0 + 2.6 * len(profiles),
-                               0.42 * rdf["variant"].nunique() + 1.7),
-        squeeze=False, sharey=True,
-    )
+    n_p = len(profiles)
+    n_v = rdf["variant"].nunique()
     resources = list(RESOURCE_FAMILY.keys())
+
+    # Stacked-rows layout: at n=7 profiles _grid_dims returns 3×3 and
+    # centres the partial last row. Earlier 1×7 layout cramped the
+    # x-axis labels (cache, cpu, disk, memory, network) into overlap.
+    nrows, ncols = _grid_dims(n_p)
+    panel_w = 2.4 + 0.6 * len(resources)            # wide enough for x labels
+    panel_h = 0.55 * n_v + 1.4                      # room for variant rows + title
+    fig = plt.figure(figsize=_clamp_figsize(panel_w * ncols, panel_h * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n_p, wspace=1.1, hspace=0.45)
+
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="#dddddd")
     im = None
     for i, profile in enumerate(profiles):
-        ax = axes[0][i]
+        ax = axes_flat[i]
         sub = rdf[rdf.profile == profile]
         pivot = sub.pivot_table(index="variant", columns="resource", values="mean")
         pivot = pivot.reindex(index=_ordered_variants(pivot.index), columns=resources)
         masked = np.ma.masked_invalid(pivot.values)
-        cmap = plt.get_cmap("viridis").copy()
-        cmap.set_bad(color="#dddddd")
         im = ax.imshow(masked, cmap=cmap, vmin=0, vmax=100, aspect="auto")
-        ax.set_xticks(range(len(resources))); ax.set_xticklabels(resources)
-        ax.set_yticks(range(len(pivot.index))); ax.set_yticklabels(pivot.index)
-        ax.set_title(f"profile={profile}", fontsize=9.5)
+        ax.set_xticks(range(len(resources)))
+        ax.set_xticklabels(resources, fontsize=8.5)
+        ax.set_yticks(range(len(pivot.index)))
+        ax.set_yticklabels(pivot.index, fontsize=8.5)
+        ax.set_title(f"profile={profile}", fontsize=10)
         for (yi, xi), v in np.ndenumerate(pivot.values):
             if not np.isnan(v):
                 ax.text(xi, yi, f"{v:.0f}", ha="center", va="center",
-                        fontsize=7,
+                        fontsize=8.5, fontweight="bold",
                         color="white" if v > 50 else "black")
         ax.grid(False)
     if im is not None:
-        fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.04, shrink=0.85,
+        fig.colorbar(im, ax=axes_flat, fraction=0.035, shrink=0.7,
                      label="mean interference (%)")
     fig.suptitle("HiBench variant × resource family — mean interference",
-                 y=1.02, fontsize=11)
+                 y=1.00, fontsize=12)
     _save(fig, outdir / "fig10_variant_resource_heatmap.png", "fig10")
 
 

@@ -389,7 +389,15 @@ def fig_per_workload_bars(means: pd.DataFrame, outdir: Path) -> None:
 
 
 def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
-    """Dual view of IntP Fig. 4: one panel per (env,variant), all workloads."""
+    """Per-(env,variant) workload×metric heatmap.
+
+    Earlier versions of this script rendered grouped bars (18 workloads ×
+    7 metrics per panel), which produced unreadable label density at
+    two-column print width. The current layout encodes interference (%)
+    as cell colour: rows = workloads (alphabetical, identical order across
+    panels so the eye can track a workload row-by-row across variants),
+    columns = metrics. One panel per (env, variant). Filename retained for
+    paper-LaTeX compatibility."""
     solo = means[means.stage == "solo"]
     if solo.empty:
         return
@@ -398,28 +406,50 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
     n = len(pairs)
     if n == 0:
         return
+    workloads = sorted(grouped["workload"].unique())
     nrows, ncols = _grid_dims(n)
-    fig = plt.figure(figsize=_clamp_figsize(6 * ncols, 3.6 * nrows))
-    axes_flat, _, _ = _make_axes_grid(fig, n)
+    panel_h = 0.26 * len(workloads) + 1.4   # per-panel target height in inches
+    # Widen the per-panel slot enough that the right-column panels'
+    # y-tick labels (the longest are app08/09_classification and
+    # app15_query_inerge — ~19 chars at 7-pt) sit fully in the inter-panel
+    # gutter without crossing into the adjacent panel's heatmap.
+    fig = plt.figure(figsize=_clamp_figsize(5.6 * ncols, panel_h * nrows))
+    axes_flat, _, _ = _make_axes_grid(fig, n, wspace=3.2, hspace=0.55)
+    im = None
     for idx, (env, variant) in enumerate(pairs):
         ax = axes_flat[idx]
-        sub = grouped[(grouped.env == env) & (grouped.variant == variant)].copy()
-        sub = sub.sort_values("workload")
-        x = np.arange(len(sub))
-        width = 0.11
-        for i, m in enumerate(METRICS):
-            ax.bar(x + (i - 3) * width, sub[m].values, width=width,
-                   label=METRIC_LABEL[m], color=METRIC_COLORS[m])
-        ax.set_xticks(x)
-        ax.set_xticklabels(sub["workload"].values, rotation=45, ha="right", fontsize=7)
-        ax.set_ylim(0, max(1.0, sub[METRICS].max().max() * 1.1))
-        ax.set_title(f"{env} / {variant}")
-        ax.set_ylabel("interference (%)")
-    handles, labels = axes_flat[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02),
-               ncol=len(METRICS), frameon=False, fontsize=8)
-    fig.suptitle("Per (env,variant) workload fingerprint", y=1.05)
-    fig.tight_layout()
+        sub = (grouped[(grouped.env == env) & (grouped.variant == variant)]
+               .set_index("workload")
+               .reindex(workloads)[METRICS]
+               .fillna(0))
+        im = ax.imshow(sub.values, aspect="auto", cmap="viridis",
+                       vmin=0, vmax=100)
+        # Per-cell numeric overlay so each workload's seven values are
+        # readable directly without colour-to-percentage translation.
+        # Text colour flips at the colormap midpoint for contrast; cells
+        # at exactly zero are left blank to reduce visual noise.
+        for i in range(sub.values.shape[0]):
+            for j in range(sub.values.shape[1]):
+                val = sub.values[i, j]
+                if not np.isfinite(val) or val < 0.5:
+                    continue
+                txt_color = "white" if val < 55 else "black"
+                ax.text(j, i, f"{val:.0f}", ha="center", va="center",
+                        color=txt_color, fontsize=5.8)
+        # Thin row separators help the eye tell adjacent workloads apart
+        # (especially the app01/02/03_ml_llc-style sibling triplets).
+        for i in range(1, len(workloads)):
+            ax.axhline(i - 0.5, color="white", linewidth=0.45, alpha=0.55)
+        ax.set_xticks(range(len(METRICS)))
+        ax.set_xticklabels([METRIC_LABEL[m] for m in METRICS],
+                           rotation=45, ha="right", fontsize=7)
+        ax.set_yticks(range(len(workloads)))
+        ax.set_yticklabels(workloads, fontsize=7)
+        ax.set_title(f"{env} / {variant}", fontsize=9.5)
+        ax.grid(False)
+    if im is not None:
+        fig.colorbar(im, ax=axes_flat, shrink=0.6, label="interference (%)")
+    fig.suptitle("Per (env, variant) workload fingerprint", y=1.02, fontsize=11)
     _save(fig, outdir / "fig01b_per_variant_bars.png", "fig01b")
 
 
@@ -428,55 +458,139 @@ def fig_per_variant_bars(means: pd.DataFrame, outdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
+    """Joint PCA over (workload, variant) rows; variants overlaid in one panel.
+
+    Earlier four-panel layout produced one PCA per variant with 18 labelled
+    workloads each, which crowded labels into unreadable clumps. The
+    current layout fits a single PCA on the concatenated per-(workload,
+    variant) mean matrix, plots one marker per (workload, variant) pair
+    (colour = workload-cluster from k-means on the per-workload mean,
+    marker = variant), connects the variants of each workload with a
+    faint polygon to make per-workload spread visible, and prints each
+    workload label once at the centroid. The cross-variant agreement
+    claim is then visually direct: tight polygons = agreement."""
     if not HAS_SKLEARN:
         return
     solo = means[means.stage == "solo"]
     if solo.empty:
         print("[pca] no solo data — skip")
         return
-    pairs = solo[["env", "variant"]].drop_duplicates().values.tolist()
-    n = len(pairs)
-    if n == 0:
+    env = "bare" if "bare" in solo["env"].values else solo["env"].iloc[0]
+    sub = solo[solo.env == env]
+    variants = _ordered_variants(sub["variant"].unique())
+    workloads = sorted(sub["workload"].unique())
+    if not variants or len(workloads) < 4:
+        print("[pca] too few variants/workloads — skip")
         return
-    nrows, ncols = _grid_dims(n)
-    fig = plt.figure(figsize=_clamp_figsize(5.6 * ncols, 4.4 * nrows))
-    axes_flat, _, _ = _make_axes_grid(fig, n)
-    cluster_palette = plt.get_cmap("Set1")
-    for idx, (env, variant) in enumerate(pairs):
-        ax = axes_flat[idx]
-        sub = (solo[(solo.env == env) & (solo.variant == variant)]
-               .groupby("workload")[METRICS].mean().fillna(0))
-        if len(sub) < 4:
-            ax.set_title(f"{env} / {variant}: too few workloads")
-            ax.axis("off")
+
+    # Long-form: one row per (workload, variant), columns = METRICS.
+    g = (sub.groupby(["workload", "variant"])[METRICS].mean().fillna(0))
+    try:
+        pca = PCA(n_components=2)
+        Y = pca.fit_transform(g.values)
+    except Exception as e:
+        print(f"[pca] joint PCA failed: {e}")
+        return
+    coords = pd.DataFrame(Y, index=g.index, columns=["PC1", "PC2"])
+
+    # k-means on the per-workload mean across variants — gives one cluster
+    # label per workload (colour stays consistent across the variants of
+    # the same workload).
+    means_per_wl = g.groupby("workload").mean().reindex(workloads)
+    k = min(4, len(means_per_wl))
+    km = KMeans(n_clusters=k, n_init=10, random_state=42).fit(means_per_wl.values)
+    cluster_of = dict(zip(means_per_wl.index, km.labels_))
+
+    cluster_palette = plt.get_cmap("Set2")
+    variant_markers = {
+        "v0": "X", "v0.1": "x", "v0.2": "P",
+        "v1": "v", "v1.1": "o", "v2": "s",
+        "v3": "^", "v3.1": "D", "v3.2": "*",
+    }
+
+    # Two-panel layout: scatter on the left, cluster→workload lookup on
+    # the right. Per-workload labels were removed because at 18 workloads
+    # × 4 variants the label density was unreadable in the dense regions
+    # (app13–15 query family, app08/09 classification, app04/05
+    # streaming). The cross-variant agreement claim now reads as
+    # "markers of different shapes share the same colour-cluster"; the
+    # sidebar resolves marker → workload identity.
+    fig, (ax, side) = plt.subplots(
+        1, 2, figsize=_clamp_figsize(11.4, 7.4),
+        gridspec_kw={"width_ratios": [3.2, 1.0]},
+    )
+
+    # Per-workload centroids drive the connector polygons.
+    centroids = (coords.groupby(level="workload")[["PC1", "PC2"]].mean()
+                       .reindex(workloads))
+
+    for wl in workloads:
+        c = cluster_of[wl]
+        face = cluster_palette(c)
+        wl_pts = coords.xs(wl, level="workload")
+        # faint connector polygon: shows per-workload variant spread
+        if len(wl_pts) >= 2:
+            xs = wl_pts["PC1"].values
+            ys = wl_pts["PC2"].values
+            ax.plot(np.append(xs, xs[0]), np.append(ys, ys[0]),
+                    color=face, alpha=0.28, linewidth=0.6, zorder=1)
+        # one marker per variant
+        for v in variants:
+            if (wl, v) not in coords.index:
+                continue
+            pc1, pc2 = coords.loc[(wl, v)]
+            ax.scatter(pc1, pc2, s=72, color=face, alpha=0.85,
+                       edgecolor="black", linewidth=0.5,
+                       marker=variant_markers.get(v, "o"), zorder=3)
+
+    ax.axhline(0, color="gray", linewidth=0.5, linestyle=":")
+    ax.axvline(0, color="gray", linewidth=0.5, linestyle=":")
+    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
+    ax.set_title(f"PCA + k-means clustering of workloads — env={env} "
+                 f"(joint fit, variants overlaid)", fontsize=10)
+
+    # In-axes legends: variant (marker), workload-cluster (colour).
+    from matplotlib.lines import Line2D
+    var_handles = [Line2D([0], [0], marker=variant_markers.get(v, "o"),
+                          color="w", markerfacecolor="lightgray",
+                          markeredgecolor="black", markersize=8, label=v)
+                   for v in variants]
+    clu_handles = [Line2D([0], [0], marker="o", color="w",
+                          markerfacecolor=cluster_palette(c),
+                          markeredgecolor="black", markersize=8,
+                          label=f"cluster {c+1}")
+                   for c in range(k)]
+    leg1 = ax.legend(handles=var_handles, loc="upper left",
+                     title="variant", fontsize=8, title_fontsize=8.5)
+    ax.add_artist(leg1)
+    ax.legend(handles=clu_handles, loc="lower left",
+              title="workload cluster", fontsize=8, title_fontsize=8.5)
+
+    # Sidebar: workloads grouped by cluster, with the cluster's colour
+    # swatch in front of each block. Replaces per-marker labelling.
+    side.axis("off")
+    side.set_xlim(0, 1); side.set_ylim(0, 1)
+    side.text(0.0, 0.99, "Workloads by cluster", fontsize=10,
+              fontweight="bold", va="top")
+    y_cur = 0.93
+    line_h = 0.034
+    for c in range(k):
+        members = [wl for wl in workloads if cluster_of[wl] == c]
+        if not members:
             continue
-        X = sub.values
-        try:
-            pca = PCA(n_components=2)
-            Y = pca.fit_transform(X)
-            k = min(4, len(sub))
-            km = KMeans(n_clusters=k, n_init=10, random_state=42).fit(X)
-        except Exception as e:
-            ax.set_title(f"{env}/{variant}: PCA failed ({e})")
-            ax.axis("off")
-            continue
-        for c in range(k):
-            mask = km.labels_ == c
-            ax.scatter(Y[mask, 0], Y[mask, 1], s=120, alpha=0.78,
-                       color=cluster_palette(c), edgecolor="black",
-                       linewidth=0.4, label=f"cluster {c+1}")
-        for i, label in enumerate(sub.index):
-            ax.annotate(label, (Y[i, 0], Y[i, 1]),
-                        fontsize=7, alpha=0.85,
-                        xytext=(4, 4), textcoords="offset points")
-        ax.axhline(0, color="gray", linewidth=0.5, linestyle=":")
-        ax.axvline(0, color="gray", linewidth=0.5, linestyle=":")
-        ax.set_title(f"{env} / {variant}\nPC1={pca.explained_variance_ratio_[0]*100:.1f}%  "
-                     f"PC2={pca.explained_variance_ratio_[1]*100:.1f}%", fontsize=9.5)
-        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
-        ax.legend(loc="best", fontsize=7)
-    fig.suptitle("PCA + k-means clustering of workloads (IntP Fig. 5 reproduction)",
-                 y=1.01, fontsize=11)
+        side.text(0.0, y_cur, "■", color=cluster_palette(c),
+                  fontsize=14, va="top")
+        side.text(0.10, y_cur - 0.005, f"cluster {c+1}  (n={len(members)})",
+                  fontsize=9, fontweight="bold", va="top")
+        y_cur -= line_h
+        for wl in members:
+            side.text(0.10, y_cur, wl, fontsize=8, va="top",
+                      family="DejaVu Sans Mono")
+            y_cur -= line_h * 0.85
+        y_cur -= line_h * 0.4
+
+    fig.tight_layout()
     _save(fig, outdir / "fig02_pca_kmeans.png", "fig02")
 
 
