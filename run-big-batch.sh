@@ -135,24 +135,26 @@ COOLDOWN="${COOLDOWN:-10}"
 # vm      → stress-ng in QEMU/KVM guest (profiler measures qemu PID on host);
 #            requires /dev/kvm, cloud-localds, and VM_IMAGE pointing to a qcow2
 BENCH_ENVS="${BENCH_ENVS:-bare}"
-# Default measured matrix for the legacy-v0 campaign: V0 is back IN, V3.1 is
-# OUT. V3.1 (bpftrace) remains fully implemented under v3.1-bpftrace/ and can
-# be re-enabled via BENCH_VARIANTS="...,v3.1"; it is excluded by default
-# because this campaign is comparing V0's recalibrated baseline against the
-# operationally robust variants, not the bpftrace alternative. V3.2 (the
-# in-kernel-aggregating variant addressing the V-D amplification) is also
-# excluded by default for the same campaign-stability reason and is opt-in
-# via BENCH_VARIANTS="...,v3.2"; see v3.2-ebpf-aggregate/DESIGN.md.
-BENCH_VARIANTS="${BENCH_VARIANTS:-v0,v1,v1.1,v2,v3}"
-# HIBENCH_VARIANTS defaults to BENCH_VARIANTS, EXCEPT that V0 is excluded
-# from HiBench by default. Sustained-load HiBench on kernel 5.15 with V0
-# stap exposes the systemd-logind / stap_* module-accumulation cliff
-# documented in bench/findings/v0-baseline-failure-diagnosis.md, and the
-# recovery cost is reboot-level; HiBench is also the segment where the
-# rep-budget per workload is highest. V0 stays in the stress-ng segment
-# (shorter individual runs, deep cleanup every rep) and is intentionally
-# omitted from HiBench. To opt in explicitly:
-#   HIBENCH_VARIANTS="v0,v1,v1.1,v2,v3" ./run-big-batch.sh
+# Default measured matrix: the 4-variant UB22 campaign — v0.2 (the
+# v0-faithful, recalibrated baseline), v1.1, v2, v3. The planned next
+# campaign replaces v3 with v3.2 → BENCH_VARIANTS="v0.2,v1.1,v2,v3.2".
+# Opt-in extras:
+#   v0   classic stap baseline — only builds on very old kernels; add with
+#        BENCH_VARIANTS="v0,v0.2,v1.1,v2,v3".
+#   v1   stap-native (pre-helper) — BENCH_VARIANTS="...,v1".
+#   v3.1 bpftrace alternative — BENCH_VARIANTS="...,v3.1".
+#   v3.2 in-kernel-aggregating variant (addresses the V-D amplification);
+#        see v3.2-ebpf-aggregate/DESIGN.md — BENCH_VARIANTS="...,v3.2".
+BENCH_VARIANTS="${BENCH_VARIANTS:-v0.2,v1.1,v2,v3}"
+# HIBENCH_VARIANTS defaults to BENCH_VARIANTS, EXCEPT that the classic V0
+# (exact token "v0", not v0.2) is excluded from HiBench by default.
+# Sustained-load HiBench on kernel 5.15 with classic-V0 stap exposes the
+# systemd-logind / stap_* module-accumulation cliff documented in
+# bench/findings/v0-baseline-failure-diagnosis.md, and the recovery cost is
+# reboot-level. v0.2 uses the helper-based template and does NOT hit that
+# cliff, so it stays in HiBench. Classic V0 stays in the stress-ng segment
+# only (shorter runs, deep cleanup every rep). To force classic V0 into
+# HiBench explicitly:  HIBENCH_VARIANTS="v0,v0.2,v1.1,v2,v3" ./run-big-batch.sh
 HIBENCH_VARIANTS_DEFAULT=$(echo "$BENCH_VARIANTS" | tr ',' '\n' | grep -vx 'v0' | paste -sd, -)
 HIBENCH_VARIANTS="${HIBENCH_VARIANTS:-$HIBENCH_VARIANTS_DEFAULT}"
 BENCH_WORKLOADS="${BENCH_WORKLOADS:-}"
@@ -259,6 +261,7 @@ run_step "v1 deps check" bash -lc '
   && test -x shared/intp-resctrl-helper.sh
 '
 run_step "build v0.2" make -C v0.2-stap-helper all
+run_step "build v1.1" make -C v1.1-stap-helper all
 run_step "build v2" make -C v2-c-stable-abi all
 run_step "build v3" make -C v3-ebpf-libbpf all
 run_step "build v3.2" make -C v3.2-ebpf-aggregate all
@@ -418,14 +421,37 @@ else
 fi
 
 # ── Segment 3: plots ───────────────────────────────────────────────────────────
+# Full figure set: the stress-ng bench figures + the fragility / PCA
+# consumers that read the same bench-full/ tree, plus the HiBench figures.
+# plot-intp-bench.py additionally auto-chains plot-cross-environment.py when
+# the campaign has >=2 envs, so cross-env is covered without an extra call.
 if [ "$RUN_PLOTS" = "1" ]; then
-  if [ ! -d "$OUT/bench-full" ]; then
-    echo "Skipping plots: bench-full not found at $OUT/bench-full"
-  elif command -v python3 >/dev/null 2>&1; then
-    run_step "render plots from bench results" \
-      python3 bench/plot/plot-intp-bench.py "$OUT/bench-full"
-  else
+  if ! command -v python3 >/dev/null 2>&1; then
     echo "Skipping plots: python3 not found"
+  else
+    if [ -d "$OUT/bench-full" ]; then
+      run_step "plot stress-ng bench figures" \
+        python3 bench/plot/plot-intp-bench.py "$OUT/bench-full"
+      run_step "extract stress-ng fragility table" \
+        python3 bench/plot/extract-fragility.py "$OUT/bench-full"
+      if [ -f "$OUT/bench-full/aggregate-means.tsv" ]; then
+        run_step "plot PCA correlation circle" \
+          python3 bench/plot/plot-pca-correlation-circle.py \
+            "$OUT/bench-full/aggregate-means.tsv"
+      else
+        echo "Skipping PCA circle: $OUT/bench-full/aggregate-means.tsv not found"
+      fi
+    else
+      echo "Skipping stress-ng plots: bench-full not found at $OUT/bench-full"
+    fi
+    if [ "$RUN_HIBENCH" = "1" ]; then
+      if [ -d "$OUT/hibench" ]; then
+        run_step "plot HiBench figures" \
+          python3 bench/plot/plot-hibench.py "$OUT/hibench"
+      else
+        echo "Skipping HiBench plots: $OUT/hibench not found"
+      fi
+    fi
   fi
 else
   echo "Skipping plots (RUN_PLOTS=$RUN_PLOTS)"

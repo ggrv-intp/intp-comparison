@@ -74,7 +74,7 @@ except ImportError:
 # Constants — palette aligned with IntP/IADA paper conventions
 # ---------------------------------------------------------------------------
 
-VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
+VARIANT_ORDER = ["v0", "v0.1", "v0.2", "v1", "v1.1", "v2", "v3.1", "v3", "v3.2"]
 VARIANT_LABELS = {
     "v0":   "v0 (stap classic)",
     "v0.1": "v0.1 (stap k68)",
@@ -112,11 +112,13 @@ METRIC_LABEL = {
 VARIANT_COLORS = {
     "v0":   "#7f7f7f",
     "v0.1": "#bcbd22",
+    "v0.2": "#c7c7c7",
     "v1":   "#17becf",
     "v1.1": "#aec7e8",
     "v2":   "#1f77b4",
     "v3.1": "#ff7f0e",
     "v3":   "#2ca02c",
+    "v3.2": "#d62728",
 }
 PROFILE_HATCH = {
     "standard":      "",

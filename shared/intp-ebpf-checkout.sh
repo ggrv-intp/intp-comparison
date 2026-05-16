@@ -22,12 +22,26 @@ set -euo pipefail
 # ============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-INTP_EBPF_BIN="${INTP_EBPF_BIN:-$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf}"
+# Variant under test for this noise-floor / composite-mechanism rerun.
+#   v3   → v3-ebpf-libbpf/intp-ebpf         (per-event ring buffer)
+#   v3.2 → v3.2-ebpf-aggregate/intp-ebpf-agg (in-kernel aggregation)
+# Both are ring-buffer eBPF variants, so the same noise-floor / pidstat
+# experiment applies. For any other binary, set INTP_EBPF_BIN explicitly.
+INTP_AUX_VARIANT="${INTP_AUX_VARIANT:-v3}"
+case "$INTP_AUX_VARIANT" in
+    v3)   _aux_default_bin="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" ;;
+    v3.2) _aux_default_bin="$REPO_ROOT/v3.2-ebpf-aggregate/intp-ebpf-agg" ;;
+    *)    _aux_default_bin="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" ;;
+esac
+INTP_EBPF_BIN="${INTP_EBPF_BIN:-$_aux_default_bin}"
+unset _aux_default_bin
+# Upper-case label for log / plot headers (V3, V3.2, …).
+VLABEL="$(echo "$INTP_AUX_VARIANT" | tr 'a-z' 'A-Z')"
 # Output dir: prefer the repo's results/ so reruns stay centralised with the
 # rest of the campaign data. Fall back to $HOME (visible, and survives the
 # repo being renamed or moved) — never /tmp, which is wiped on reboot.
 if [ -z "${OUT_DIR:-}" ]; then
-    _aux_stamp="intp-aux-rerun-$(date +%Y%m%d-%H%M%S)"
+    _aux_stamp="intp-aux-rerun-$INTP_AUX_VARIANT-$(date +%Y%m%d-%H%M%S)"
     if mkdir -p "$REPO_ROOT/results" 2>/dev/null && [ -w "$REPO_ROOT/results" ]; then
         OUT_DIR="$REPO_ROOT/results/$_aux_stamp"
     else
@@ -37,11 +51,13 @@ if [ -z "${OUT_DIR:-}" ]; then
 fi
 export OUT_DIR
 
-DURATION=90        # seconds per rep, matches the existing overhead stage
-WARMUP=5
-COOLDOWN=2
-REPS_NF=12         # noise-floor reps (matches the bench's overhead stage default)
-REPS_OVH=3         # pidstat reps (statistical sanity vs wall-clock budget)
+# Timing / rep counts — env-overridable so a smoke run can shrink them
+# (e.g. SMOKE_NOISE_FLOOR in run-smoke-all.sh sets DURATION=15 REPS_NF=2).
+DURATION="${DURATION:-90}"   # seconds per rep, matches the existing overhead stage
+WARMUP="${WARMUP:-5}"
+COOLDOWN="${COOLDOWN:-2}"
+REPS_NF="${REPS_NF:-12}"     # noise-floor reps (matches the bench's overhead stage default)
+REPS_OVH="${REPS_OVH:-3}"    # pidstat reps (statistical sanity vs wall-clock budget)
 
 # Reference loads -- adjust if your existing overhead stage used different flags
 declare -A REF_LOADS=(
@@ -54,12 +70,15 @@ declare -A REF_LOADS=(
 # Pre-flight
 # ============================================================================
 mkdir -p "$OUT_DIR"/{noise_floor,ringbuf_pidstat/ref_cpu,ringbuf_pidstat/ref_disk,ringbuf_pidstat/ref_stream}
+# Variant marker — consumed by bench/plot/plot-aux-rerun.py for figure labels.
+echo "$INTP_AUX_VARIANT" > "$OUT_DIR/variant.txt"
 exec > >(tee -a "$OUT_DIR/run.log") 2>&1
 
 echo "=== IntP auxiliary rerun ==="
 echo "Started:   $(date -Iseconds)"
 echo "Script:    $SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 echo "Repo:      $REPO_ROOT"
+echo "Variant:   $INTP_AUX_VARIANT ($VLABEL)"
 echo "Binary:    $INTP_EBPF_BIN"
 echo "Output:    $OUT_DIR"
 echo
@@ -94,7 +113,7 @@ command -v stress-ng >/dev/null || { echo "FATAL: stress-ng not found"; exit 1; 
 # ============================================================================
 echo
 echo "==================================================================="
-echo "Experiment #4: noise floor (V3 system-wide, stack-up-but-idle)"
+echo "Experiment #4: noise floor ($VLABEL system-wide, stack-up-but-idle)"
 echo "==================================================================="
 echo "Pre-check (stack should be UP and idle):"
 grep -A5 'HiBench stack' "$OUT_DIR/env.txt"
@@ -157,7 +176,7 @@ PY
 # ============================================================================
 echo
 echo "==================================================================="
-echo "Experiment #5: pidstat + perf -p breakdown (V3 composite mechanism)"
+echo "Experiment #5: pidstat + perf -p breakdown ($VLABEL composite mechanism)"
 echo "==================================================================="
 
 for ref in ref_cpu ref_disk ref_stream; do

@@ -111,7 +111,7 @@ RESOURCE_COLORS = {
     "network": "#e377c2",  # pink
 }
 
-VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3.1", "v3"]
+VARIANT_ORDER = ["v0", "v0.1", "v0.2", "v1", "v1.1", "v2", "v3.1", "v3", "v3.2"]
 VARIANT_COLORS = {
     "v0":   "#7f7f7f",  # gray
     "v0.1": "#bcbd22",  # olive

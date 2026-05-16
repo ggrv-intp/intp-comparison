@@ -94,7 +94,7 @@ def parse_vmstat_cs(path):
 
 # --- Figure 1: noise-floor distribution -------------------------------------
 
-def plot_noise_floor_distribution(run_dir, out_dir):
+def plot_noise_floor_distribution(run_dir, out_dir, label="V3"):
     """Horizontal per-metric strip: one row per metric, full 0-100 axis.
 
     Earlier renderings (boxplot, then violin+jitter) tried to show seven
@@ -188,7 +188,7 @@ def plot_noise_floor_distribution(run_dir, out_dir):
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
     fig.suptitle(
-        f"V3 noise floor — HiBench stack UP and IDLE   "
+        f"{label} noise floor — HiBench stack UP and IDLE   "
         f"(n={n_total} = 12 reps × 90 s; bar = IQR, line = p5–p95, "
         f"|=median, ◇=mean)",
         fontsize=9.5, y=0.985,
@@ -201,7 +201,7 @@ def plot_noise_floor_distribution(run_dir, out_dir):
 
 # --- Figure 2: noise-floor time series for rep01 -----------------------------
 
-def plot_noise_floor_timeseries(run_dir, out_dir):
+def plot_noise_floor_timeseries(run_dir, out_dir, label="V3"):
     rep1 = run_dir / "noise_floor" / "rep01" / "profiler.tsv"
     if not rep1.exists():
         print(f"  skip timeseries: {rep1} not found")
@@ -230,7 +230,7 @@ def plot_noise_floor_timeseries(run_dir, out_dir):
     )
     for ax in axes[-3:-1]:
         ax.set_xlabel("Sample (seconds)")
-    fig.suptitle("V3 noise-floor time series (rep01)", fontsize=11)
+    fig.suptitle(f"{label} noise-floor time series (rep01)", fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     for ext in ("png", "pdf"):
         fig.savefig(out_dir / f"noise-floor-timeseries.{ext}", dpi=200, bbox_inches="tight")
@@ -239,7 +239,7 @@ def plot_noise_floor_timeseries(run_dir, out_dir):
 
 # --- Figure 3: experiment-5 sched-switch comparison -------------------------
 
-def plot_exp5_sched_switch(run_dir, out_dir):
+def plot_exp5_sched_switch(run_dir, out_dir, label="V3"):
     base = run_dir / "ringbuf_pidstat"
     if not base.exists():
         print("  skip exp5: no ringbuf_pidstat dir")
@@ -272,13 +272,13 @@ def plot_exp5_sched_switch(run_dir, out_dir):
                capsize=3, label="perf  · baseline", color="#1f77b4")
         ax.bar(x - 0.5*w, [np.mean(perf_v3[r]) if perf_v3[r] else 0 for r in refs], w,
                yerr=[np.std(perf_v3[r]) if len(perf_v3[r])>1 else 0 for r in refs],
-               capsize=3, label="perf  · with V3", color="#1f77b4", alpha=0.55, hatch="//")
+               capsize=3, label=f"perf  · with {label}", color="#1f77b4", alpha=0.55, hatch="//")
         ax.bar(x + 0.5*w, [np.mean(vm_base[r]) if vm_base[r] else 0 for r in refs], w,
                yerr=[np.std(vm_base[r]) if len(vm_base[r])>1 else 0 for r in refs],
                capsize=3, label="vmstat · baseline", color="#d62728")
         ax.bar(x + 1.5*w, [np.mean(vm_v3[r]) if vm_v3[r] else 0 for r in refs], w,
                yerr=[np.std(vm_v3[r]) if len(vm_v3[r])>1 else 0 for r in refs],
-               capsize=3, label="vmstat · with V3", color="#d62728", alpha=0.55, hatch="//")
+               capsize=3, label=f"vmstat · with {label}", color="#d62728", alpha=0.55, hatch="//")
         ax.set_title("ctx-switches over 90 s window — perf counter vs vmstat ground-truth", fontsize=10)
     else:
         w = 0.32
@@ -288,7 +288,7 @@ def plot_exp5_sched_switch(run_dir, out_dir):
                capsize=3, label="baseline", color="#1f77b4")
         ax.bar(x + w/2, [np.mean(perf_v3[r]) if perf_v3[r] else 0 for r in refs], w,
                yerr=[np.std(perf_v3[r]) if len(perf_v3[r])>1 else 0 for r in refs],
-               capsize=3, label="with V3", color="#1f77b4", alpha=0.55, hatch="//")
+               capsize=3, label=f"with {label}", color="#1f77b4", alpha=0.55, hatch="//")
         ax.set_title(
             "sched:sched_switch over 90 s — perf counter only\n"
             "⚠ vmstat ground-truth not captured in this run; counter drop may be artifactual",
@@ -310,6 +310,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir", type=Path, help="run dir produced by intp-ebpf-checkout.sh")
     ap.add_argument("--out", type=Path, default=None, help="output dir (default: <run_dir>/plots)")
+    ap.add_argument("--variant", default=None,
+                    help="variant label for figure titles (default: read "
+                         "<run_dir>/variant.txt, fall back to v3)")
     args = ap.parse_args()
 
     run_dir = args.run_dir.resolve()
@@ -319,11 +322,20 @@ def main():
     out_dir = args.out or (run_dir / "plots")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Variant label: --variant wins, else the marker written by
+    # intp-ebpf-checkout.sh, else the historical default (v3).
+    variant = args.variant
+    if not variant:
+        marker = run_dir / "variant.txt"
+        variant = marker.read_text().strip() if marker.exists() else "v3"
+    label = variant.upper()
+
     print(f"run_dir: {run_dir}")
     print(f"out_dir: {out_dir}")
-    plot_noise_floor_distribution(run_dir, out_dir)
-    plot_noise_floor_timeseries(run_dir, out_dir)
-    plot_exp5_sched_switch(run_dir, out_dir)
+    print(f"variant: {variant} ({label})")
+    plot_noise_floor_distribution(run_dir, out_dir, label)
+    plot_noise_floor_timeseries(run_dir, out_dir, label)
+    plot_exp5_sched_switch(run_dir, out_dir, label)
     print("done.")
     for f in sorted(out_dir.iterdir()):
         print(f"  {f.relative_to(run_dir)}")
