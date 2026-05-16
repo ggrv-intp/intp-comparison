@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
 # intp-preflight.sh -- Verify a host has every hardware/software interface
-# required to build and run all IntP variants (V0, V0.1, V1, V1.1, V2, V3.1, V3)
-# and the bench harness in bench/run-intp-bench.sh.
+# required to build and run all IntP variants (V0, V0.1, V0.2, V1, V1.1, V2,
+# V3.1, V3, V3.2) and the bench harness in bench/run-intp-bench.sh.
 #
 # Output is a per-variant matrix (BUILD + RUN) with a per-metric coverage map.
 # Each check is OK / DEGRADED / MISSING with the underlying reason. The script
@@ -17,7 +17,7 @@
 #                                          # 0 unless every variant is broken)
 #   ./intp-preflight.sh --quiet            # only the final summary
 #
-# Variant selectors: v0 v0.1 v1 v1.1 v2 v3.1 v3 bench (the harness deps).
+# Variant selectors: v0 v0.1 v0.2 v1 v1.1 v2 v3.1 v3 v3.2 bench (harness deps).
 # -----------------------------------------------------------------------------
 
 set -u
@@ -29,7 +29,7 @@ set -u
 # CLI
 # -----------------------------------------------------------------------------
 
-ALL_VARIANTS=(v0 v0.1 v0.2 v1 v1.1 v2 v3.1 v3 bench)
+ALL_VARIANTS=(v0 v0.1 v0.2 v1 v1.1 v2 v3.1 v3 v3.2 bench)
 SELECTED=()
 JSON=0
 STRICT=0
@@ -344,7 +344,7 @@ check_btf() {
         emit OK "/sys/kernel/btf/vmlinux"
     else
         record btf vmlinux MISSING "/sys/kernel/btf/vmlinux not found (kernel needs CONFIG_DEBUG_INFO_BTF=y)"
-        emit MISSING "/sys/kernel/btf/vmlinux missing -- V3 and V3.1 cannot load BPF"
+        emit MISSING "/sys/kernel/btf/vmlinux missing -- V3, V3.1 and V3.2 cannot load BPF"
     fi
 }
 
@@ -596,7 +596,8 @@ if want_variant v0.2; then
         debuginfo:vmlinux:required \
         debuginfo:headers:required \
         kernel:tracefs:required \
-        rdt:resctrl_l3_mon:required \
+        kernel:perf_paranoid:required \
+        rdt:resctrl_mounted:required \
         priv:root:required
 fi
 
@@ -708,6 +709,32 @@ if want_variant v3; then
         btf:vmlinux:required
     verdict v3 RUN \
         kernel_v3:era:required \
+        btf:vmlinux:required \
+        kernel:tracefs:required \
+        kernel:perf_paranoid:required \
+        perf:perf_events:required \
+        rdt:resctrl_mounted:recommended \
+        priv:root:required
+fi
+
+# v3.2 -- eBPF/CO-RE libbpf, in-kernel aggregating (kernel >= 5.10)
+if want_variant v3.2; then
+    if kernel_ge 5 10; then
+        record kernel_v32 era OK "kernel $KREL >= 5.10"
+    else
+        record kernel_v32 era MISSING "kernel $KREL < 5.10 (libbpf+CO-RE baseline)"
+    fi
+    verdict v3.2 BUILD \
+        tools:clang:required \
+        tools:gcc:required \
+        tools:make:required \
+        tools:libbpf:required \
+        tools:bpftool:required \
+        tools:libelf:required \
+        tools:zlib:required \
+        btf:vmlinux:required
+    verdict v3.2 RUN \
+        kernel_v32:era:required \
         btf:vmlinux:required \
         kernel:tracefs:required \
         kernel:perf_paranoid:required \

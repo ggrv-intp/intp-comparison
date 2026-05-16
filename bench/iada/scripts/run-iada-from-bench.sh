@@ -36,7 +36,7 @@ Run with --dry-run to echo every command without executing it.
 
 Configuration via env vars (defaults shown):
   MODALITY=M1                 M1 (IADA-aligned, default) or M2 (transfer)
-  VARIANTS=v0,v0.1,v1,v1.1,v2,v3,v3.1
+  VARIANTS=v0,v0.1,v0.2,v1,v1.1,v2,v3,v3.1,v3.2
   ENVS=                       Derived from MODALITY when empty
   STAGE=solo
   WORKLOAD_MIXES=all
@@ -78,7 +78,7 @@ fi
 : "${CLOUDSIM_REPO:?CLOUDSIM_REPO unset — re-run setup-iada.sh or source ~/.iada-env}"
 
 MODALITY="${MODALITY:-M1}"
-VARIANTS="${VARIANTS:-v0,v0.1,v1,v1.1,v2,v3,v3.1}"
+VARIANTS="${VARIANTS:-v0,v0.1,v0.2,v1,v1.1,v2,v3,v3.1,v3.2}"
 STAGE="${STAGE:-solo}"
 WORKLOAD_MIXES="${WORKLOAD_MIXES:-all}"
 REP_PATTERN_MAP="${REP_PATTERN_MAP:-rep1=inc,rep2=dec,rep3=osc,rep4=con,rep5=inc,rep6=dec,rep7=osc}"

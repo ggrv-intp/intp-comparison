@@ -5,6 +5,7 @@
 #   v1.1-stap-helper   — C helper for V1 stap module (target kernel 6.8+)
 #   v2-c-stable-abi    — hybrid procfs/perf_event_open/resctrl backends
 #   v3-ebpf-libbpf     — libbpf+CO-RE BPF program (needs clang, libbpf-dev)
+#   v3.2-ebpf-aggregate— in-kernel-aggregating libbpf+CO-RE BPF program
 #
 # Validate-only variants (no compile, runtime interpreters):
 #   v3.1-bpftrace      — bpftrace .bt scripts (deps + parse check)
@@ -20,9 +21,9 @@
 #   make help       this message
 #
 # Per-variant targets (build/clean/smoke individually):
-#   make v0.2 v1.1 v2 v3 v3.1
-#   make clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1
-#   make smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1
+#   make v0.2 v1.1 v2 v3 v3.1 v3.2
+#   make clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1 clean-v3.2
+#   make smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1 smoke-v3.2
 #
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -32,18 +33,19 @@ V11_DIR := $(ROOT)/v1.1-stap-helper
 V2_DIR  := $(ROOT)/v2-c-stable-abi
 V3_DIR  := $(ROOT)/v3-ebpf-libbpf
 V31_DIR := $(ROOT)/v3.1-bpftrace
+V32_DIR := $(ROOT)/v3.2-ebpf-aggregate
 V0_STP  := $(ROOT)/v0-stap-classic/intp.stp
 V01_STP := $(ROOT)/v0.1-stap-k68/intp-6.8.stp
 V1_STP  := $(ROOT)/v1-stap-native/intp-resctrl.stp
 V02_STP_TMPL := $(ROOT)/v0.2-stap-helper/intp.stp.template
 
 .PHONY: all clean smoke help preflight \
-        v0.2 v1.1 v2 v3 v3.1 \
-        clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1 \
-        smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1 \
+        v0.2 v1.1 v2 v3 v3.1 v3.2 \
+        clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1 clean-v3.2 \
+        smoke-v1.1 smoke-v2 smoke-v3 smoke-v3.1 smoke-v3.2 \
         validate-v0 validate-v0.1 validate-v0.2 validate-v1
 
-all: v0.2 v1.1 v2 v3 v3.1 validate-v0 validate-v0.1 validate-v0.2 validate-v1
+all: v0.2 v1.1 v2 v3 v3.1 v3.2 validate-v0 validate-v0.1 validate-v0.2 validate-v1
 	@echo "[intp] all variants built/validated"
 
 # ---- preflight (host capability check, no installs) -------------------------
@@ -65,6 +67,9 @@ v2:
 
 v3:
 	$(MAKE) -C $(V3_DIR) all
+
+v3.2:
+	$(MAKE) -C $(V32_DIR) all
 
 # ---- runtime-interpreted variants -------------------------------------------
 
@@ -100,7 +105,7 @@ validate-v1:
 
 # ---- clean ------------------------------------------------------------------
 
-clean: clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1
+clean: clean-v0.2 clean-v1.1 clean-v2 clean-v3 clean-v3.1 clean-v3.2
 
 clean-v0.2:
 	-$(MAKE) -C $(V02_DIR) clean
@@ -117,11 +122,14 @@ clean-v3:
 clean-v3.1:
 	-$(MAKE) -C $(V31_DIR) clean
 
+clean-v3.2:
+	-$(MAKE) -C $(V32_DIR) clean
+
 # ---- smoke (5s runtime sanity) ----------------------------------------------
 # All require sudo for perf/BPF/stap. v0/v0.1/v1 are excluded — they need
 # kernel-tied stap modules that compile per-host and can't be one-shot here.
 
-smoke: smoke-v2 smoke-v3 smoke-v3.1
+smoke: smoke-v2 smoke-v3 smoke-v3.1 smoke-v3.2
 	@echo "[intp] smoke OK"
 
 smoke-v1.1: v1.1
@@ -141,6 +149,9 @@ smoke-v3: v3
 smoke-v3.1:
 	@$(V31_DIR)/run-intp-bpftrace.sh --interval 1 --duration 5 >/dev/null \
 		&& echo "[v3.1] smoke OK"
+
+smoke-v3.2: v3.2
+	@$(V32_DIR)/intp-ebpf-agg --interval 1 --duration 5 >/dev/null && echo "[v3.2] smoke OK"
 
 # ---- help -------------------------------------------------------------------
 

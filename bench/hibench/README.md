@@ -17,8 +17,11 @@ Add a less synthetic workload set than stress-ng to verify:
 
 - `setup-spark-hibench.sh`
   - provisions Spark + HiBench locally on Ubuntu
+- `setup-hadoop-localmode.sh`
+  - installs the Hadoop CLI + python2 toolchain HiBench local-mode needs
 - `run-hibench-subset.sh`
-  - runs the Spark subset with `standard` and `netp-extreme` profiles
+  - runs the Spark subset under each selected IntP profiler variant
+    (`--variants`), across a chosen co-runner `--profile`
 - `validate-intp-coverage.py`
   - validates representativeness criteria from an aggregated TSV
 
@@ -36,32 +39,32 @@ Add a less synthetic workload set than stress-ng to verify:
 ```bash
 sudo bash bench/hibench/setup-spark-hibench.sh
 export HIBENCH_HOME=/opt/HiBench
-export SPARK_HOME=/opt/spark-3.5.1-bin-hadoop3
+export SPARK_HOME=/opt/spark      # canonical symlink created by the setup script
 ```
 
 ## Execution
 
 ```bash
-sudo bash bench/hibench/run-hibench-subset.sh --size medium --profile both
+sudo bash bench/hibench/run-hibench-subset.sh \
+  --variants v0.2,v1.1,v2,v3,v3.2 --size medium --profile standard
 ```
 
-Profiles:
+`run-hibench-subset.sh` launches each selected IntP variant against the Spark
+job itself — no separate collector wiring is needed. Supported variants:
+`v0.2,v1,v1.1,v2,v3.1,v3,v3.2` (the classic `v0`/`v0.1` are stress-ng-only and
+not run here). See `--help` for the full option list.
 
-- `standard`: balanced configuration
-- `netp-extreme`: increases parallelism/shuffle to raise network signal
-- `both`: runs both in sequence
+Co-runner profiles (`--profile`):
 
-## Integration with IntP captures
+- `standard` — no co-runner (baseline reference)
+- `cpu-extreme`, `mem-extreme`, `cache-extreme`, `disk-extreme`,
+  `netp-extreme`, `nets-extreme` — single-resource antagonist sweeps
+- `both` — `standard` + `netp-extreme` (legacy combo)
+- `all-stress` — full sweep: `standard` + every `*-extreme` profile
 
-This package executes workloads and stores logs per workload/profile. IntP
-captures can be integrated in two ways:
-
-1. Run the collector in parallel with Spark (same host), using your current flow.
-2. Wrap the runner with a collection script (recommended for repeatability).
-
-Tip: keep the same `workload` names in the final TSV (`terasort`, `wordcount`,
-`pagerank`, `kmeans`, `bayes`, `sql_nweight`, `idle`) to simplify automated
-validation.
+Output keeps stable `workload` names (`terasort`, `wordcount`, `pagerank`,
+`kmeans`, `bayes`, `sql_nweight`, `dfsioe`, `idle`) so the downstream
+validators and plotters can join across runs.
 
 ## Representativeness validation
 
@@ -78,7 +81,10 @@ python3 bench/hibench/validate-intp-coverage.py \
 
 Expected output:
 
-- "Coverage by metric" block with `OK` on all 7 metrics
+- "Coverage by metric" block — `OK` for metrics with sufficient variation;
+  in the default `capability-aware` readiness mode, metrics the host cannot
+  expose are reported `SKIP` rather than failed (use `--readiness-mode strict`
+  to force `OK`/`FAIL` on every metric)
 - "Metric dominance" block without a single metric at 100% of workloads
 - methodology checks with `OK` for ML/graph and shuffle-heavy
 

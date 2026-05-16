@@ -130,7 +130,6 @@ if [ "$SMOKE_HIBENCH" = "1" ]; then
       --interval 1 \
       --warmup 5 \
       --max-duration 120 \
-      --min-elapsed 1 \
       --out-root "$OUT/hibench-quick"
 else
   echo "Skipping HiBench smoke (SMOKE_HIBENCH=$SMOKE_HIBENCH)"

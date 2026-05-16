@@ -8,8 +8,8 @@ This directory contains scripts and utilities used across multiple IntP variants
 
 Host capability checker. Verifies, without installing or mounting anything,
 that the machine has every hardware and software interface needed to build
-and run each IntP variant (V0, V0.1, V1, V1.1, V2, V3.1, V3) plus the bench
-harness in `bench/run-intp-bench.sh`. Output is a per-variant BUILD/RUN
+and run each IntP variant (V0, V0.1, V0.2, V1, V1.1, V2, V3.1, V3, V3.2) plus
+the bench harness in `bench/run-intp-bench.sh`. Output is a per-variant BUILD/RUN
 matrix and a 7-metric coverage map (netp / nets / blk / mbw / llcmr /
 llcocc / cpu).
 
@@ -62,13 +62,11 @@ script is a legacy artifact from the original `v3-updated-resctrl` design;
 The script is kept here for reproducing experiments against the legacy
 `v3-updated-resctrl` lineage (preserved at git tag `pre-rename-2026-05-05`).
 
-### validate-cross-variant.sh / validate-v1-v2.sh
+### validate-cross-variant.sh
 
-Cross-variant byte-equivalence validators. `validate-cross-variant.sh`
-runs V2 / V3.1 / V3 under identical conditions and compares the seven
-metric columns within a tolerance. `validate-v1-v2.sh` runs an A-B-A-B
-sequential harness for V1 (SystemTap) vs V2 (procfs) given the
-PID-exclusivity constraint of resctrl.
+Cross-variant byte-equivalence validator. Runs the runtime-binary variants
+(V2 / V3.1 / V3 / V3.2) under identical conditions and compares the seven
+metric columns within a tolerance, emitting a Markdown report.
 
 Run with `--help` for the option list.
 

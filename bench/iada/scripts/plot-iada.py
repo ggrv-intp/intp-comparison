@@ -45,7 +45,7 @@ except ImportError:
     HAVE_SCIPY = False
 
 
-VARIANT_ORDER = ["v0", "v0.1", "v1", "v1.1", "v2", "v3", "v3.1"]
+VARIANT_ORDER = ["v0", "v0.1", "v0.2", "v1", "v1.1", "v2", "v3", "v3.1", "v3.2"]
 ENV_ORDER = [
     "bare",
     "container", "container-guest", "container-full",

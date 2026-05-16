@@ -123,10 +123,11 @@ VARIANT_COLORS = {
     "v3.1": "#ff7f0e",  # orange
     "v3.2": "#d62728",  # red
 }
-# Default plotted-variant set for the legacy-v0 campaign. The 2x2 panel grid
+# Default plotted-variant set — the 4 variants that go into the article:
+# v0.2 (recalibrated stap baseline), v1.1, v2, v3.2. The 2x2 panel grid
 # in _grid_dims expects 4. If <results_dir>/variants.manifest exists, it
 # overrides this default (one variant per line, '#' comments allowed).
-DEFAULT_PLOTTED_VARIANTS = ["v0", "v1.1", "v2", "v3"]
+DEFAULT_PLOTTED_VARIANTS = ["v0.2", "v1.1", "v2", "v3.2"]
 
 
 def _load_plotted_variants(results_dir) -> list[str]:

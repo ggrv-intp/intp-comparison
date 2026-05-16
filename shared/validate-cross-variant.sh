@@ -2,7 +2,8 @@
 # -----------------------------------------------------------------------------
 # validate-cross-variant.sh
 #
-# Cross-variant byte-equivalence test for IntP V0/V1/V2/V3.1/V3/V3.2.
+# Cross-variant byte-equivalence test for IntP V2/V3.1/V3/V3.2 (the
+# runtime-binary variants; the stap-based variants are not covered here).
 #
 # Runs each available variant under identical conditions (same target PID,
 # same interval, same duration), captures TSV output, then compares the
@@ -23,9 +24,9 @@
 #   --duration SECONDS    Collection duration (default: 10)
 #   --tolerance PCT       Max allowed column divergence in % points (default: 15)
 #   --output-dir DIR      Directory for captured outputs (default: /tmp/intp-xval-*)
-#   --v2-bin PATH         Path to V0.1 binary (default: ../v2-c-stable-abi/intp-hybrid)
+#   --v2-bin PATH         Path to V2 binary (default: ../v2-c-stable-abi/intp-hybrid)
 #   --v3.1-script PATH    Path to V3.1 launcher (default: ../v3.1-bpftrace/run-intp-bpftrace.sh)
-#   --v3-bin PATH         Path to V1 binary (default: ../v3-ebpf-libbpf/intp-ebpf)
+#   --v3-bin PATH         Path to V3 binary (default: ../v3-ebpf-libbpf/intp-ebpf)
 #   --v3.2-bin PATH       Path to V3.2 binary (default: ../v3.2-ebpf-aggregate/intp-ebpf-agg)
 #   --nic-speed-bps N    Force NIC speed (bytes/sec) for all variants
 #   --mem-bw-max-bps N   Force memory bandwidth ceiling (bytes/sec) for all variants

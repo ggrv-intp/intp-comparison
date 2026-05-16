@@ -3,19 +3,19 @@
 # under the running kernel using CO-RE relocation.
 #
 # This does not, by itself, test cross-kernel portability -- that
-# requires running the same `intp.bpf.o` on several distinct kernels.
+# requires running the same `intp_agg.bpf.o` on several distinct kernels.
 # What it does prove is that:
 #   - the skeleton/program verifies against the *current* kernel's BTF
 #   - every CO-RE relocation is resolvable (no "field not found" errors)
 #
 # Usage:
-#   bash scripts/test-core-portability.sh          # uses src/intp.bpf.o
+#   bash scripts/test-core-portability.sh          # uses src/intp_agg.bpf.o
 #   bash scripts/test-core-portability.sh PATH.o   # uses a given object
 
 set -eu
 
-OBJ=${1:-src/intp.bpf.o}
-PIN_ROOT=/sys/fs/bpf/intp-v3-core-test
+OBJ=${1:-src/intp_agg.bpf.o}
+PIN_ROOT=/sys/fs/bpf/intp-v3.2-core-test
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: must run as root (bpftool needs CAP_BPF + CAP_PERFMON)"

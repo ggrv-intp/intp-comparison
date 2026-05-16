@@ -3,8 +3,8 @@
 #
 # Generates known load, samples V3 for a short window, then checks that
 # the relevant metric column is non-zero. This is NOT a bit-for-bit
-# validation against V0 -- see docs/VARIANT-COMPARISON.md for how the
-# three-way head-to-head is done.
+# validation against V0 -- see the repo-root docs/VARIANT-COMPARISON.md for
+# how the cross-variant head-to-head is done.
 
 set -eu
 

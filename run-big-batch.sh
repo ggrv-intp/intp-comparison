@@ -24,10 +24,12 @@
 #                                 vm-guest          workload + profiler INSIDE guest, results scp'd back
 #                               container-guest needs Docker; vm-guest needs cloud-localds + a qcow2
 #                               with sshd + cloud-init, ideally with IntP build deps preinstalled.
-#     BENCH_VARIANTS=v0,v1,v1.1,v2,v3  comma-separated profiler variants for full bench
-#                                   (V0 re-enabled as measured baseline since
-#                                   2026-05-11; V3.1 still implemented and
-#                                   selectable via BENCH_VARIANTS=...,v3.1).
+#     BENCH_VARIANTS=v0.2,v1.1,v2,v3  comma-separated profiler variants for full
+#                                   bench (the measured UB22 4-variant matrix).
+#                                   Opt-in extras: v0 (classic stap baseline),
+#                                   v1 (stap-native), v3.1 (bpftrace), v3.2
+#                                   (in-kernel-aggregating) — e.g.
+#                                   BENCH_VARIANTS=v0,v0.2,v1.1,v2,v3,v3.2.
 #     HIBENCH_VARIANTS=<BENCH_VARIANTS minus v0>    override profiler variants
 #                                         for HiBench. Defaults to BENCH_VARIANTS
 #                                         with v0 stripped (sustained-load HiBench
@@ -66,7 +68,6 @@
 #     HIBENCH_INTERVAL=1        HiBench profiler sampling interval (seconds)
 #     HIBENCH_WARMUP=15         HiBench pre-job warmup before Spark run (seconds)
 #     HIBENCH_MAX_DURATION=600  HiBench profiler max duration per Spark invocation (seconds)
-#     HIBENCH_MIN_ELAPSED=120   Min cumulative Spark runtime per workload (seconds)
 #     HIBENCH_ELAPSED_CV_WARN_PCT=20  Warn when duration CV across reps reaches threshold
 #     HADOOP_PROFILE=3          Spark binary variant (hadoop2 or hadoop3)
 #       (used by setup-spark-hibench.sh to select spark-X.Y.Z-bin-hadoop3.tgz)
@@ -180,7 +181,6 @@ HIBENCH_REPS="${HIBENCH_REPS:-$REPS}"
 HIBENCH_INTERVAL="${HIBENCH_INTERVAL:-$INTERVAL}"
 HIBENCH_WARMUP="${HIBENCH_WARMUP:-$WARMUP}"
 HIBENCH_MAX_DURATION="${HIBENCH_MAX_DURATION:-$TIMESERIES_DURATION}"
-HIBENCH_MIN_ELAPSED="${HIBENCH_MIN_ELAPSED:-$DURATION}"
 HIBENCH_ELAPSED_CV_WARN_PCT="${HIBENCH_ELAPSED_CV_WARN_PCT:-20}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
@@ -247,7 +247,7 @@ echo "    vm_image=${VM_IMAGE:-<not set>}  vm_mem=${VM_MEM:-<inherit>}  vm_cpus=
 echo "    bench_cpus=${BENCH_CPUS:-<auto 2/3 nproc>}  bench_mem=${BENCH_MEM:-<auto 2/3 MemTotal>}"
 echo "  run_stress_bench=$RUN_STRESS_BENCH"
 echo "  run_hibench=$RUN_HIBENCH  hibench_size=$HIBENCH_SIZE  hibench_profile=$HIBENCH_PROFILE  hibench_workloads=$HIBENCH_WORKLOADS  hadoop_profile=$HADOOP_PROFILE"
-echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_min_elapsed=$HIBENCH_MIN_ELAPSED  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
+echo "    hibench_reps=$HIBENCH_REPS  hibench_interval=$HIBENCH_INTERVAL  hibench_warmup=$HIBENCH_WARMUP  hibench_max_duration=$HIBENCH_MAX_DURATION  hibench_elapsed_cv_warn_pct=$HIBENCH_ELAPSED_CV_WARN_PCT"
 echo "  run_plots=$RUN_PLOTS"
 echo "  v1_deep_cleanup_every=$INTP_BENCH_V3_DEEP_CLEANUP_EVERY"
 echo "  distributed_mode=$INTP_DISTRIBUTED_MODE  netns=$INTP_NETNS_NAME  host_ip=$INTP_NETNS_HOST_IP  guest_ip=$INTP_NETNS_GUEST_IP"
@@ -412,7 +412,6 @@ if [ "$RUN_HIBENCH" = "1" ]; then
       --interval "$HIBENCH_INTERVAL" \
       --warmup "$HIBENCH_WARMUP" \
       --max-duration "$HIBENCH_MAX_DURATION" \
-      --min-elapsed "$HIBENCH_MIN_ELAPSED" \
       --elapsed-cv-warn-pct "$HIBENCH_ELAPSED_CV_WARN_PCT" \
       "${HIBENCH_EXTRA_ARGS[@]}" \
       --out-root "$OUT/hibench"

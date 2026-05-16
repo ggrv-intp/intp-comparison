@@ -100,7 +100,7 @@ V3_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
 V3_2_BIN="$REPO_ROOT/v3.2-ebpf-aggregate/intp-ebpf-agg"
 
 DEFAULT_STAGES="detect,build,solo,pairwise,overhead,timeseries,report"
-DEFAULT_VARIANTS="v0,v0.1,v1,v1.1,v2,v3.1,v3,v3.2"
+DEFAULT_VARIANTS="v0,v0.1,v0.2,v1,v1.1,v2,v3.1,v3,v3.2"
 # Seven execution environments form three nested axes:
 #   • where the WORKLOAD runs (host / container / VM)
 #   • where the PROFILER runs (host-observer or in-guest)
@@ -633,7 +633,7 @@ write_metadata() {
     {
         printf '# variant manifest\n'
         printf 'variant\tpath\tsha256\tmtime\n'
-        for v in v0 v0.1 v1 v1.1 v2 v3.1 v3; do
+        for v in v0 v0.1 v0.2 v1 v1.1 v2 v3.1 v3 v3.2; do
             local p
             case "$v" in
                 v0) p="$V0_STP" ;;
@@ -644,6 +644,7 @@ write_metadata() {
                 v2) p="$V2_BIN" ;;
                 v3.1) p="$V3_1_RUNNER" ;;
                 v3) p="$V3_BIN" ;;
+                v3.2) p="$V3_2_BIN" ;;
             esac
             if [ -f "$p" ] || [ -x "$p" ]; then
                 printf '%s\t%s\t%s\t%s\n' "$v" "$p" \

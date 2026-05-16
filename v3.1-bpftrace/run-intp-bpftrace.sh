@@ -102,7 +102,7 @@ print_capability_table() {
     echo "  Metric   Source             Status"
     echo "  -------  -----------------  ----------"
     echo "  netp     tracepoint:net     usable"
-    echo "  nets     tracepoint:net     approximation (napi:napi_poll)"
+    echo "  nets     tracepoint:irq     usable (softirq service-time)"
     echo "  blk      tracepoint:block   usable"
     echo "  cpu      tracepoint:sched   usable"
     echo "  llcmr    hardware sampling  usable (sampled, noisier than perf)"

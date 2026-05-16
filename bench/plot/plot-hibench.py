@@ -78,11 +78,13 @@ VARIANT_ORDER = ["v0", "v0.1", "v0.2", "v1", "v1.1", "v2", "v3.1", "v3", "v3.2"]
 VARIANT_LABELS = {
     "v0":   "v0 (stap classic)",
     "v0.1": "v0.1 (stap k68)",
+    "v0.2": "v0.2 (stap helper)",
     "v1":   "v1 (stap native)",
     "v1.1": "v1.1 (stap helper)",
     "v2":   "v2 (C99)",
     "v3.1": "v3.1 (eBPF-py)",
     "v3":   "v3 (eBPF CO-RE)",
+    "v3.2": "v3.2 (eBPF aggregate)",
 }
 # Profiles accepted by run-hibench-subset.sh. Keep "standard" first (it is the
 # baseline reference for the sensitivity figure); the rest are co-runner

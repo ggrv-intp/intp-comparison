@@ -12,6 +12,26 @@ from typing import Iterable
 
 METRICS = ("netp", "nets", "blk", "mbw", "llcmr", "llcocc", "cpu")
 
+# Execution-environment directory names emitted by bench/run-intp-bench.sh.
+# Result layout is <env>/<variant>/<stage>/<workload>/rep<R>/profiler.tsv.
+# Kept in sync with run-intp-bench.sh's DEFAULT_ENVS comment and
+# bench/iada/scripts/plot-iada.py's ENV_ORDER. Bare-metal is the only env
+# exercised so far; the container/vm names are wired ahead of those runs so
+# the IADA path picks them up without a second pass here.
+ENV_NAMES = (
+    "bare",
+    "container", "container-guest", "container-full",
+    "vm", "vm-guest", "vm-full",
+)
+
+
+def _env_index(parts: tuple[str, ...] | list[str]) -> int | None:
+    """Index of the first path component that is a known execution env."""
+    for i, part in enumerate(parts):
+        if part in ENV_NAMES:
+            return i
+    return None
+
 
 @dataclass
 class ConversionResult:
@@ -99,19 +119,8 @@ def dedupe_preserve_order(paths: Iterable[Path]) -> list[Path]:
 
 def stage_from_path(path: Path) -> str | None:
     parts = path.parts
-    if len(parts) < 5:
-        return None
-    try:
-        idx = parts.index("bare")
-    except ValueError:
-        try:
-            idx = parts.index("container")
-        except ValueError:
-            try:
-                idx = parts.index("vm")
-            except ValueError:
-                return None
-    if idx + 2 >= len(parts):
+    idx = _env_index(parts)
+    if idx is None or idx + 2 >= len(parts):
         return None
     return parts[idx + 2]
 
@@ -170,20 +179,17 @@ def output_path_for(source: Path, output_root: Path | None) -> Path:
 
 
 def extract_metadata(source: Path) -> dict[str, str]:
-    parts = list(source.parts)
-    if len(parts) < 6:
+    parts = source.parts
+    idx = _env_index(parts)
+    if idx is None:
         return {"env": "", "variant": "", "stage": "", "workload": "", "rep": ""}
-    for env in ("bare", "container", "vm"):
-        if env in parts:
-            idx = parts.index(env)
-            return {
-                "env": env,
-                "variant": parts[idx + 1] if idx + 1 < len(parts) else "",
-                "stage": parts[idx + 2] if idx + 2 < len(parts) else "",
-                "workload": parts[idx + 3] if idx + 3 < len(parts) else "",
-                "rep": parts[idx + 4] if idx + 4 < len(parts) else "",
-            }
-    return {"env": "", "variant": "", "stage": "", "workload": "", "rep": ""}
+    return {
+        "env": parts[idx],
+        "variant": parts[idx + 1] if idx + 1 < len(parts) else "",
+        "stage": parts[idx + 2] if idx + 2 < len(parts) else "",
+        "workload": parts[idx + 3] if idx + 3 < len(parts) else "",
+        "rep": parts[idx + 4] if idx + 4 < len(parts) else "",
+    }
 
 
 def convert_one(source: Path, output_root: Path | None, force: bool, dry_run: bool) -> ConversionResult:

@@ -75,8 +75,7 @@ MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
 MEM_BW_MAX_BPS="${MEM_BW_MAX_BPS:-}"
 LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
 NIC_SPEED_BPS="${NIC_SPEED_BPS:-}"
-MIN_WORKLOAD_ELAPSED=0      # minimum cumulative Spark runtime per workload (seconds)
-WORKLOAD_REPS=1             # minimum number of Spark invocations per workload
+WORKLOAD_REPS=1             # number of Spark invocations per workload
 ELAPSED_CV_WARN_PCT=20      # warn when duration coefficient of variation reaches this percent
 STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Process name that stap will filter for Spark JVM processes.
@@ -168,9 +167,11 @@ Usage: sudo $0 [options]
 
 Options:
   --variants CSV              IntP variants to run (default: v2,v3.1,v3)
-                              Supported: v1,v1.1,v2,v3.1,v3
-                              Note: v1.1 stap-side runs in @system (system-wide)
-                              mode for HiBench — see _start_v1_1_profiler.
+                              Supported: v0.2,v1,v1.1,v2,v3.1,v3,v3.2
+                              (v0/v0.1 are stress-ng-only and not run here)
+                              Note: v0.2/v1.1 stap-side run in @system
+                              (system-wide) mode for HiBench — see
+                              _start_v1_1_profiler.
   --workloads CSV             Workloads to run (default: all)
                               Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight,dfsioe
   --size small|medium|large|huge|gigantic
@@ -191,10 +192,15 @@ Options:
   --interval N                Profiler sampling interval in seconds (default: $INTERVAL)
   --warmup N                  Seconds to let Spark ramp before recording (default: $WARMUP)
   --max-duration N            Max profiler window per job in seconds (default: $MAX_WORKLOAD_DURATION)
-    --min-elapsed N             Min cumulative Spark runtime per workload via reruns (default: $MIN_WORKLOAD_ELAPSED)
-    --reps N                    Min number of Spark invocations per workload (default: $WORKLOAD_REPS)
+  --reps N                    Number of Spark invocations per workload (default: $WORKLOAD_REPS)
     --elapsed-cv-warn-pct N     Warn threshold for duration CV percent across reps (default: $ELAPSED_CV_WARN_PCT)
-  --stap-target NAME          Process name for V1 stap filter (default: $STAP_TARGET)
+  --stap-target NAME          Process name for stap-variant filter
+                              (v1/v1.1/v0.2; default: $STAP_TARGET)
+  --mem-bw-max-bps N          Override detected memory-bandwidth ceiling (B/s)
+  --llc-size-bytes N          Override detected LLC size (bytes)
+  --nic-speed-bps N           Override detected NIC speed (B/s)
+  --env MODE                  Deployment mode: bare | container-full | vm-full
+                              (default: bare)
   --dry-run                   Print actions without executing
   -h, --help                  Show this help
 
@@ -221,7 +227,6 @@ parse_args() {
             --mem-bw-max-bps) MEM_BW_MAX_BPS="$2"; shift 2 ;;
             --llc-size-bytes) LLC_SIZE_BYTES="$2"; shift 2 ;;
             --nic-speed-bps)  NIC_SPEED_BPS="$2";  shift 2 ;;
-            --min-elapsed)   MIN_WORKLOAD_ELAPSED="$2"; shift 2 ;;
             --reps)          WORKLOAD_REPS="$2"; shift 2 ;;
             --elapsed-cv-warn-pct) ELAPSED_CV_WARN_PCT="$2"; shift 2 ;;
             --stap-target)   STAP_TARGET="$2"; shift 2 ;;
@@ -1214,7 +1219,7 @@ run_subset_for_profile() {
         mkdir -p "$outdir"
     }
 
-    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV reps=$WORKLOAD_REPS min_elapsed=${MIN_WORKLOAD_ELAPSED}s elapsed_cv_warn_pct=${ELAPSED_CV_WARN_PCT}"
+    log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV reps=$WORKLOAD_REPS elapsed_cv_warn_pct=${ELAPSED_CV_WARN_PCT}"
     log "output: $outdir"
 
     set_hibench_size
@@ -1276,7 +1281,6 @@ run_subset_for_profile() {
     {
         printf 'date=%s\nprofile=%s\nsize=%s\nvariants=%s\nworkloads=%s\nreps=%s\nhibench_home=%s\nspark_home=%s\n' \
             "$(date -Iseconds)" "$mode" "$SIZE" "$VARIANTS_CSV" "$WORKLOADS_CSV" "$WORKLOAD_REPS" "$HIBENCH_HOME" "${SPARK_HOME:-auto}"
-        printf 'min_workload_elapsed=%s\n' "$MIN_WORKLOAD_ELAPSED"
         printf 'elapsed_cv_warn_pct=%s\n' "$ELAPSED_CV_WARN_PCT"
     } > "$outdir/metadata.env"
 
@@ -1392,12 +1396,16 @@ _on_exit() {
     stop_stressor
     restore_cpu_env
     stop_resctrl_helper
+    # Deep stap-module cleanup if ANY stap-based variant ran (v1/v1.1/v0.2);
+    # all three load kernel modules that accumulate without this.
     local v
     for v in "${VARIANTS[@]}"; do
-        if [ "$v" = "v1" ]; then
-            stap_deep_cleanup "exit-trap"
-            break
-        fi
+        case "$v" in
+            v1|v1.1|v0.2)
+                stap_deep_cleanup "exit-trap"
+                break
+                ;;
+        esac
     done
 
     return 0

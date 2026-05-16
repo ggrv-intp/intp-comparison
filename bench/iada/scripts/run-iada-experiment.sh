@@ -6,8 +6,9 @@
 # combination, using Meyer-format profiles as input.
 #
 # Inputs (env vars):
-#   VARIANT          v0|v0.1|v1|v2|v3.1|v3   (which IntP variant produced the profiles)
-#   ENV              bare|container|vm   (environment where profiles were collected)
+#   VARIANT          v0|v0.1|v0.2|v1|v1.1|v2|v3|v3.1|v3.2   (which IntP variant produced the profiles)
+#   ENV              bare|container|container-guest|vm|vm-guest|...
+#                    (environment where profiles were collected)
 #   IADA_TREE_ROOT   path to iada-tree dir produced by generate-iada-tree.py
 #   CLOUDSIM_REPO    path to CloudSimInterference checkout
 #   OUT_DIR          where to put logs + parsed metrics
@@ -30,8 +31,8 @@
 
 set -euo pipefail
 
-: "${VARIANT:?VARIANT not set (v0|v0.1|v1|v2|v3.1|v3)}"
-: "${ENV:?ENV not set (bare|container|vm)}"
+: "${VARIANT:?VARIANT not set (v0|v0.1|v0.2|v1|v1.1|v2|v3|v3.1|v3.2)}"
+: "${ENV:?ENV not set (bare|container|container-guest|vm|vm-guest|...)}"
 : "${IADA_TREE_ROOT:?IADA_TREE_ROOT not set}"
 : "${CLOUDSIM_REPO:?CLOUDSIM_REPO not set}"
 : "${OUT_DIR:?OUT_DIR not set}"
