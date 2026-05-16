@@ -68,8 +68,8 @@ sudo bench/setup/run-net-pair-workload.sh -d 90 -P 16 &
 WL_PID=$!
 
 # Attach any IntP variant to that PID and read the netp column.
-sudo v1.1-stap-helper/intp-helper "$WL_PID" &
-sudo stap -g v1.1-stap-helper/intp-v1.1.stp "$WL_PID"
+sudo variants/v1.1-stap-helper/intp-helper "$WL_PID" &
+sudo stap -g variants/v1.1-stap-helper/intp-v1.1.stp "$WL_PID"
 ```
 
 Or, with the in-bench profilers (after enabling `V46_USE_PID_FILTER=1`
@@ -77,7 +77,7 @@ so they accept `--pids`):
 
 ```bash
 sudo INTP_BENCH_V46_PID_FILTER=1 \
-    v3-ebpf-libbpf/intp-ebpf --pids "$WL_PID" --duration 90 --output tsv
+    variants/v3-ebpf-ringbuf/intp-ebpf --pids "$WL_PID" --duration 90 --output tsv
 ```
 
 ### 3. Tear down

@@ -1,6 +1,6 @@
 # IntP Metrics Alignment Matrix
 
-Reference variant: **V0** (`v0-stap-classic/intp.stp`) — the original IntP design from Xavier & De Rose (SBAC-PAD 2022).
+Reference variant: **V0** (`variants/v0-baseline-2022/intp.stp`) — the original IntP design from Xavier & De Rose (SBAC-PAD 2022).
 
 This document tracks how each metric is computed across the 9 variants and which divergences have been corrected.
 
@@ -8,15 +8,15 @@ This document tracks how each metric is computed across the 9 variants and which
 
 | ID | Path | Mechanism | Kernel target |
 |---|---|---|---|
-| V0   | `v0-stap-classic/intp.stp`        | SystemTap, classic kprobes        | ≤4.18 |
-| V0.1 | `v0.1-stap-k68/intp-6.8.stp`      | SystemTap (V0 ported to 6.8)      | 6.8 (experimental) |
-| V0.2 | `v0.2-stap-helper/intp.stp.template` + `generate-stp.sh` | SystemTap + userspace helper, V0-faithful probe set | 5.15 GA (U22) |
-| V1   | `v1-stap-native/intp-resctrl.stp` | SystemTap + resctrl               | ≤6.7 |
-| V1.1 | `v1.1-stap-helper/intp-v1.1.stp`  | SystemTap + userspace helper      | ≥4.19 (incl. 6.8) |
-| V2   | `v2-c-stable-abi/src/*.c`         | C, /proc + perf + resctrl         | any |
-| V3   | `v3-ebpf-libbpf/src/intp.{c,bpf.c}` | libbpf + tracepoints + kprobes  | ≥5.5 |
-| V3.1 | `v3.1-bpftrace/scripts/*.bt`      | bpftrace + Python aggregator      | ≥4.19 |
-| V3.2 | `v3.2-ebpf-aggregate/src/intp_agg.{c,bpf.c}` | libbpf + in-kernel counter map aggregation (no ring buffer) | ≥5.5 |
+| V0   | `variants/v0-baseline-2022/intp.stp`        | SystemTap, classic kprobes        | ≤4.18 |
+| V0.1 | `variants/v0.1-min-patch/intp-6.8.stp`      | SystemTap (V0 ported to 6.8)      | 6.8 (experimental) |
+| V0.2 | `variants/v0.2-legacy-bridge/intp.stp.template` + `generate-stp.sh` | SystemTap + userspace helper, V0-faithful probe set | 5.15 GA (U22) |
+| V1   | `variants/v1-stap-only/intp-resctrl.stp` | SystemTap + resctrl               | ≤6.7 |
+| V1.1 | `variants/v1.1-stap-helper/intp-v1.1.stp`  | SystemTap + userspace helper      | ≥4.19 (incl. 6.8) |
+| V2   | `variants/v2-hybrid-c/src/*.c`         | C, /proc + perf + resctrl         | any |
+| V3   | `variants/v3-ebpf-ringbuf/src/intp.{c,bpf.c}` | libbpf + tracepoints + kprobes  | ≥5.5 |
+| V3.1 | `variants/v3.1-bpftrace/scripts/*.bt`      | bpftrace + Python aggregator      | ≥4.19 |
+| V3.2 | `variants/v3.2-ebpf-agg/src/intp_agg.{c,bpf.c}` | libbpf + in-kernel counter map aggregation (no ring buffer) | ≥5.5 |
 
 ## Metric formulas
 

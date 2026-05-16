@@ -9,7 +9,7 @@ V3.2's architectural decisions.
 For full numbers, raw traces, and the paper-grade exposition, see:
 
 - Paper section VI (overhead decomposition).
-- `v3-ebpf-libbpf/DESIGN.md` section 4 ("Ring buffer vs. perf event array").
+- `variants/v3-ebpf-ringbuf/DESIGN.md` section 4 ("Ring buffer vs. perf event array").
 - Specific run logs under `bench/findings/`.
 
 ---

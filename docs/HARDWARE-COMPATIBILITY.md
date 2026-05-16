@@ -277,18 +277,18 @@ sudo apt install build-essential clang libbpf-dev linux-tools-generic bpftrace p
 sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 # Build all
-cd v2-c-stable-abi && make && cd ..
-cd v3-ebpf-libbpf && make && cd ..
+cd variants/v2-hybrid-c && make && cd ..
+cd variants/v3-ebpf-ringbuf && make && cd ..
 
 # Validate 7/7
 ./shared/intp-detect.sh | grep INTP_
-sudo ./v2-c-stable-abi/intp-hybrid --list-backends
-sudo ./v3-ebpf-libbpf/intp-ebpf --list-capabilities
+sudo ./variants/v2-hybrid-c/intp-hybrid --list-backends
+sudo ./variants/v3-ebpf-ringbuf/intp-ebpf --list-capabilities
 
 # Run
-sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
-sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
+sudo ./variants/v2-hybrid-c/intp-hybrid --interval 1 --duration 60
+sudo ./variants/v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./variants/v3-ebpf-ringbuf/intp-ebpf --interval 1 --duration 60
 
 # Cross-variant comparison
 sudo ./shared/validate-cross-variant.sh --start-workload --duration 30
@@ -304,17 +304,17 @@ sudo apt install build-essential clang libbpf-dev linux-tools-generic bpftrace p
 sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 # Build
-cd v2-c-stable-abi && make && cd ..
-cd v3-ebpf-libbpf && make && cd ..
+cd variants/v2-hybrid-c && make && cd ..
+cd variants/v3-ebpf-ringbuf && make && cd ..
 
 # Verify — look for amd_df and resctrl features
 ls /sys/devices/amd_df*/ 2>/dev/null && echo "AMD DF: available"
 cat /sys/fs/resctrl/info/L3_MON/mon_features
 
 # Run (identical commands)
-sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
-sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
+sudo ./variants/v2-hybrid-c/intp-hybrid --interval 1 --duration 60
+sudo ./variants/v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./variants/v3-ebpf-ringbuf/intp-ebpf --interval 1 --duration 60
 ```
 
 ### 6.3 ARM64 (Neoverse N2/V0.1, Graviton 4)
@@ -328,17 +328,17 @@ uname -r   # must be >= 6.19
 sudo mount -t resctrl resctrl /sys/fs/resctrl 2>/dev/null
 
 # Build (native on ARM64)
-cd v2-c-stable-abi && make && cd ..
-cd v3-ebpf-libbpf && make && cd ..
+cd variants/v2-hybrid-c && make && cd ..
+cd variants/v3-ebpf-ringbuf && make && cd ..
 
 # Verify
 cat /sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || echo "No MPAM — mbw/llcocc will be proxy/unavailable"
 ls /sys/devices/arm_cmn*/ 2>/dev/null && echo "ARM CMN: available"
 
 # Run
-sudo ./v2-c-stable-abi/intp-hybrid --interval 1 --duration 60
-sudo ./v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
-sudo ./v3-ebpf-libbpf/intp-ebpf --interval 1 --duration 60
+sudo ./variants/v2-hybrid-c/intp-hybrid --interval 1 --duration 60
+sudo ./variants/v3.1-bpftrace/run-intp-bpftrace.sh --interval 1 --duration 60
+sudo ./variants/v3-ebpf-ringbuf/intp-ebpf --interval 1 --duration 60
 ```
 
 ---

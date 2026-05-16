@@ -212,7 +212,7 @@ stap --suppress-handler-errors -g \
      -DMAXSKIPPED=1000000 \
      -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
      -DSTP_OVERLOAD_INTERVAL=1000000000LL \
-     v1-stap-native/intp-resctrl.stp <comm>
+     variants/v1-stap-only/intp-resctrl.stp <comm>
 ```
 
 ### 6.2 HiBench (Spark)
@@ -241,10 +241,10 @@ rather than sharing one. Quick map:
 | Variant | Resctrl integration                                                                                                                |
 |---------|------------------------------------------------------------------------------------------------------------------------------------|
 | V1      | None (mbw and llcocc reported as 0)                                                                                                |
-| V1.1    | `v1.1-stap-helper/intp-helper` -- C daemon, opens uncore IMC events + creates `mon_groups/intp-<pid>/`, polls 1 s, writes `/tmp/intp-hw-data` |
+| V1.1    | `variants/v1.1-stap-helper/intp-helper` -- C daemon, opens uncore IMC events + creates `mon_groups/intp-<pid>/`, polls 1 s, writes `/tmp/intp-hw-data` |
 | V2      | In-process: C reader inside `intp-hybrid`                                                                                          |
 | V3.1    | In-process: Python `resctrl_reader.py` orchestrated by the bpftrace runner                                                         |
-| V3      | In-process: C code in `v3-ebpf-libbpf/resctrl/`                                                                                    |
+| V3      | In-process: C code in `variants/v3-ebpf-ringbuf/resctrl/`                                                                                    |
 
 `shared/intp-resctrl-helper.sh` is preserved as a legacy artifact from
 the pre-rename `v3-updated-resctrl` design. No current variant uses it
@@ -471,7 +471,7 @@ IntP outputs is necessary but not sufficient for them.
 | Paper section | What it does | Campaign artefact |
 | --- | --- | --- |
 | Section II | Background on contention sources (CPU, mem, LLC, blk, net) | Documented in `docs/METRICS-DEEP-DIVE.md` and reflected in IntP's metric set |
-| Section III, Fig. 2 | IntP module architecture | `v0-stap-classic/intp.stp` is the canonical implementation; V1-V3 README files describe each module's modern equivalent |
+| Section III, Fig. 2 | IntP module architecture | `variants/v0-baseline-2022/intp.stp` is the canonical implementation; V1-V3 README files describe each module's modern equivalent |
 | Section IV.A (block) | `block_rq_complete`/`block_rq_issue` delta | Same probe in V0/V1; tracepoint `block_rq_complete` in V3.1/V3 |
 | Section IV.B (network) | `napi_complete_done`/`napi_schedule_irqoff` and xmit deltas | Same probes in V0/V1; kprobes/tracepoints equivalent in V3.1/V3; `/proc/net/dev` in V2 |
 | Section IV.C (CPU/CSW) | scheduler dispatcher waiting time | `scheduler.ctxswitch` in V1; `sched:sched_switch` tracepoint in V3.1/V3 |

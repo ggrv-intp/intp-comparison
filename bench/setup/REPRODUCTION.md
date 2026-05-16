@@ -104,7 +104,7 @@ It auto-detects jammy vs noble and does, in order:
 5. **Profile-specific software**:
    - **jammy**: SystemTap 5.2 from source, intel-cmt-cat, kernel debuginfo via ddebs, `stap-prep`
    - **noble**: systemtap + systemtap-runtime (apt), bpftrace, clang/llvm/libbpf-dev/libelf-dev/pahole, kernel-headers, kernel debuginfo
-6. **Builds V2 and V3** (`make -C v2-c-stable-abi`, `make -C v3-ebpf-libbpf`).
+6. **Builds V2 and V3** (`make -C variants/v2-hybrid-c`, `make -C variants/v3-ebpf-ringbuf`).
 7. **Self-tests** for each profiler.
 
 Idempotent — safe to re-run. Logs to stdout.
@@ -132,8 +132,8 @@ deterministic CPU freq.
 
 stress-ng `--sock` and `--udp` default to `127.0.0.1`. Loopback bypasses
 `__dev_queue_xmit` against any real device, so the V3/V3.1 tracepoints
-filter `lo` ([intp.bpf.c:148-161](../../v3-ebpf-libbpf/src/intp.bpf.c#L148-L161),
-[netp.bt:28-38](../../v3.1-bpftrace/scripts/netp.bt#L28-L38)) and V2's
+filter `lo` ([intp.bpf.c:148-161](../../variants/v3-ebpf-ringbuf/src/intp.bpf.c#L148-L161),
+[netp.bt:28-38](../../variants/v3.1-bpftrace/scripts/netp.bt#L28-L38)) and V2's
 `/proc/softirqs` NET_RX/TX path is kernel-bypassed for `lo`. **All three
 return zero for `netp`/`nets` on synthetic loopback workloads, by design.**
 V1.1 stap probes higher in the TCP stack and remains sensitive.
@@ -305,15 +305,15 @@ After `setup-host.sh`, validate each variant:
 which stap && stap -V
 
 # V2 (C hybrid)
-v2-c-stable-abi/intp-hybrid --list-backends
+variants/v2-hybrid-c/intp-hybrid --list-backends
 
 # V3 (eBPF/libbpf)
-v3-ebpf-libbpf/intp-ebpf --list-capabilities
+variants/v3-ebpf-ringbuf/intp-ebpf --list-capabilities
 ls /sys/kernel/btf/vmlinux   # must exist
 
 # V3.1 (bpftrace)
 bpftrace -V
-bash v3.1-bpftrace/run-intp-bpftrace.sh --help
+bash variants/v3.1-bpftrace/run-intp-bpftrace.sh --help
 
 # resctrl
 mount | grep resctrl

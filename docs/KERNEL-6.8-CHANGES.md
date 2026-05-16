@@ -261,10 +261,10 @@ If perf events are available, this might be simpler than resctrl.
 
 ## Files Modified
 
-- `v0.1-stap-k68/intp-6.8.stp` -- Patched version (new file).
-- `v0-stap-classic/intp.stp` -- Original version (unchanged).
+- `variants/v0.1-min-patch/intp-6.8.stp` -- Patched version (new file).
+- `variants/v0-baseline-2022/intp.stp` -- Original version (unchanged).
 - `docs/KERNEL-6.8-CHANGES.md` -- this file (cross-variant root copy).
-- `v0.1-stap-k68/docs/KERNEL-6.8-NOTES.md` -- per-variant V0.1 changelog (kept verbatim from the V0.1 working notes).
+- `variants/v0.1-min-patch/docs/KERNEL-6.8-NOTES.md` -- per-variant V0.1 changelog (kept verbatim from the V0.1 working notes).
 
 ## References
 

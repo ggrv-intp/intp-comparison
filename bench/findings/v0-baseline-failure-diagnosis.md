@@ -134,5 +134,5 @@ as performance data.
 - Sample index: `v1-full-campaign-all-envs/index.tsv` (every V0 row has `samples=0`)
 - Aggregates: `v1-full-campaign-all-envs/aggregate-means.tsv` (every V0 column is `--`)
 - Problem documentation: `docs/KERNEL-6.8-CHANGES.md`
-- Resolving patch: `v0.1-stap-k68/intp-6.8.stp`
+- Resolving patch: `variants/v0.1-min-patch/intp-6.8.stp`
 - Baseline bootstrap: `bench/setup/setup-host.sh`, function `install_legacy_stack()`

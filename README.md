@@ -50,7 +50,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 | V2 -- C / procfs / perf_event / resctrl | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 | V3.1 -- bpftrace + Python orchestrator | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 | V3 -- eBPF/CO-RE (libbpf, ring-buffer-streaming) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
-| V3.2 -- eBPF/CO-RE (libbpf, in-kernel-aggregating, paper section VIII) | Implementation complete; pending bare-metal acceptance test (`make -C v3.2-ebpf-aggregate test-amplification`) on pantanal01 |
+| V3.2 -- eBPF/CO-RE (libbpf, in-kernel-aggregating, paper section VIII) | Implementation complete; pending bare-metal acceptance test (`make -C variants/v3.2-ebpf-agg test-amplification`) on pantanal01 |
 
 ### Citation
 
@@ -106,15 +106,16 @@ x = supported, ~ = polling approximation, - = disabled in this build
 |-- shared/                    Components used across variants
 |   |-- intp-detect.sh         Hardware capability detection
 |   |-- intp-resctrl-helper.sh resctrl companion daemon
-|-- v0-stap-classic/           Unmodified 2022 IntP (SystemTap, kernel <=6.6)
-|-- v0.1-stap-k68/             Kernel 6.8 patch (LLC occupancy disabled)
-|-- v0.2-stap-helper/          Kernel 5.15 GA, V0-faithful stap + userspace helper (RCU-safe)
-|-- v1-stap-native/            Kernel 6.8+, stap-native probes (mbw/llcocc disabled)
-|-- v1.1-stap-helper/          Kernel 6.8+, stap + userspace helper (full 7 metrics, RCU-safe)
-|-- v2-c-stable-abi/           Pure C: procfs / perf_event_open / resctrl
-|-- v3.1-bpftrace/             bpftrace scripts + Python orchestrator + resctrl
-|-- v3-ebpf-libbpf/            Full eBPF/CO-RE with libbpf (ring-buffer-streaming)
-|-- v3.2-ebpf-aggregate/       Full eBPF/CO-RE with libbpf (in-kernel-aggregating, paper section VIII)
+|-- variants/                  One directory per IntP implementation variant
+|   |-- v0-baseline-2022/      Unmodified 2022 IntP (SystemTap, kernel <=6.6)
+|   |-- v0.1-min-patch/        Kernel 6.8 patch (LLC occupancy disabled)
+|   |-- v0.2-legacy-bridge/    Kernel 5.15 GA, V0-faithful stap + userspace helper (RCU-safe)
+|   |-- v1-stap-only/          Kernel 6.8+, stap-native probes (mbw/llcocc disabled)
+|   |-- v1.1-stap-helper/      Kernel 6.8+, stap + userspace helper (full 7 metrics, RCU-safe)
+|   |-- v2-hybrid-c/           Pure C: procfs / perf_event_open / resctrl
+|   |-- v3-ebpf-ringbuf/       Full eBPF/CO-RE with libbpf (ring-buffer-streaming)
+|   |-- v3.1-bpftrace/         bpftrace scripts + Python orchestrator + resctrl
+|   |-- v3.2-ebpf-agg/         Full eBPF/CO-RE with libbpf (in-kernel-aggregating, paper section VIII)
 |-- VERSIONS.md                Variant-naming map (current vs legacy pre-2026-05-05)
 ```
 
@@ -123,7 +124,7 @@ x = supported, ~ = polling approximation, - = disabled in this build
 ### V0 -- Original IntP (kernel <= 6.6)
 
 ```bash
-cd v0-stap-classic
+cd variants/v0-baseline-2022
 sudo stap -g intp.stp <PID> <interval_ms>
 ```
 
@@ -132,7 +133,7 @@ Requires: SystemTap, kernel debuginfo, kernel <= 6.6.
 ### V0.1 -- Updated for Kernel 6.8 (LLC disabled)
 
 ```bash
-cd v0.1-stap-k68
+cd variants/v0.1-min-patch
 sudo stap -g intp-6.8.stp <PID> <interval_ms>
 ```
 
@@ -141,7 +142,7 @@ Requires: SystemTap, kernel debuginfo, kernel 6.8+. Note: llcocc returns 0.
 ### V0.2 -- V0-faithful + userspace helper (kernel 5.15 GA / Ubuntu 22.04)
 
 ```bash
-cd v0.2-stap-helper
+cd variants/v0.2-legacy-bridge
 make
 sudo INTP_HELPER_IMC_PMU_TYPE=14 \
      INTP_HELPER_DRAM_BW_MBPS=34000 \
@@ -163,7 +164,7 @@ kernel.
 ### V1 -- Stap-native (5/7 metrics; no helper, no embedded I/O)
 
 ```bash
-cd v1-stap-native
+cd variants/v1-stap-only
 sudo stap -g intp-resctrl.stp <comm-pattern>
 ```
 
@@ -173,7 +174,7 @@ reported as 0 (deferred to V1.1).
 ### V1.1 -- Stap + userspace helper (full 7/7 metrics, RCU-safe)
 
 ```bash
-cd v1.1-stap-helper
+cd variants/v1.1-stap-helper
 make
 sudo ./intp-helper <comm-pattern> &
 sudo stap -g intp-v1.1.stp <comm-pattern>
@@ -187,7 +188,7 @@ if hardware is unavailable.
 ### V2 -- C: procfs / perf_event / resctrl
 
 ```bash
-cd v2-c-stable-abi
+cd variants/v2-hybrid-c
 make
 sudo ./intp-hybrid -p <PID> -i <interval_ms>
 ```
@@ -197,7 +198,7 @@ No framework dependencies. Requires: resctrl for mbw/llcocc.
 ### V3.1 -- bpftrace
 
 ```bash
-cd v3.1-bpftrace
+cd variants/v3.1-bpftrace
 sudo ./run-intp-bpftrace.sh <PID> <interval_ms>
 ```
 
@@ -206,7 +207,7 @@ Requires: bpftrace, kernel BTF, resctrl for mbw/llcocc.
 ### V3 -- eBPF/CO-RE
 
 ```bash
-cd v3-ebpf-libbpf
+cd variants/v3-ebpf-ringbuf
 make
 sudo ./intp-ebpf -p <PID> -i <interval_ms>
 ```
@@ -216,7 +217,7 @@ Requires: libbpf, clang, kernel BTF, resctrl for mbw/llcocc.
 ### V3.2 -- eBPF/CO-RE in-kernel aggregating
 
 ```bash
-cd v3.2-ebpf-aggregate
+cd variants/v3.2-ebpf-agg
 make
 sudo ./intp-ebpf-agg --pids <PID> --interval <seconds>
 

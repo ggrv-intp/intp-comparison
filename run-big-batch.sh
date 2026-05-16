@@ -145,7 +145,7 @@ BENCH_ENVS="${BENCH_ENVS:-bare}"
 #   v1   stap-native (pre-helper) — BENCH_VARIANTS="...,v1".
 #   v3.1 bpftrace alternative — BENCH_VARIANTS="...,v3.1".
 #   v3.2 in-kernel-aggregating variant (addresses the V-D amplification);
-#        see v3.2-ebpf-aggregate/DESIGN.md — BENCH_VARIANTS="...,v3.2".
+#        see variants/v3.2-ebpf-agg/DESIGN.md — BENCH_VARIANTS="...,v3.2".
 BENCH_VARIANTS="${BENCH_VARIANTS:-v0.2,v1.1,v2,v3}"
 # HIBENCH_VARIANTS defaults to BENCH_VARIANTS, EXCEPT that the classic V0
 # (exact token "v0", not v0.2) is excluded from HiBench by default.
@@ -257,15 +257,15 @@ echo "  calibration: mem_bw_max_bps=${MEM_BW_MAX_BPS:-auto}  nic_speed_bps=${NIC
 run_step "preflight detect" bash shared/intp-detect.sh
 run_step "v1 deps check" bash -lc '
   command -v stap >/dev/null 2>&1 \
-  && test -f v1-stap-native/intp-resctrl.stp \
+  && test -f variants/v1-stap-only/intp-resctrl.stp \
   && test -x shared/intp-resctrl-helper.sh
 '
-run_step "build v0.2" make -C v0.2-stap-helper all
-run_step "build v1.1" make -C v1.1-stap-helper all
-run_step "build v2" make -C v2-c-stable-abi all
-run_step "build v3" make -C v3-ebpf-libbpf all
-run_step "build v3.2" make -C v3.2-ebpf-aggregate all
-run_step "v3.1 deps check" make -C v3.1-bpftrace deps
+run_step "build v0.2" make -C variants/v0.2-legacy-bridge all
+run_step "build v1.1" make -C variants/v1.1-stap-helper all
+run_step "build v2" make -C variants/v2-hybrid-c all
+run_step "build v3" make -C variants/v3-ebpf-ringbuf all
+run_step "build v3.2" make -C variants/v3.2-ebpf-agg all
+run_step "v3.1 deps check" make -C variants/v3.1-bpftrace deps
 run_step "python benchmark deps" bash -c '
   pip3 install --quiet --break-system-packages numpy matplotlib pandas scipy 2>/dev/null \
   || pip3 install --quiet numpy matplotlib pandas scipy

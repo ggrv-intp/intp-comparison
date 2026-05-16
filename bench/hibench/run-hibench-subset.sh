@@ -33,18 +33,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHARED_DIR="$REPO_ROOT/shared"
 
-V3_STP="$REPO_ROOT/v1-stap-native/intp-resctrl.stp"
+V3_STP="$REPO_ROOT/variants/v1-stap-only/intp-resctrl.stp"
 V3_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
-V1_1_STP="$REPO_ROOT/v1.1-stap-helper/intp-v1.1.stp"
-V1_1_HELPER="$REPO_ROOT/v1.1-stap-helper/intp-helper"
-V0_2_TEMPLATE="$REPO_ROOT/v0.2-stap-helper/intp.stp.template"
-V0_2_GENERATOR="$REPO_ROOT/v0.2-stap-helper/generate-stp.sh"
-V0_2_RECAL_STP="$REPO_ROOT/v0.2-stap-helper/intp.recal.stp"
-V0_2_HELPER="$REPO_ROOT/v0.2-stap-helper/intp-helper"
-V4_BIN="$REPO_ROOT/v2-c-stable-abi/intp-hybrid"
-V5_RUNNER="$REPO_ROOT/v3.1-bpftrace/run-intp-bpftrace.sh"
-V6_BIN="$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf"
-V6_2_BIN="$REPO_ROOT/v3.2-ebpf-aggregate/intp-ebpf-agg"
+V1_1_STP="$REPO_ROOT/variants/v1.1-stap-helper/intp-v1.1.stp"
+V1_1_HELPER="$REPO_ROOT/variants/v1.1-stap-helper/intp-helper"
+V0_2_TEMPLATE="$REPO_ROOT/variants/v0.2-legacy-bridge/intp.stp.template"
+V0_2_GENERATOR="$REPO_ROOT/variants/v0.2-legacy-bridge/generate-stp.sh"
+V0_2_RECAL_STP="$REPO_ROOT/variants/v0.2-legacy-bridge/intp.recal.stp"
+V0_2_HELPER="$REPO_ROOT/variants/v0.2-legacy-bridge/intp-helper"
+V4_BIN="$REPO_ROOT/variants/v2-hybrid-c/intp-hybrid"
+V5_RUNNER="$REPO_ROOT/variants/v3.1-bpftrace/run-intp-bpftrace.sh"
+V6_BIN="$REPO_ROOT/variants/v3-ebpf-ringbuf/intp-ebpf"
+V6_2_BIN="$REPO_ROOT/variants/v3.2-ebpf-agg/intp-ebpf-agg"
 
 # Defaults
 SIZE="${SIZE:-medium}"
@@ -1350,19 +1350,19 @@ preflight() {
                 [ "$DRY_RUN" -eq 1 ] && continue
                 command -v stap >/dev/null 2>&1 || die "stap not found (required for v1.1)"
                 [ -f "$V1_1_STP" ] || die "V1.1 script not found: $V1_1_STP"
-                [ -x "$V1_1_HELPER" ] || die "V1.1 helper not built: $V1_1_HELPER (run 'make -C $REPO_ROOT/v1.1-stap-helper')"
+                [ -x "$V1_1_HELPER" ] || die "V1.1 helper not built: $V1_1_HELPER (run 'make -C $REPO_ROOT/variants/v1.1-stap-helper')"
                 ;;
             v0.2)
                 [ "$DRY_RUN" -eq 1 ] && continue
                 command -v stap >/dev/null 2>&1 || die "stap not found (required for v0.2)"
                 [ -f "$V0_2_TEMPLATE" ] || die "V0.2 template not found: $V0_2_TEMPLATE"
                 [ -x "$V0_2_GENERATOR" ] || die "V0.2 generator not executable: $V0_2_GENERATOR"
-                [ -x "$V0_2_HELPER" ] || die "V0.2 helper not built: $V0_2_HELPER (run 'make -C $REPO_ROOT/v0.2-stap-helper')"
+                [ -x "$V0_2_HELPER" ] || die "V0.2 helper not built: $V0_2_HELPER (run 'make -C $REPO_ROOT/variants/v0.2-legacy-bridge')"
                 ;;
             v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
             v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;
             v3) [ -x "$V6_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3 binary not found: $V6_BIN" ;;
-            v3.2) [ -x "$V6_2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.2 binary not found: $V6_2_BIN (run 'make -C $REPO_ROOT/v3.2-ebpf-aggregate')" ;;
+            v3.2) [ -x "$V6_2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.2 binary not found: $V6_2_BIN (run 'make -C $REPO_ROOT/variants/v3.2-ebpf-agg')" ;;
             *)  die "unknown variant: $v" ;;
         esac
     done

@@ -337,14 +337,14 @@ EOF
 build_variants() {
     [ "$DO_BUILD" -eq 1 ] || { log "skipping build per --no-build"; return 0; }
 
-    if [ -d "$REPO_ROOT/v2-c-stable-abi" ]; then
+    if [ -d "$REPO_ROOT/variants/v2-hybrid-c" ]; then
         log "building v2 (hybrid procfs)"
-        make -C "$REPO_ROOT/v2-c-stable-abi" || warn "v2 build failed"
+        make -C "$REPO_ROOT/variants/v2-hybrid-c" || warn "v2 build failed"
     fi
 
-    if [ "$PROFILE" = "modern" ] && [ -d "$REPO_ROOT/v3-ebpf-libbpf" ]; then
+    if [ "$PROFILE" = "modern" ] && [ -d "$REPO_ROOT/variants/v3-ebpf-ringbuf" ]; then
         log "building v3 (eBPF/CO-RE)"
-        make -C "$REPO_ROOT/v3-ebpf-libbpf" || warn "v3 build failed"
+        make -C "$REPO_ROOT/variants/v3-ebpf-ringbuf" || warn "v3 build failed"
     fi
 }
 
@@ -364,9 +364,9 @@ selftest() {
         fi
     fi
 
-    if [ -x "$REPO_ROOT/v2-c-stable-abi/intp-hybrid" ]; then
-        if "$REPO_ROOT/v2-c-stable-abi/intp-hybrid" --list-backends >/dev/null 2>&1; then
-            log "  v2          OK ($(${REPO_ROOT}/v2-c-stable-abi/intp-hybrid --list-backends 2>&1 | head -1))"
+    if [ -x "$REPO_ROOT/variants/v2-hybrid-c/intp-hybrid" ]; then
+        if "$REPO_ROOT/variants/v2-hybrid-c/intp-hybrid" --list-backends >/dev/null 2>&1; then
+            log "  v2          OK ($(${REPO_ROOT}/variants/v2-hybrid-c/intp-hybrid --list-backends 2>&1 | head -1))"
         else
             warn "  v2          FAIL (--list-backends returned non-zero)"
         fi
@@ -378,8 +378,8 @@ selftest() {
         else
             warn "  bpftrace    missing"
         fi
-        if [ -x "$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" ]; then
-            if "$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf" --list-capabilities >/dev/null 2>&1; then
+        if [ -x "$REPO_ROOT/variants/v3-ebpf-ringbuf/intp-ebpf" ]; then
+            if "$REPO_ROOT/variants/v3-ebpf-ringbuf/intp-ebpf" --list-capabilities >/dev/null 2>&1; then
                 log "  v3          OK"
             else
                 warn "  v3          FAIL"

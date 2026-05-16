@@ -37,15 +37,15 @@ git log -1 --format='%h %s'   # must include any fix you depend on
 
 ### Rule 2 — rebuild any C variant whose source changed
 
-`v2-c-stable-abi/src/*.c` and `v3-ebpf-libbpf/src/*.c` produce binaries.
+`variants/v2-hybrid-c/src/*.c` and `variants/v3-ebpf-ringbuf/src/*.c` produce binaries.
 The orchestrator does not rebuild automatically:
 
 ```bash
-make -C v2-c-stable-abi clean && make -C v2-c-stable-abi
-make -C v3-ebpf-libbpf clean && make -C v3-ebpf-libbpf
+make -C variants/v2-hybrid-c clean && make -C variants/v2-hybrid-c
+make -C variants/v3-ebpf-ringbuf clean && make -C variants/v3-ebpf-ringbuf
 ```
 
-`v1.1-stap-helper` also has a userspace helper binary (C99) that must be
+`variants/v1.1-stap-helper` also has a userspace helper binary (C99) that must be
 rebuilt after any change to `intp-helper.c`.
 
 ### Rule 3 — distributed mode is mandatory for netp/nets on synthetic and HiBench workloads
@@ -131,12 +131,12 @@ reference only* (see next section).
 ### What's in scope
 
 - **Recalibration via template/generator.** `intp.stp` stays read-only
-  (paper contract); `intp.stp.template` + `v0-stap-classic/generate-stp.sh`
+  (paper contract); `intp.stp.template` + `variants/v0-baseline-2022/generate-stp.sh`
   substitute hardware constants from `shared/intp-detect.sh` (NIC line
   rate, LLC size, peak memory bandwidth, IMC PMU type, CMT scale
   factor). The substituted values are saved per rep as
   `v0-calibration.kv` next to the profiler TSV. See
-  `v0-stap-classic/README.md` for the constants table.
+  `variants/v0-baseline-2022/README.md` for the constants table.
 - **Forensic stall watchdog.** Every V0 rep is wrapped by
   `bench/v0-stall-monitor.sh`, which heartbeats every `POLL_INTERVAL`
   seconds and writes a full evidence bundle into
@@ -161,9 +161,9 @@ reference only* (see next section).
 
 ### Validation step
 
-- `bash v0-stap-classic/generate-stp.sh` prints a `KEY=VALUE` log and
-  exits 0; `grep '@@' v0-stap-classic/intp.recal.stp` is empty.
-- `stap -p4 v0-stap-classic/intp.recal.stp <comm>` compiles to a `.ko`.
+- `bash variants/v0-baseline-2022/generate-stp.sh` prints a `KEY=VALUE` log and
+  exits 0; `grep '@@' variants/v0-baseline-2022/intp.recal.stp` is empty.
+- `stap -p4 variants/v0-baseline-2022/intp.recal.stp <comm>` compiles to a `.ko`.
 - A single rep produces both `profiler.tsv` (non-empty, 7 columns) and
   `stall-monitor/heartbeat-*.txt` files; absence of any
   `stall-dump-*/` subdir indicates the watchdog saw no stalls during
@@ -173,7 +173,7 @@ reference only* (see next section).
 
 ## V0.1 — legacy reference only
 
-V0.1 (`v0.1-stap-k68/intp-6.8.stp`) is not part of the legacy-V0
+V0.1 (`variants/v0.1-min-patch/intp-6.8.stp`) is not part of the legacy-V0
 measured campaign. It exists as the minimal-patch demonstration: V0
 with `cqm_rmid` removed and `llcocc` hard-zeroed, intended only to
 document the portability cliff on kernel 6.8+. Its role in the
@@ -186,7 +186,7 @@ Validation step: `stap -p4` succeeds and a sample run produces a non-empty
 
 ## V0.2 — V0 semantics with userspace helper (U22 / 5.15 GA), 7/7 metrics
 
-V0.2 (`v0.2-stap-helper/`) is a new variant scaffolded for the legacy-V0
+V0.2 (`variants/v0.2-legacy-bridge/`) is a new variant scaffolded for the legacy-V0
 campaign. It keeps V0's probe set for the five RCU-safe metrics and
 moves the two RCU-unsafe ones (mbw via uncore IMC, llcocc via cqm_rmid)
 into a userspace helper that talks to the kernel via `perf_event_open(2)`
@@ -221,10 +221,10 @@ right variant (same helper pattern, modern probe set).
 
 ```bash
 # Build helper
-make -C v0.2-stap-helper
+make -C variants/v0.2-legacy-bridge
 
 # Verify the helper produces a data file (root):
-sudo INTP_HELPER_IMC_PMU_TYPE=14 ./v0.2-stap-helper/intp-helper stress-ng &
+sudo INTP_HELPER_IMC_PMU_TYPE=14 ./variants/v0.2-legacy-bridge/intp-helper stress-ng &
 sleep 2
 test -s /tmp/intp-v0.2-hw-data || echo "helper not writing"
 ```
@@ -464,7 +464,7 @@ zeros.
 
 ### What's in scope
 
-V3.2 (`v3.2-ebpf-aggregate/`) is the in-kernel-aggregating variant
+V3.2 (`variants/v3.2-ebpf-agg/`) is the in-kernel-aggregating variant
 specified in paper section VIII. It is the structural answer to the
 188-390x context-switch amplification documented in section V-D:
 same probe sites as V3, but every event lands as an atomic 64-bit
@@ -497,7 +497,7 @@ V3.2 is the **only variant** that requires a pre-campaign acceptance
 test to be valid:
 
 ```bash
-sudo make -C v3.2-ebpf-aggregate test-amplification
+sudo make -C variants/v3.2-ebpf-agg test-amplification
 ```
 
 This runs `tests/integration/test-no-ctxsw-amplification.sh` against
@@ -509,8 +509,8 @@ the campaign until the gate is green.
 
 ### Rule 2 — rebuild
 
-Same as V3. Any source change in `v3.2-ebpf-aggregate/` requires
-`make -C v3.2-ebpf-aggregate` before re-running.
+Same as V3. Any source change in `variants/v3.2-ebpf-agg/` requires
+`make -C variants/v3.2-ebpf-agg` before re-running.
 
 ### Rule 3 — distributed mode
 
@@ -537,7 +537,7 @@ sudo bash shared/validate-cross-variant.sh --start-workload --duration 30
 
 ## V3.1 — out of scope for this campaign
 
-V3.1 (`v3.1-bpftrace/`) is fully implemented and operational, but
+V3.1 (`variants/v3.1-bpftrace/`) is fully implemented and operational, but
 *not measured* in the legacy-V0 campaign. The campaign's contrast
 axis is V0's recalibrated SystemTap baseline against the operationally
 robust variants (V1, V1.1, V2, V3); V3.1 sits between V1 and V3 on the

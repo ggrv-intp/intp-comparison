@@ -100,11 +100,11 @@ broader interference-measurement evolution.
 - SystemTap fragility → `bench/findings/v1-modernization-reliability-findings.md`
   and `docs/KERNEL-6.8-CHANGES.md`.
 - RCU-safe-context constraint → `docs/KERNEL-6.8-CHANGES.md` and
-  `v1.1-stap-helper/DESIGN.md`.
+  `variants/v1.1-stap-helper/DESIGN.md`.
 - eBPF CO-RE portability → `docs/PORTABILITY-ROADMAP.md` and
-  `v3-ebpf-libbpf/DESIGN.md`.
+  `variants/v3-ebpf-ringbuf/DESIGN.md`.
 - resctrl as RDT contract → `docs/HARDWARE-COMPATIBILITY.md` and
-  `v1-stap-native/docs/RESCTRL-VALIDATION.md`.
+  `variants/v1-stap-only/docs/RESCTRL-VALIDATION.md`.
 
 **Status:** ready. Direct synthesis from the four documents above.
 
@@ -150,7 +150,7 @@ No TODOs in this section.
 - 281,600 MB/s default →
   `bench/findings/v1-modernization-reliability-findings.md` (host
   config snapshot), V1.1 helper hardcoded defaults
-  (`v1.1-stap-helper/intp-helper.c`), and the `INTP_MEM_BW_MBPS`
+  (`variants/v1.1-stap-helper/intp-helper.c`), and the `INTP_MEM_BW_MBPS`
   default exposed by `shared/intp-detect.sh`.
 - Cross-validation tool: `bench/calibration/` (Stream-like benchmark
   invoked via `bench/setup/setup-host.sh --calibrate`).
@@ -302,9 +302,9 @@ pagerank).
 > where applicable.]
 
 **Source in repo:**
-- 1-second polling cadence in V1.1 → `v1.1-stap-helper/DESIGN.md` and
+- 1-second polling cadence in V1.1 → `variants/v1.1-stap-helper/DESIGN.md` and
   `docs/METRICS-DEEP-DIVE.md` § mbw.
-- IMC unit selection → `v1.1-stap-helper/intp-helper.c` and
+- IMC unit selection → `variants/v1.1-stap-helper/intp-helper.c` and
   `docs/HARDWARE-COMPATIBILITY.md`.
 - @system vs per-process attribution → `docs/EXPERIMENT-STRATEGY.md`
   § V1.1 dual-mode operation.

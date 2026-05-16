@@ -32,7 +32,7 @@ segment (sustained-load runs trigger the systemd-logind /
 runs under `bench/v0-stall-monitor.sh` so forensic evidence is
 captured before the host stops accepting new SSH sessions.
 
-**Recalibration.** `v0-stap-classic/intp.stp` stays read-only (paper
+**Recalibration.** `variants/v0-baseline-2022/intp.stp` stays read-only (paper
 contract). Host adaptation flows through `intp.stp.template` (the same
 script with hardware constants replaced by `@@PLACEHOLDER@@` tokens)
 and `generate-stp.sh`, which sources `shared/intp-detect.sh` to
@@ -41,13 +41,13 @@ type, and the CMT scale factor at the start of every rep. The
 generated script is written to `intp.recal.stp` (gitignored) and the
 substituted values are saved next to the rep's TSV as
 `v0-calibration.kv` for audit. See
-[`v0-stap-classic/README.md`](../v0-stap-classic/README.md) for the
+[`variants/v0-baseline-2022/README.md`](../variants/v0-baseline-2022/README.md) for the
 constants table.
 
 **Architecture summary.** V0 is the unmodified 2022 baseline by
 Xavier and De Rose (PUCRS), published as "IntP: Quantifying
 cross-application interference via system-level instrumentation"
-(`v0-stap-classic/intp.stp`, 660 lines) that runs in guru mode and
+(`variants/v0-baseline-2022/intp.stp`, 660 lines) that runs in guru mode and
 embeds raw kernel C inside `%{ ... %}` blocks to read MSRs, walk
 `struct perf_event`, and operate on internal CQM data structures
 (see `METRICS-DEEP-DIVE.md` sections 4 and 6 for the line-level
@@ -114,7 +114,7 @@ SystemTap altogether and are evaluated against V0's output via
 ### V0.1 -- Updated for Kernel 6.8 (LLC disabled)
 
 **Architecture summary.** A minimal compatibility patch over V0
-(`v0.1-stap-k68/intp-6.8.stp`, 624 lines vs V0's 660). Two surgical
+(`variants/v0.1-min-patch/intp-6.8.stp`, 624 lines vs V0's 660). Two surgical
 changes: (1) drop the script's `MSR_IA32_QM_CTR/QM_EVTSEL` redefinitions
 because kernel 6.8 moved the canonical definitions into
 `<asm/msr-index.h>`, causing redefinition errors; (2) comment out the
@@ -157,7 +157,7 @@ pending operator-side smoke validation on a U22 host.
 set for `netp`, `nets`, `blk`, `llcmr`, and `cpu` (all RCU-safe) and
 moves the two RCU-unsafe operations -- uncore IMC perf events
 (`mbw`) and `cqm_rmid`-based LLC occupancy (`llcocc`) -- into a small
-userspace daemon (`v0.2-stap-helper/intp-helper.c`). The helper writes
+userspace daemon (`variants/v0.2-legacy-bridge/intp-helper.c`). The helper writes
 the latest values atomically to `/tmp/intp-v0.2-hw-data`; the stap
 script reads that file from a `procfs.read` probe via the same
 RCU-safe `filp_open + kernel_read` pattern V1.1 uses. Target kernel
@@ -178,10 +178,10 @@ metrics. For mbw and llcocc, fidelity matches V1.1's helper output
 bench launcher passes `INTP_HELPER_DRAM_BW_MBPS`, `INTP_HELPER_L3_SIZE_KB`,
 and `INTP_HELPER_IMC_PMU_TYPE` from `shared/intp-detect.sh`).
 
-**Recalibration.** `v0.2-stap-helper/intp.stp.template` carries only one
+**Recalibration.** `variants/v0.2-legacy-bridge/intp.stp.template` carries only one
 placeholder (`@@NIC_BYTES_PER_SEC@@`); all other host knobs flow
 through helper environment variables and are read at helper startup.
-`v0-stap-classic/intp.stp` is unchanged.
+`variants/v0-baseline-2022/intp.stp` is unchanged.
 
 **Deployment requirements.** Kernel 5.10..6.0, SystemTap 5.0+,
 matching kernel headers + debuginfo, root (for stap), and resctrl
@@ -215,7 +215,7 @@ context; that pattern is fundamentally unsafe on modern RCU and triggered
 RCU stalls / unrecoverable system hangs in production benchmarking.
 V1 keeps the SystemTap engine but uses ONLY stap-native probes -- no
 embedded C creating perf events, no embedded I/O. The single script
-(`v1-stap-native/intp-resctrl.stp`, 432 lines) is self-contained.
+(`variants/v1-stap-only/intp-resctrl.stp`, 432 lines) is self-contained.
 
 **Backend / probe map.** Identical to V0 / V0.1 for netp, nets, blk,
 cpu. LLC miss ratio comes from `probe perf.type(3).config(0x000002).process(@1)`
@@ -250,14 +250,14 @@ safety. V2 / V3.1 / V3 abandon SystemTap entirely.
 ### V1.1 -- Stap + userspace helper (kernel 6.8+, full 7 metrics, RCU-safe)
 
 **Architecture summary.** V1.1 pairs the V1 stap script with a
-userspace helper (`v1.1-stap-helper/intp-helper.c`, ~370 lines C99)
+userspace helper (`variants/v1.1-stap-helper/intp-helper.c`, ~370 lines C99)
 that owns every RCU-unsafe operation: opening uncore IMC perf events
 via `perf_event_open(2)`, managing a resctrl `mon_groups/intp-<pid>/`
 group, and polling its counters. The helper rewrites
 `/tmp/intp-hw-data` once per second with a single line:
 `<timestamp_ns>\t<mbw_pct>\t<llcocc_pct>\n` (atomic via tmpfile +
 rename). The matching stap script
-(`v1.1-stap-helper/intp-v1.1.stp`) is identical to V1 plus an
+(`variants/v1.1-stap-helper/intp-v1.1.stp`) is identical to V1 plus an
 embedded-C `kernel_read()` of that file from a
 `procfs("intestbench").read` probe -- the only context in stap where
 file I/O is RCU-safe (procfs read runs in user-task context, no RCU
@@ -324,7 +324,7 @@ data point.
 ### V2 -- Hybrid procfs/perf_event/resctrl (no framework)
 
 **Architecture summary.** V2 is a single C99 binary
-(`v2-c-stable-abi/intp-hybrid`) with no kernel module, no debuginfo
+(`variants/v2-hybrid-c/intp-hybrid`) with no kernel module, no debuginfo
 dependency, and no compile-time selection of a collection path. Each of
 the seven metrics (netp, nets, blk, mbw, llcmr, llcocc, cpu) carries an
 ordered list of backends. At startup the binary runs a capability
@@ -336,7 +336,7 @@ exposition formats. A leading `# v2 backends:` banner in the TSV lets
 downstream consumers see which backend produced each column.
 
 **Backend hierarchy per metric.** The decision tree below is the
-operational contract of V2; `v2-c-stable-abi/DESIGN.md` section 2
+operational contract of V2; `variants/v2-hybrid-c/DESIGN.md` section 2
 carries the full per-backend detail including minimum kernel versions
 and privilege requirements.
 
@@ -398,7 +398,7 @@ event-driven tracer can:
 3. *Per-packet service time for nets.* Both nets backends are
    approximations (softirq-fraction ratio or a fixed 1us/packet
    heuristic). Both carry `status=degraded`;
-   `v2-c-stable-abi/DESIGN.md` section 3 explains the gap.
+   `variants/v2-hybrid-c/DESIGN.md` section 3 explains the gap.
 
 **Relationship to other variants.** V2 differs from **V0** in trading
 event-driven SystemTap probes for polling over stable ABIs, losing
@@ -414,7 +414,7 @@ through tracepoints.
 ### V3.1 -- bpftrace (eBPF scripts)
 
 **Status.** *Implemented; measurement out of scope for this campaign.*
-The implementation under `v3.1-bpftrace/` is unchanged and remains
+The implementation under `variants/v3.1-bpftrace/` is unchanged and remains
 runnable via `BENCH_VARIANTS="...,v3.1"`. The legacy-V0 campaign
 compares V0's recalibrated baseline against the operationally robust
 variants (V1, V1.1, V2, V3); V3.1 is held out of the default matrix
@@ -427,7 +427,7 @@ high-level DSL for kernel instrumentation, with the safety of the BPF
 verifier and the portability of BTF (no debuginfo). The implementation
 is split into five `.bt` scripts (one per software metric:
 `netp.bt`, `nets.bt`, `blk.bt`, `cpu.bt`, `llcmr.bt` -- all under
-`v3.1-bpftrace/scripts/`), each streaming newline-delimited JSON on a
+`variants/v3.1-bpftrace/scripts/`), each streaming newline-delimited JSON on a
 named pipe, plus a Python 3 orchestrator (`orchestrator/aggregator.py`
 and `resctrl_reader.py`) that reads the pipes in parallel, polls
 resctrl for `mbw`/`llcocc`, and emits the IntP-format 7-column TSV.
@@ -498,7 +498,7 @@ and removes the DSL runtime cost.
 ### V3 -- eBPF/CO-RE with libbpf (full prototype)
 
 **Architecture summary.** V3 is the dissertation's "Phase 2 prototype":
-a single libbpf-skeleton-loaded BPF object (`v3-ebpf-libbpf/src/intp.bpf.c`
+a single libbpf-skeleton-loaded BPF object (`variants/v3-ebpf-ringbuf/src/intp.bpf.c`
 + generated `intp.skel.h`) plus a userspace orchestrator
 (`src/intp.c`) that polls a shared 16 MiB ring buffer (single
 `BPF_MAP_TYPE_RINGBUF`), aggregates events by metric, and reads

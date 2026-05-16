@@ -54,10 +54,10 @@ script is a legacy artifact from the original `v3-updated-resctrl` design;
 **no current variant uses it directly**:
 
 - **V1** (stap-native) does not use a helper at all (mbw / llcocc disabled).
-- **V1.1** uses its own C helper at `v1.1-stap-helper/intp-helper`.
+- **V1.1** uses its own C helper at `variants/v1.1-stap-helper/intp-helper`.
 - **V2 / V3.1 / V3** each integrate resctrl access in their own runtime
-  (C in `v2-c-stable-abi/`, Python in `v3.1-bpftrace/orchestrator/`,
-  C in `v3-ebpf-libbpf/resctrl/`).
+  (C in `variants/v2-hybrid-c/`, Python in `variants/v3.1-bpftrace/orchestrator/`,
+  C in `variants/v3-ebpf-ringbuf/resctrl/`).
 
 The script is kept here for reproducing experiments against the legacy
 `v3-updated-resctrl` lineage (preserved at git tag `pre-rename-2026-05-05`).

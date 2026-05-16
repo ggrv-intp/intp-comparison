@@ -193,5 +193,5 @@ Until that lands, this document is the operator's checklist.
 
 - Failure logs and root cause: `bench/findings/v0-baseline-failure-diagnosis.md`
 - V0 / V0.2 kernel-version constraints: `docs/KERNEL-6.8-CHANGES.md`,
-  `v0.2-stap-helper/DESIGN.md`
+  `variants/v0.2-legacy-bridge/DESIGN.md`
 - Legacy-host setup: `bench/setup/setup-host-legacy.sh`

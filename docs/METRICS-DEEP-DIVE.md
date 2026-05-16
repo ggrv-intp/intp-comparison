@@ -3,7 +3,7 @@
 Technical documentation of IntP's 7 interference metrics. Covers kernel
 probe points, embedded C functions, Normalization formulas, and
 hardcoded constants for each metric. The reference implementation is
-`v0-stap-classic/intp.stp` (660 lines) -- this document is a line-by-line
+`variants/v0-baseline-2022/intp.stp` (660 lines) -- this document is a line-by-line
 walk-through of that script, so future variants can be checked against
 the same semantic contract.
 
@@ -29,7 +29,7 @@ below documents the kernel interface, the SystemTap probe points, the
 embedded C functions, the Normalization formula, and any hardcoded
 constants.
 
-The line numbers cited refer to `v0-stap-classic/intp.stp`.
+The line numbers cited refer to `variants/v0-baseline-2022/intp.stp`.
 
 ---
 
@@ -119,7 +119,7 @@ sampling window, summed over RX and TX.
   or been inlined across kernel versions, which is one of the main
   fragility sources for V0 across kernel 5.x and 6.x. V2 cannot
   replicate per-packet kernel service time and falls back to a softirq
-  ratio (status=DEGRADED, see `v2-c-stable-abi/DESIGN.md` section 3).
+  ratio (status=DEGRADED, see `variants/v2-hybrid-c/DESIGN.md` section 3).
   V3.1/V3 reintroduce per-packet timing via `napi:napi_poll` tracepoints.
 - `$skb` and `$n` dereferences require kernel debuginfo to resolve.
 
@@ -203,7 +203,7 @@ a stable enum, so this number is implicit hardware coupling.
   `perf_event_release_kernel()`.
 
 These are V0's main coupling to internal kernel ABI; everything in
-`v3-ebpf-libbpf` is built around replacing them with libbpf-attached
+`variants/v3-ebpf-ringbuf` is built around replacing them with libbpf-attached
 perf events that the verifier validates.
 
 ### Normalization
@@ -403,7 +403,7 @@ netp	nets	blk	mbw	llcmr	llcocc	cpu
 ```
 
 V1 prepends a `time_ms` column (line 592 of
-`v1-stap-native/intp-resctrl.stp`); V2-V3 keep the original 7-column
+`variants/v1-stap-only/intp-resctrl.stp`); V2-V3 keep the original 7-column
 TSV for IADA pipeline compatibility but add a `# v2 backends:` /
 `# v3 ebpf-core --` header line declaring which backend produced each
 column.
@@ -416,6 +416,6 @@ The shared `validate-cross-variant.sh` script asserts this, and the
 metric semantics defined above are the contract being checked. When a
 later variant cannot match V0 byte-for-byte (most often `nets` on V2,
 `llcmr` on bpftrace sampling) it must declare that gap with an explicit
-`status=degraded` and `note` field; see `v2-c-stable-abi/DESIGN.md`
-section 4 and `v3.1-bpftrace/README.md` "Known limitations" for the
+`status=degraded` and `note` field; see `variants/v2-hybrid-c/DESIGN.md`
+section 4 and `variants/v3.1-bpftrace/README.md` "Known limitations" for the
 authoritative gap list.

@@ -26,15 +26,15 @@ implementations within the same paradigm.
 
 | Current | Legacy | Directory | Approach | Status |
 |---------|--------|-----------|----------|--------|
-| v0      | v1     | `v0-stap-classic/`        | Original IntP paper, SystemTap + embedded C, MSR-direct RDT, kernel 4.x baseline | Reference only |
-| v0.1    | v2     | `v0.1-stap-k68/`          | v0 patched for kernel 6.8: removes `cqm_rmid` access and conflicting MSR redefinitions; LLC occupancy disabled | Reference only |
-| v0.2    | (new)  | `v0.2-stap-helper/`       | V0 probe set (paper-faithful for netp/nets/blk/llcmr/cpu) + userspace helper for the two RCU-unsafe operations (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Target kernel **5.15 GA / Ubuntu 22.04**; same helper pattern v1.1 uses on 6.8+ | Active (legacy-V0 campaign) |
-| v1      | v3*    | `v1-stap-native/`         | Stap-only, native probes (`probe perf.type(3).config(...).process(@1)`); no embedded C creating perf events; mbw and llcocc reported as 0 | Active |
-| v1.1    | (new)  | `v1.1-stap-helper/`       | New build: stap for software metrics + userspace helper for hardware metrics (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Helper architecture isolates RCU-unsafe operations from probe context | Active |
-| v2      | v4     | `v2-c-stable-abi/`        | Pure C (no framework): procfs polling, `perf_event_open` syscall, resctrl filesystem. Runtime-adaptive backend hierarchy | Active |
-| v3      | v6     | `v3-ebpf-libbpf/`         | C + libbpf + CO-RE; software metrics through 16 MiB ring buffer (streaming pattern); hardware metrics through resctrl. **Predecessor of v3.2**; retained for overhead-evidence documentation. | Active (predecessor) |
-| v3.1    | v5     | `v3.1-bpftrace/`          | bpftrace DSL scripts + Python orchestrator + resctrl. SystemTap-script-style ergonomics on top of eBPF | Active (companion) |
-| v3.2    | (new)  | `v3.2-ebpf-aggregate/`    | C + libbpf + CO-RE with **in-kernel aggregation**: `BPF_MAP_TYPE_PERCPU_ARRAY` + `BPF_MAP_TYPE_HASH` counters polled once per interval (no ring buffer). Eliminates the 188-390x context-switch amplification documented for v3; emits both `mbw_pct` and `mbw_raw_mbps`. See `v3.2-ebpf-aggregate/DESIGN.md` and `docs/V3-OVERHEAD-FINDINGS.md`. | Active (measured eBPF endpoint) |
+| v0      | v1     | `variants/v0-baseline-2022/`        | Original IntP paper, SystemTap + embedded C, MSR-direct RDT, kernel 4.x baseline | Reference only |
+| v0.1    | v2     | `variants/v0.1-min-patch/`          | v0 patched for kernel 6.8: removes `cqm_rmid` access and conflicting MSR redefinitions; LLC occupancy disabled | Reference only |
+| v0.2    | (new)  | `variants/v0.2-legacy-bridge/`       | V0 probe set (paper-faithful for netp/nets/blk/llcmr/cpu) + userspace helper for the two RCU-unsafe operations (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Target kernel **5.15 GA / Ubuntu 22.04**; same helper pattern v1.1 uses on 6.8+ | Active (legacy-V0 campaign) |
+| v1      | v3*    | `variants/v1-stap-only/`         | Stap-only, native probes (`probe perf.type(3).config(...).process(@1)`); no embedded C creating perf events; mbw and llcocc reported as 0 | Active |
+| v1.1    | (new)  | `variants/v1.1-stap-helper/`       | New build: stap for software metrics + userspace helper for hardware metrics (uncore IMC via `perf_event_open` syscall, LLC occupancy via resctrl mon\_groups). Helper architecture isolates RCU-unsafe operations from probe context | Active |
+| v2      | v4     | `variants/v2-hybrid-c/`        | Pure C (no framework): procfs polling, `perf_event_open` syscall, resctrl filesystem. Runtime-adaptive backend hierarchy | Active |
+| v3      | v6     | `variants/v3-ebpf-ringbuf/`         | C + libbpf + CO-RE; software metrics through 16 MiB ring buffer (streaming pattern); hardware metrics through resctrl. **Predecessor of v3.2**; retained for overhead-evidence documentation. | Active (predecessor) |
+| v3.1    | v5     | `variants/v3.1-bpftrace/`          | bpftrace DSL scripts + Python orchestrator + resctrl. SystemTap-script-style ergonomics on top of eBPF | Active (companion) |
+| v3.2    | (new)  | `variants/v3.2-ebpf-agg/`    | C + libbpf + CO-RE with **in-kernel aggregation**: `BPF_MAP_TYPE_PERCPU_ARRAY` + `BPF_MAP_TYPE_HASH` counters polled once per interval (no ring buffer). Eliminates the 188-390x context-switch amplification documented for v3; emits both `mbw_pct` and `mbw_raw_mbps`. See `variants/v3.2-ebpf-agg/DESIGN.md` and `docs/V3-OVERHEAD-FINDINGS.md`. | Active (measured eBPF endpoint) |
 
 \* The v3 lineage was discontinued at the `pre-rename-2026-05-05` tag because
 its embedded-C `perf_event_create_kernel_counter()` calls triggered RCU
@@ -67,7 +67,7 @@ to avoid the RCU-unsafe pattern, recovering the full 7-metric coverage.
 ## Status after rename (2026-05-05)
 
 - v1.1 (the helper-userspace SystemTap variant) is implemented and integrated
-  into `bench/run-intp-bench.sh`; see `v1.1-stap-helper/` and
+  into `bench/run-intp-bench.sh`; see `variants/v1.1-stap-helper/` and
   `METRICS-ALIGNMENT.md` for the full coverage matrix and the documented
   HiBench distributed-mode limitation.
 - v1 was validated on the production host (no RCU stalls under repeated
@@ -130,7 +130,7 @@ to avoid the RCU-unsafe pattern, recovering the full 7-metric coverage.
 
 ## Status after V3.2 introduction (2026-05-13)
 
-- v3.2 (`v3.2-ebpf-aggregate/`) was added as the measured eBPF
+- v3.2 (`variants/v3.2-ebpf-agg/`) was added as the measured eBPF
   endpoint for the SBAC-PAD 2026 paper section VIII. Architecture:
   same eBPF probe set as v3 (`tracepoint:net/net_dev_xmit`,
   `tracepoint:block/block_rq_complete`, `tracepoint:sched/sched_switch`,
@@ -143,10 +143,10 @@ to avoid the RCU-unsafe pattern, recovering the full 7-metric coverage.
 - v3 is retained as the **predecessor of v3.2**, not deleted. Its
   overhead measurements are the empirical evidence that motivates
   v3.2; see `docs/V3-OVERHEAD-FINDINGS.md` for the digest and
-  `v3-ebpf-libbpf/DESIGN.md` § 13 for the architectural narrative.
+  `variants/v3-ebpf-ringbuf/DESIGN.md` § 13 for the architectural narrative.
 - The four "measured result" variants for the paper are now
   **v0.2, v1.1, v2, v3.2**. v3.1 stays runnable but is held out of
   the default matrix; v3 stays for overhead evidence only.
-- Acceptance gate: `make -C v3.2-ebpf-aggregate test-amplification`
+- Acceptance gate: `make -C variants/v3.2-ebpf-agg test-amplification`
   must pass (ratio <= 1.10 on a 90 s stress-ng window) before v3.2
   joins a campaign. v3 fails this test at 188-390x by construction.
