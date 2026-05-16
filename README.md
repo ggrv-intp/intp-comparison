@@ -10,7 +10,7 @@ Prof. Cesar De Rose). The research compares the original SystemTap-based IntP
 across kernel eras (V0 / V0.1 / V0.2), an RCU-safe stap+helper hybrid (V1.1),
 and modern instrumentation approaches (procfs polling — V2; bpftrace — V3.1;
 eBPF/CO-RE — V3 ring-buffer-streaming; eBPF/CO-RE — V3.2 in-kernel-aggregating)
-to evaluate portability, safety, and measurement fidelity tradeoffs.
+to evaluate portability, safety, and measurement-fidelity trade-offs.
 
 ## About
 
@@ -24,7 +24,7 @@ to evaluate portability, safety, and measurement fidelity tradeoffs.
 IntP (Interference Profiler) was originally developed by Xavier and De Rose (2022, PUCRS)
 as a SystemTap-based tool for measuring resource interference between co-located workloads
 in cloud environments. It collects seven low-level metrics (network physical, network
-stack, block I/O, memory bandwidth, LLC miss ratio, LLC occupancy, CPU) to characterise
+stack, block I/O, memory bandwidth, LLC miss ratio, LLC occupancy, CPU) to characterize
 how one tenant's resource usage affects another's performance.
 
 This work extends and refactors IntP to support modern Linux kernels (6.8+) and
@@ -50,7 +50,7 @@ the original SystemTap approach across kernel versions and hardware architecture
 | V2 -- C / procfs / perf_event / resctrl | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 | V3.1 -- bpftrace + Python orchestrator | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 | V3 -- eBPF/CO-RE (libbpf, ring-buffer-streaming) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
-| V3.2 -- eBPF/CO-RE (libbpf, in-kernel-aggregating, paper section VIII) | Implementation complete; pending bare-metal acceptance test (`make -C variants/v3.2-ebpf-agg test-amplification`) on pantanal01 |
+| V3.2 -- eBPF/CO-RE (libbpf, in-kernel-aggregating, paper section VIII) | Complete; validated on Hetzner Sapphire Rapids for Phase 3 experiments |
 
 ### Citation
 
