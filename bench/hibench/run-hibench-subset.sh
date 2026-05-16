@@ -1205,7 +1205,14 @@ run_subset_for_profile() {
     local mode="$1"
     local outdir
     outdir="$OUT_ROOT/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$outdir" || { outdir="/tmp/hibench-runs/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"; mkdir -p "$outdir"; }
+    mkdir -p "$outdir" 2>/dev/null || {
+        # Fall back to $HOME, not /tmp: /tmp is wiped on reboot and silently
+        # strands a whole run's profiler.tsv data. $HOME is visible and
+        # survives a repo rename/move.
+        outdir="$HOME/hibench-runs/$mode-$SIZE-$(date +%Y%m%d_%H%M%S)"
+        log "WARN: could not create output dir under OUT_ROOT='$OUT_ROOT' -- falling back to $outdir"
+        mkdir -p "$outdir"
+    }
 
     log "HiBench subset profile=$mode size=$SIZE variants=$VARIANTS_CSV workloads=$WORKLOADS_CSV reps=$WORKLOAD_REPS min_elapsed=${MIN_WORKLOAD_ELAPSED}s elapsed_cv_warn_pct=${ELAPSED_CV_WARN_PCT}"
     log "output: $outdir"

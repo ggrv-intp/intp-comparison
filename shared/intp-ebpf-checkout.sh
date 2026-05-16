@@ -23,7 +23,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 INTP_EBPF_BIN="${INTP_EBPF_BIN:-$REPO_ROOT/v3-ebpf-libbpf/intp-ebpf}"
-export OUT_DIR="${OUT_DIR:-$HOME/intp-aux-rerun-$(date +%Y%m%d-%H%M%S)}"
+# Output dir: prefer the repo's results/ so reruns stay centralised with the
+# rest of the campaign data. Fall back to $HOME (visible, and survives the
+# repo being renamed or moved) — never /tmp, which is wiped on reboot.
+if [ -z "${OUT_DIR:-}" ]; then
+    _aux_stamp="intp-aux-rerun-$(date +%Y%m%d-%H%M%S)"
+    if mkdir -p "$REPO_ROOT/results" 2>/dev/null && [ -w "$REPO_ROOT/results" ]; then
+        OUT_DIR="$REPO_ROOT/results/$_aux_stamp"
+    else
+        OUT_DIR="$HOME/$_aux_stamp"
+    fi
+    unset _aux_stamp
+fi
+export OUT_DIR
 
 DURATION=90        # seconds per rep, matches the existing overhead stage
 WARMUP=5
