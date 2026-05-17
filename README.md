@@ -21,7 +21,7 @@ to evaluate portability, safety, and measurement-fidelity trade-offs.
 
 ### Background
 
-IntP (Interference Profiler) was originally developed by Xavier and De Rose (2022, PUCRS)
+IntP (Interference Profiler) was originally developed by Xavier et al. (2022, PUCRS)
 as a SystemTap-based tool for measuring resource interference between co-located workloads
 in cloud environments. It collects seven low-level metrics (network physical, network
 stack, block I/O, memory bandwidth, LLC miss ratio, LLC occupancy, CPU) to characterize
@@ -251,7 +251,7 @@ byte-compatible with V3.
 ## References
 
 - **Original IntP source repository:** [projectintp/intp](https://github.com/projectintp/intp).
-- **Original IntP paper:** Xavier, M. G. and De Rose, C. A. F. (2022). *IntP: Quantifying Cross-Application Interference via System-Level Instrumentation*. SBAC-PAD 2022, Bordeaux, France, pp. 221-230. IEEE. PUCRS. PDF: <https://repositorio.pucrs.br/dspace/bitstream/10923/24018/2/IntP_Quantifying_crossapplication_interference_via_systemlevel_instrumentation.pdf>. IEEE: <https://ieeexplore.ieee.org/document/9980934/>.
+- **Original IntP paper:** Xavier, M. G., Cano, C. H. C., Meyer, V., and De Rose, C. A. F. (2022). *IntP: Quantifying Cross-Application Interference via System-Level Instrumentation*. SBAC-PAD 2022, Bordeaux, France, pp. 231-240. IEEE. PUCRS. PDF: <https://repositorio.pucrs.br/dspace/bitstream/10923/24018/2/IntP_Quantifying_crossapplication_interference_via_systemlevel_instrumentation.pdf>. IEEE: <https://ieeexplore.ieee.org/document/9980934/>.
 - **IADA (interference-aware scheduler that consumes IntP):** Meyer, V., da Silva, M. L., Kirchoff, D. F., De Rose, C. A. F. (2022). *IADA: A dynamic interference-aware cloud scheduling architecture for latency-sensitive workloads*. Journal of Systems and Software, vol. 194, pp. 111491. PUCRS.
 - **iprof -- eBPF interference profiler (related work, TU Berlin):**
   - Gögge, R. (2023). *Finding noisy neighbours: Measuring application interference with system-level instrumentation using eBPF*. Master's thesis, Technical University of Berlin. Supervised by Sören Becker and Prof. Dr. Odej Kao.

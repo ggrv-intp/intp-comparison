@@ -4,13 +4,13 @@
 # Key environment variables (all optional — defaults shown below):
 #
 #   Timing / quality
-#     DURATION=120         stress-ng run duration per rep (seconds)
-#     REPS=5               repetitions per workload
+#     DURATION=90          stress-ng run duration per rep (seconds; paper campaign)
+#     REPS=12              repetitions per workload (paper campaign)
 #     INTERVAL=1           profiler sampling interval (seconds)
 #     WARMUP=15            pre-recording ramp time (seconds)
 #     COOLDOWN=10          post-workload cooldown (seconds)
 #     TIMESERIES_DURATION=600   timeseries stage window (seconds)
-#     OVERHEAD_DURATION=60      overhead stage steady-state window (seconds)
+#     OVERHEAD_DURATION=90      overhead stage steady-state window (seconds; paper campaign)
 #     OVERHEAD_WARMUP=10        head-start before sampling each overhead arm
 #     OVERHEAD_VOLPERT=1        1 = enable perf-stat scheduler counters in overhead
 #     RUN_SEED=                 deterministic seed for per-rep shuffle (default: wall clock)
@@ -119,11 +119,14 @@ fi
 ln -sfn "$OUT" "$ROOT/results/LATEST-BIG"
 
 # ── Timing / quality ───────────────────────────────────────────────────────────
-DURATION="${DURATION:-120}"
-REPS="${REPS:-5}"
+# Defaults below are the SBAC-PAD campaign parameters (paper §IV-C):
+# 12 reps, 90 s steady-state, 15 s warmup, 10 s cooldown, 600 s timeseries,
+# 90 s overhead window. Override via env vars for quicker sizing runs.
+DURATION="${DURATION:-90}"
+REPS="${REPS:-12}"
 INTERVAL="${INTERVAL:-1}"
 TIMESERIES_DURATION="${TIMESERIES_DURATION:-600}"
-OVERHEAD_DURATION="${OVERHEAD_DURATION:-60}"
+OVERHEAD_DURATION="${OVERHEAD_DURATION:-90}"
 OVERHEAD_WARMUP="${OVERHEAD_WARMUP:-10}"
 OVERHEAD_VOLPERT="${OVERHEAD_VOLPERT:-1}"
 RUN_SEED="${RUN_SEED:-}"

@@ -38,7 +38,7 @@
 #               head-start (profiler and gauges only sample the steady-state
 #               window); both arms include the same warm-up so the delta
 #               itself is unbiased.
-#   timeseries  Long capture (default 5 min) per variant for a fixed mixed
+#   timeseries  Long capture (default 10 min) per variant for a fixed mixed
 #               workload, used for time-series figures.
 #   report      Consolidate every run into TSVs ready for plot-intp-bench.py.
 #
@@ -124,13 +124,17 @@ STAGES_CSV="$DEFAULT_STAGES"
 VARIANTS_CSV="$DEFAULT_VARIANTS"
 ENVS_CSV="bare"   # bare only by default; user opts in to container/vm explicitly
 WORKLOAD_FILTER=""
-DURATION=180
-WARMUP=10
-COOLDOWN=5
+# Defaults are the SBAC-PAD campaign parameters (paper §IV-C): 12 reps, 90 s
+# steady-state, 15 s warmup, 10 s cooldown, 600 s timeseries, 90 s overhead.
+# run-big-batch.sh passes these explicitly; keeping them as the standalone
+# defaults means a direct invocation reproduces the campaign setup.
+DURATION=90
+WARMUP=15
+COOLDOWN=10
 INTERVAL=1
-REPS=4
-TIMESERIES_DURATION=300
-OVERHEAD_DURATION=60
+REPS=12
+TIMESERIES_DURATION=600
+OVERHEAD_DURATION=90
 # Head-start applied at the beginning of every overhead-stage workload run
 # before any gauge starts sampling. Both baseline and with-profiler arms get
 # the same head-start, so the steady-state delta is unbiased; the absolute

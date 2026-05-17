@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-hibench-subset.sh — HiBench Spark subset with IntP profiler integration.
 #
-# For each workload (terasort, wordcount, pagerank, kmeans, bayes, sql_nweight)
+# For each workload (terasort, wordcount, pagerank, kmeans, bayes, dfsioe)
 # the script launches each selected IntP variant as a background profiler,
 # runs the Spark job, stops the profiler, and writes profiler.tsv in the same
 # format as run-intp-bench.sh so the plotter can process HiBench results
@@ -75,7 +75,7 @@ MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
 MEM_BW_MAX_BPS="${MEM_BW_MAX_BPS:-}"
 LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
 NIC_SPEED_BPS="${NIC_SPEED_BPS:-}"
-WORKLOAD_REPS=1             # number of Spark invocations per workload
+WORKLOAD_REPS=12            # Spark invocations per workload (paper campaign)
 ELAPSED_CV_WARN_PCT=20      # warn when duration coefficient of variation reaches this percent
 STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Process name that stap will filter for Spark JVM processes.
@@ -173,7 +173,9 @@ Options:
                               (system-wide) mode for HiBench — see
                               _start_v1_1_profiler.
   --workloads CSV             Workloads to run (default: all)
-                              Supported: all,terasort,wordcount,pagerank,kmeans,bayes,sql_nweight,dfsioe
+                              'all' = the 6 paper workloads: terasort,wordcount,
+                              pagerank,kmeans,bayes,dfsioe. sql_nweight is opt-in
+                              (separate HiBench sql build) — name it explicitly.
   --size small|medium|large|huge|gigantic
                               HiBench dataset profile (default: medium)
   --profile MODE              Co-runner mode (default: standard). One of:
@@ -273,7 +275,10 @@ parse_args() {
 workload_selected() {
     local name="$1" w
     for w in "${WORKLOADS[@]}"; do
-        [ "$w" = "all" ] && return 0
+        # 'all' = the 6 canonical paper workloads. sql_nweight is NOT part of
+        # 'all' (its HiBench sql module is a separate, optional build that the
+        # campaign never ran); it must be requested explicitly by name.
+        [ "$w" = "all" ] && [ "$name" != "sql_nweight" ] && return 0
         [ "$w" = "$name" ] && return 0
     done
     return 1

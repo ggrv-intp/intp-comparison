@@ -2,10 +2,10 @@ cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
 title: "intp-comparison — Multi-Variant Comparison Harness for the intp Interference Profiler"
 abstract: >
-  Seven implementation variants of intp, an interference profiler that collects
+  Nine implementation variants of intp, an interference profiler that collects
   seven metrics from the Linux kernel. Developed as part of a Master's
   dissertation on kernel instrumentation for interference profiling, comparing
-  the original SystemTap-based IntP (Xavier & De Rose, 2022) and an RCU-safe
+  the original SystemTap-based IntP (Xavier et al., 2022) and an RCU-safe
   stap+helper hybrid against modern instrumentation approaches (procfs polling,
   bpftrace, eBPF/CO-RE) to evaluate portability, safety, and measurement
   fidelity tradeoffs.
@@ -25,14 +25,18 @@ keywords:
   - bpftrace
   - performance monitoring
   - cloud computing
-version: "1.0.0"
-date-released: "2026-04-20"
+version: "0.3.0"
+date-released: "2026-05-17"
 references:
   - type: conference-paper
     title: "IntP: Quantifying Cross-Application Interference via System-Level Instrumentation"
     authors:
       - family-names: "Xavier"
         given-names: "Miguel G."
+      - family-names: "Cano"
+        given-names: "Carlos H. C."
+      - family-names: "Meyer"
+        given-names: "Vinícius"
       - family-names: "De Rose"
         given-names: "Cesar A. F."
     conference:
@@ -41,8 +45,8 @@ references:
       country: "FR"
     year: 2022
     month: 11
-    start: 221
-    end: 230
+    start: 231
+    end: 240
     doi: "10.1109/SBAC-PAD55451.2022.00034"
     publisher:
       name: "IEEE"
