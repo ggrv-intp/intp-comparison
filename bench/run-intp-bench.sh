@@ -183,6 +183,13 @@ USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
 SET_CPU_GOVERNOR="${INTP_BENCH_SET_CPU_GOVERNOR:-0}"
 WAIT_TIMEOUT_S="${INTP_BENCH_WAIT_TIMEOUT_S:-45}"
 SYSTEMTAP_READ_TIMEOUT_S="${INTP_BENCH_SYSTEMTAP_READ_TIMEOUT_S:-2}"
+# Memory-bandwidth ceiling (bytes/sec) handed to v3/v3.2 via --mem-bw-max-bps
+# so they normalise mbw correctly. Empty = derive from capabilities.env /
+# shared/intp-detect.sh at first use (resolve_mem_bw_max_bps). The binaries do
+# NOT convert units: --mem-bw-max-bps is bytes/sec while intp-detect.sh reports
+# INTP_MEM_BW_MBPS in MB/s, so the ×1e6 conversion is done here, in the script.
+MEM_BW_MAX_BPS="${INTP_BENCH_MEM_BW_MAX_BPS:-}"
+_MEM_BW_MAX_BPS_RESOLVED=""
 
 ACTIVE_RESCTRL_HELPER=0
 CURRENT_WORKLOAD_CGROUP=""
@@ -2133,6 +2140,40 @@ run_profiler_v3_1() {
     awk '/^[0-9]/{n++}END{print n+0}' "$outfile" > "$outfile.samples"
 }
 
+# Resolve the bytes/sec memory-bandwidth ceiling to pass to v3/v3.2 as
+# --mem-bw-max-bps. Cached after first call. Precedence:
+#   1. explicit MEM_BW_MAX_BPS (env INTP_BENCH_MEM_BW_MAX_BPS) -- used as-is;
+#   2. INTP_MEM_BW_MBPS from the capabilities.env written at the detect stage;
+#   3. a direct shared/intp-detect.sh invocation.
+# Cases 2/3 report MB/s, so they are multiplied by 1e6 -- the v3/v3.2 binaries
+# expect bytes/sec and do NOT convert. Echoes the value (empty if undetermined).
+resolve_mem_bw_max_bps() {
+    if [ -n "$_MEM_BW_MAX_BPS_RESOLVED" ]; then
+        printf '%s\n' "$_MEM_BW_MAX_BPS_RESOLVED"; return 0
+    fi
+    local bps="$MEM_BW_MAX_BPS" mbps=""
+    if [ -z "$bps" ]; then
+        if [ -n "${OUTPUT_DIR:-}" ] && [ -f "$OUTPUT_DIR/capabilities.env" ]; then
+            mbps=$(awk -F= '/^INTP_MEM_BW_MBPS=/{v=$2} END{print v}' "$OUTPUT_DIR/capabilities.env" || true)
+        fi
+        # `|| true` and the END-print awk (no early `exit`) keep this safe
+        # under `set -o pipefail` -- an early awk exit would SIGPIPE detect.
+        if [ -z "$mbps" ] && [ -x "$DETECT_SH" ]; then
+            mbps=$("$DETECT_SH" 2>/dev/null | awk -F= '/^INTP_MEM_BW_MBPS=/{v=$2} END{print v}' || true)
+        fi
+        case "$mbps" in
+            ''|*[!0-9]*) bps="" ;;
+            *)           bps=$(( mbps * 1000000 )) ;;   # MB/s -> B/s
+        esac
+        # log to stderr -- stdout is this function's return channel.
+        [ -n "$bps" ] && log "mbw ceiling: ${bps} B/s (derived: ${mbps} MB/s × 1e6 from intp-detect.sh)" >&2
+    else
+        log "mbw ceiling: ${bps} B/s (explicit override)" >&2
+    fi
+    _MEM_BW_MAX_BPS_RESOLVED="$bps"
+    printf '%s\n' "$bps"
+}
+
 run_profiler_v3() {
     local outfile="$1" duration="$2" pid="$3" cgroup_path="${4:-}"
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -2156,6 +2197,8 @@ run_profiler_v3() {
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
+    local mbw_bps; mbw_bps="$(resolve_mem_bw_max_bps)"
+    [ -n "$mbw_bps" ] && args+=( --mem-bw-max-bps "$mbw_bps" )
     {
         printf '# variant=v3 scope=%s\n' "$scope"
         "$V3_BIN" "${args[@]}" 2>"${outfile%.tsv}.v3.log" \
@@ -2193,6 +2236,8 @@ run_profiler_v3_2() {
         args+=( --pids "$pid" )
         scope="pid=$pid"
     fi
+    local mbw_bps; mbw_bps="$(resolve_mem_bw_max_bps)"
+    [ -n "$mbw_bps" ] && args+=( --mem-bw-max-bps "$mbw_bps" )
     {
         printf '# variant=v3.2 scope=%s\n' "$scope"
         "$V3_2_BIN" "${args[@]}" 2>"${outfile%.tsv}.v3.2.log" \

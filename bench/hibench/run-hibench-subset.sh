@@ -33,18 +33,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SHARED_DIR="$REPO_ROOT/shared"
 
-V3_STP="$REPO_ROOT/variants/v1-stap-only/intp-resctrl.stp"
-V3_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
+# Variant tool paths. Names match the variant IDs exactly (v1, v2, v3.1, …)
+# to avoid the legacy V3/V4/V5/V6 numbering that no longer maps to anything.
+V1_STP="$REPO_ROOT/variants/v1-stap-only/intp-resctrl.stp"
+V1_HELPER="$SHARED_DIR/intp-resctrl-helper.sh"
 V1_1_STP="$REPO_ROOT/variants/v1.1-stap-helper/intp-v1.1.stp"
 V1_1_HELPER="$REPO_ROOT/variants/v1.1-stap-helper/intp-helper"
 V0_2_TEMPLATE="$REPO_ROOT/variants/v0.2-legacy-bridge/intp.stp.template"
 V0_2_GENERATOR="$REPO_ROOT/variants/v0.2-legacy-bridge/generate-stp.sh"
 V0_2_RECAL_STP="$REPO_ROOT/variants/v0.2-legacy-bridge/intp.recal.stp"
 V0_2_HELPER="$REPO_ROOT/variants/v0.2-legacy-bridge/intp-helper"
-V4_BIN="$REPO_ROOT/variants/v2-hybrid-c/intp-hybrid"
-V5_RUNNER="$REPO_ROOT/variants/v3.1-bpftrace/run-intp-bpftrace.sh"
-V6_BIN="$REPO_ROOT/variants/v3-ebpf-ringbuf/intp-ebpf"
-V6_2_BIN="$REPO_ROOT/variants/v3.2-ebpf-agg/intp-ebpf-agg"
+V2_BIN="$REPO_ROOT/variants/v2-hybrid-c/intp-hybrid"
+V3_1_RUNNER="$REPO_ROOT/variants/v3.1-bpftrace/run-intp-bpftrace.sh"
+V3_BIN="$REPO_ROOT/variants/v3-ebpf-ringbuf/intp-ebpf"
+V3_2_BIN="$REPO_ROOT/variants/v3.2-ebpf-agg/intp-ebpf-agg"
 
 # Defaults
 SIZE="${SIZE:-medium}"
@@ -65,16 +67,30 @@ DRY_RUN=0
 INTERVAL=1
 WARMUP=15                   # seconds to let Spark ramp before recording
 MAX_WORKLOAD_DURATION=600   # max profiler window per Spark job (seconds)
-# Memory bandwidth ceiling used by v2/v3 to normalise mbw to a percentage.
-# Default is empty: each binary auto-detects via dmidecode, which on modern
-# servers (e.g. Sapphire Rapids w/ DDR5-4800 × 8 channels = ~307 GB/s) is
-# wildly off (binary defaults to 51 GB/s = DDR4-3200 × 2ch), causing mbw to
-# saturate at 100%. Override via env or CLI flag — measure the host's real
-# bandwidth with `stress-ng --vm 8 --vm-bytes 100% --metrics` plus reading
-# delta on /sys/fs/resctrl/mon_data/mon_L3_*/mbm_total_bytes.
+# Memory-bandwidth ceiling (bytes/sec) used by v2/v3/v3.1/v3.2 to normalise
+# mbw to a percentage. Empty here = derive it at startup via
+# resolve_mem_bw_ceiling() (see below); an explicit env/CLI value wins.
+#
+# Why the script must resolve this rather than let the binary autodetect:
+#   1. The binaries' built-in dmidecode autodetect (variants/*/detect/detect.c)
+#      is unreliable on modern multi-channel DDR5 servers and silently falls
+#      back to 51 GB/s (DDR4-3200 ×2ch).
+#   2. The binaries do NOT convert units. --mem-bw-max-bps is bytes/sec, but
+#      shared/intp-detect.sh reports INTP_MEM_BW_MBPS in MB/s. Passing the
+#      MB/s number verbatim under-sizes the ceiling 1,000,000× — every mbw
+#      sample then trips "exceeded ceiling" and the column is unusable.
+# resolve_mem_bw_ceiling() reads intp-detect.sh and does the MB/s→B/s
+# conversion (×1e6) in one place so neither trap can recur.
 MEM_BW_MAX_BPS="${MEM_BW_MAX_BPS:-}"
 LLC_SIZE_BYTES="${LLC_SIZE_BYTES:-}"
 NIC_SPEED_BPS="${NIC_SPEED_BPS:-}"
+# Spark executor/driver heap. Empty = auto-scale from --size via
+# spark_memory_for_size(). The large/huge HiBench datasets -- kmeans in
+# particular, which caches its samples RDD with MEMORY_ONLY -- OOM an 8g
+# executor (the JVM exits with Spark's ExecutorExitCode.OOM=52 and the whole
+# Spark job aborts). Env overrides win over the size-based default.
+SPARK_EXECUTOR_MEMORY="${SPARK_EXECUTOR_MEMORY:-}"
+SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-}"
 WORKLOAD_REPS=12            # Spark invocations per workload (paper campaign)
 ELAPSED_CV_WARN_PCT=20      # warn when duration coefficient of variation reaches this percent
 STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
@@ -82,9 +98,10 @@ STAP_WAIT_MAX=30            # seconds to wait for stap intestbench to appear
 # Spark driver/executors all run as "java" on the host.
 STAP_TARGET="${STAP_TARGET:-java}"
 
-# V1 module-accumulation guard
-V3_RUN_COUNT=0
-V3_DEEP_CLEANUP_EVERY="${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}"
+# stap module-accumulation guard (shared by v1/v1.1/v0.2)
+STAP_RUN_COUNT=0
+# INTP_BENCH_V3_DEEP_CLEANUP_EVERY kept as a deprecated alias for the old name.
+STAP_DEEP_CLEANUP_EVERY="${INTP_BENCH_STAP_DEEP_CLEANUP_EVERY:-${INTP_BENCH_V3_DEEP_CLEANUP_EVERY:-5}}"
 _ORIG_GOVERNORS=""
 _ORIG_AUTOGROUP=""
 
@@ -177,7 +194,12 @@ Options:
                               pagerank,kmeans,bayes,dfsioe. sql_nweight is opt-in
                               (separate HiBench sql build) — name it explicitly.
   --size small|medium|large|huge|gigantic
-                              HiBench dataset profile (default: medium)
+                              HiBench dataset profile (default: medium).
+                              Also scales the Spark executor/driver heap
+                              (small/medium 8g, large 16g, huge 24g,
+                              gigantic 32g) so big datasets don't OOM.
+  --executor-memory SIZE      Override the size-scaled Spark executor heap
+  --driver-memory SIZE        Override the size-scaled Spark driver heap
   --profile MODE              Co-runner mode (default: standard). One of:
                                 standard       no co-runner (baseline)
                                 cpu-extreme    stress-ng --cpu 8 (matrixprod)
@@ -209,7 +231,7 @@ Options:
 Examples:
   sudo $0 --variants v2,v3.1,v3 --size medium --profile both
   sudo $0 --variants v1,v1.1,v2,v3.1,v3 --size medium --profile standard
-  INTP_BENCH_V3_DEEP_CLEANUP_EVERY=4 sudo $0 --variants v1 --size small
+  INTP_BENCH_STAP_DEEP_CLEANUP_EVERY=4 sudo $0 --variants v1 --size small
 EOF
 }
 
@@ -230,6 +252,8 @@ parse_args() {
             --llc-size-bytes) LLC_SIZE_BYTES="$2"; shift 2 ;;
             --nic-speed-bps)  NIC_SPEED_BPS="$2";  shift 2 ;;
             --reps)          WORKLOAD_REPS="$2"; shift 2 ;;
+            --executor-memory) SPARK_EXECUTOR_MEMORY="$2"; shift 2 ;;
+            --driver-memory)   SPARK_DRIVER_MEMORY="$2";   shift 2 ;;
             --elapsed-cv-warn-pct) ELAPSED_CV_WARN_PCT="$2"; shift 2 ;;
             --stap-target)   STAP_TARGET="$2"; shift 2 ;;
             --env)           ENV_DEPLOY="$2"; shift 2 ;;
@@ -313,14 +337,14 @@ stap_deep_cleanup() {
 start_resctrl_helper() {
     [ "$ACTIVE_RESCTRL_HELPER" -eq 1 ] && return 0
     [ "$DRY_RUN" -eq 1 ] && { ACTIVE_RESCTRL_HELPER=1; return 0; }
-    [ -x "$V3_HELPER" ] && "$V3_HELPER" start >/dev/null 2>&1 || true
+    [ -x "$V1_HELPER" ] && "$V1_HELPER" start >/dev/null 2>&1 || true
     ACTIVE_RESCTRL_HELPER=1
 }
 
 stop_resctrl_helper() {
     [ "$ACTIVE_RESCTRL_HELPER" -eq 0 ] && return 0
     [ "$DRY_RUN" -eq 1 ] && { ACTIVE_RESCTRL_HELPER=0; return 0; }
-    [ -x "$V3_HELPER" ] && "$V3_HELPER" stop >/dev/null 2>&1 || true
+    [ -x "$V1_HELPER" ] && "$V1_HELPER" stop >/dev/null 2>&1 || true
     ACTIVE_RESCTRL_HELPER=0
 }
 
@@ -375,12 +399,12 @@ start_profiler() {
 
     case "$variant" in
         v0.2) _start_v0_2_profiler "$outfile" ;;
-        v1)   _start_v3_profiler "$outfile" ;;
+        v1)   _start_v1_profiler "$outfile" ;;
         v1.1) _start_v1_1_profiler "$outfile" ;;
-        v2)   _start_v46_profiler v2 "$outfile" ;;
-        v3.1) _start_v5_profiler "$outfile" ;;
-        v3)   _start_v46_profiler v3 "$outfile" ;;
-        v3.2) _start_v46_profiler v3.2 "$outfile" ;;
+        v2)   _start_binary_profiler v2 "$outfile" ;;
+        v3.1) _start_v3_1_profiler "$outfile" ;;
+        v3)   _start_binary_profiler v3 "$outfile" ;;
+        v3.2) _start_binary_profiler v3.2 "$outfile" ;;
         *)    warn "unknown variant $variant"; return 1 ;;
     esac
 }
@@ -461,14 +485,14 @@ stop_profiler() {
     return 0
 }
 
-_start_v3_profiler() {
+_start_v1_profiler() {
     local outfile="$1"
 
     # Pre-run cleanup + periodic deep pause
-    V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
-    stap_deep_cleanup "pre-hibench-run-${V3_RUN_COUNT}"
-    if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-        log "[v1] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+    STAP_RUN_COUNT=$((STAP_RUN_COUNT + 1))
+    stap_deep_cleanup "pre-hibench-run-${STAP_RUN_COUNT}"
+    if [ "$STAP_RUN_COUNT" -gt 1 ] && [ $(( (STAP_RUN_COUNT - 1) % STAP_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+        log "[v1] periodic deep pause at hibench run ${STAP_RUN_COUNT} — sleeping 8s"
         [ "$DRY_RUN" -eq 0 ] && sleep 8
     fi
     start_resctrl_helper
@@ -478,7 +502,7 @@ _start_v3_profiler() {
             printf '# variant=v1 hibench target=%s\n' "$STAP_TARGET"
             printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         } > "$outfile"
-        STAP_PID=$$    # fake
+        STAP_PID=""   # dry-run: no real process to track
         return 0
     fi
 
@@ -488,7 +512,7 @@ _start_v3_profiler() {
         -DMAXSKIPPED=1000000 \
         -DSTP_OVERLOAD_THRESHOLD=2000000000LL \
         -DSTP_OVERLOAD_INTERVAL=1000000000LL \
-        "$V3_STP" "$STAP_TARGET" > "$stap_log" 2>&1 &
+        "$V1_STP" "$STAP_TARGET" > "$stap_log" 2>&1 &
     STAP_PID=$!
 
     # Wait for intestbench to appear (stap compile + module load)
@@ -542,10 +566,10 @@ _start_v1_1_profiler() {
     # works fine across netns since PID namespace is shared with the host.
     local outfile="$1"
 
-    V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
-    stap_deep_cleanup "pre-hibench-v1.1-run-${V3_RUN_COUNT}"
-    if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-        log "[v1.1] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+    STAP_RUN_COUNT=$((STAP_RUN_COUNT + 1))
+    stap_deep_cleanup "pre-hibench-v1.1-run-${STAP_RUN_COUNT}"
+    if [ "$STAP_RUN_COUNT" -gt 1 ] && [ $(( (STAP_RUN_COUNT - 1) % STAP_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+        log "[v1.1] periodic deep pause at hibench run ${STAP_RUN_COUNT} — sleeping 8s"
         [ "$DRY_RUN" -eq 0 ] && sleep 8
     fi
 
@@ -554,7 +578,7 @@ _start_v1_1_profiler() {
             printf '# variant=v1.1 hibench target=%s helper=%s mode=@system\n' "@system" "$STAP_TARGET"
             printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         } > "$outfile"
-        STAP_PID=$$  # fake
+        STAP_PID=""   # dry-run: no real process to track
         return 0
     fi
 
@@ -644,10 +668,10 @@ _start_v0_2_profiler() {
     # often inside netns intp-app, so per-process probes miss it.
     local outfile="$1"
 
-    V3_RUN_COUNT=$((V3_RUN_COUNT + 1))
-    stap_deep_cleanup "pre-hibench-v0.2-run-${V3_RUN_COUNT}"
-    if [ "$V3_RUN_COUNT" -gt 1 ] && [ $(( (V3_RUN_COUNT - 1) % V3_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
-        log "[v0.2] periodic deep pause at hibench run ${V3_RUN_COUNT} — sleeping 8s"
+    STAP_RUN_COUNT=$((STAP_RUN_COUNT + 1))
+    stap_deep_cleanup "pre-hibench-v0.2-run-${STAP_RUN_COUNT}"
+    if [ "$STAP_RUN_COUNT" -gt 1 ] && [ $(( (STAP_RUN_COUNT - 1) % STAP_DEEP_CLEANUP_EVERY )) -eq 0 ]; then
+        log "[v0.2] periodic deep pause at hibench run ${STAP_RUN_COUNT} — sleeping 8s"
         [ "$DRY_RUN" -eq 0 ] && sleep 8
     fi
 
@@ -656,7 +680,7 @@ _start_v0_2_profiler() {
             printf '# variant=v0.2 hibench target=%s helper=%s mode=@system\n' "@system" "$STAP_TARGET"
             printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n'
         } > "$outfile"
-        STAP_PID=$$
+        STAP_PID=""   # dry-run: no real process to track
         return 0
     fi
 
@@ -747,21 +771,21 @@ _start_v0_2_profiler() {
     STAP_COLLECTOR_PID=$!
 }
 
-_start_v46_profiler() {
+_start_binary_profiler() {
     local variant="$1" outfile="$2"
     local bin log args=()
 
     case "$variant" in
-        v2)   bin="$V4_BIN" ;;
-        v3)   bin="$V6_BIN" ;;
-        v3.2) bin="$V6_2_BIN" ;;
+        v2)   bin="$V2_BIN" ;;
+        v3)   bin="$V3_BIN" ;;
+        v3.2) bin="$V3_2_BIN" ;;
     esac
     log="${outfile%.tsv}.${variant}.log"
 
     [ "$DRY_RUN" -eq 1 ] && {
         printf '# variant=%s hibench\n' "$variant" > "$outfile"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' >> "$outfile"
-        PROFILER_PID=$$
+        PROFILER_PID=""   # dry-run: no real process to track
         return 0
     }
 
@@ -781,24 +805,24 @@ _start_v46_profiler() {
     PROFILER_PID=$!
 }
 
-_start_v5_profiler() {
+_start_v3_1_profiler() {
     local outfile="$1"
     local log="${outfile%.tsv}.v3.1.log"
 
     [ "$DRY_RUN" -eq 1 ] && {
         printf '# variant=v3.1 hibench\n' > "$outfile"
         printf 'ts\tnetp\tnets\tblk\tmbw\tllcmr\tllcocc\tcpu\n' >> "$outfile"
-        PROFILER_PID=$$
+        PROFILER_PID=""   # dry-run: no real process to track
         return 0
     }
 
-    local v5_args=(--interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --header)
-    [ -n "$MEM_BW_MAX_BPS" ] && v5_args+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
-    [ -n "$LLC_SIZE_BYTES" ] && v5_args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
-    [ -n "$NIC_SPEED_BPS" ]  && v5_args+=(--nic-speed-bps  "$NIC_SPEED_BPS")
+    local v3_1_args=(--interval "$INTERVAL" --duration "$MAX_WORKLOAD_DURATION" --header)
+    [ -n "$MEM_BW_MAX_BPS" ] && v3_1_args+=(--mem-bw-max-bps "$MEM_BW_MAX_BPS")
+    [ -n "$LLC_SIZE_BYTES" ] && v3_1_args+=(--llc-size-bytes "$LLC_SIZE_BYTES")
+    [ -n "$NIC_SPEED_BPS" ]  && v3_1_args+=(--nic-speed-bps  "$NIC_SPEED_BPS")
     {
         printf '# variant=v3.1 hibench\n'
-        "$V5_RUNNER" "${v5_args[@]}" 2>"$log" \
+        "$V3_1_RUNNER" "${v3_1_args[@]}" 2>"$log" \
             | awk '/^#/||/^netp/{print; fflush(); next} {print systime() "\t" $0; fflush()}'
     } > "$outfile" &
     PROFILER_PID=$!
@@ -818,17 +842,40 @@ resolve_runner() {
     return 1
 }
 
+# Echo "<executor_heap> <driver_heap>" for the active --size. Bigger datasets
+# need a bigger executor JVM heap or the workload OOMs (see kmeans note on
+# SPARK_EXECUTOR_MEMORY above). Env overrides SPARK_EXECUTOR_MEMORY /
+# SPARK_DRIVER_MEMORY (or --executor-memory / --driver-memory) win.
+spark_memory_for_size() {
+    local exec_mem drv_mem
+    case "$SIZE" in
+        small)    exec_mem=8g  ; drv_mem=8g  ;;
+        medium)   exec_mem=8g  ; drv_mem=8g  ;;
+        large)    exec_mem=16g ; drv_mem=16g ;;   # paper campaign default
+        huge)     exec_mem=24g ; drv_mem=16g ;;
+        gigantic) exec_mem=32g ; drv_mem=24g ;;
+        *)        exec_mem=8g  ; drv_mem=8g  ;;
+    esac
+    [ -n "$SPARK_EXECUTOR_MEMORY" ] && exec_mem="$SPARK_EXECUTOR_MEMORY"
+    [ -n "$SPARK_DRIVER_MEMORY" ]   && drv_mem="$SPARK_DRIVER_MEMORY"
+    printf '%s %s\n' "$exec_mem" "$drv_mem"
+}
+
 spark_env_for_profile() {
     local mode="$1"
     local local_dir="/var/lib/hibench/spark-local/$mode"
     mkdir -p "$local_dir" 2>/dev/null || { local_dir="/tmp/hibench-spark-local/$mode"; mkdir -p "$local_dir"; }
 
+    local exec_mem drv_mem
+    read -r exec_mem drv_mem <<< "$(spark_memory_for_size)"
+
     # All profiles use the same Spark settings now: the *-extreme profiles
     # differentiate themselves via the stress-ng co-runner, not Spark config.
     # (The legacy netp-extreme partition bump had no effect in local[*] mode.)
+    # Executor/driver heap scale with --size via spark_memory_for_size().
     printf 'export SPARK_LOCAL_DIRS=%s\nexport SPARK_SUBMIT_OPTS="%s"\n' \
         "$local_dir" \
-        "-Dspark.sql.shuffle.partitions=400 -Dspark.default.parallelism=400 -Dspark.shuffle.spill=true -Dspark.executor.instances=4 -Dspark.executor.cores=4 -Dspark.executor.memory=8g -Dspark.driver.memory=8g"
+        "-Dspark.sql.shuffle.partitions=400 -Dspark.default.parallelism=400 -Dspark.shuffle.spill=true -Dspark.executor.instances=4 -Dspark.executor.cores=4 -Dspark.executor.memory=$exec_mem -Dspark.driver.memory=$drv_mem"
 }
 
 # Resolve stress-ng args for a given profile name.
@@ -864,7 +911,7 @@ start_stressor() {
 
     [ "$DRY_RUN" -eq 1 ] && {
         log "  DRY: stress-ng $args"
-        STRESSOR_PID=$$
+        STRESSOR_PID=""   # dry-run: no real process to track
         return 0
     }
 
@@ -898,6 +945,31 @@ set_hibench_size() {
         huge)     sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             huge/'     "$conf" || true ;;
         gigantic) sed -i 's/^hibench.scale.profile.*/hibench.scale.profile             gigantic/' "$conf" || true ;;
     esac
+}
+
+# Scale the Spark executor/driver heap in HiBench's spark.conf to match --size.
+# This is the channel HiBench's load_config.py reads (it whitelists
+# spark.executor.memory / spark.driver.memory into the generated
+# --properties-file), so it applies in both local and distributed mode.
+set_spark_memory() {
+    local conf="$HIBENCH_HOME/conf/spark.conf"
+    local exec_mem drv_mem
+    read -r exec_mem drv_mem <<< "$(spark_memory_for_size)"
+    if [ ! -f "$conf" ]; then
+        [ "$DRY_RUN" -eq 1 ] || warn "missing $conf -- Spark heap not scaled (size=$SIZE)"
+        return 0
+    fi
+    if grep -q '^spark.executor.memory' "$conf"; then
+        sed -i "s/^spark.executor.memory.*/spark.executor.memory             $exec_mem/" "$conf" || true
+    else
+        printf 'spark.executor.memory             %s\n' "$exec_mem" >> "$conf"
+    fi
+    if grep -q '^spark.driver.memory' "$conf"; then
+        sed -i "s/^spark.driver.memory.*/spark.driver.memory               $drv_mem/" "$conf" || true
+    else
+        printf 'spark.driver.memory               %s\n' "$drv_mem" >> "$conf"
+    fi
+    log "Spark heap: executor=$exec_mem driver=$drv_mem (size=$SIZE) -> $conf"
 }
 
 # -----------------------------------------------------------------------------
@@ -1023,7 +1095,7 @@ run_workload_with_profiler() {
         [ "$DRY_RUN" -eq 0 ] && sleep "$WARMUP"
 
         log "  [$variant] $workload_name rep=${r}/${rep_total} — running Spark job"
-        local t0 run_elapsed
+        local t0 run_elapsed rep_rc=0
         t0=$(date +%s)
         if [ "$DRY_RUN" -eq 1 ]; then
             if [ "${INTP_DISTRIBUTED_MODE:-0}" = "1" ]; then
@@ -1061,6 +1133,13 @@ run_workload_with_profiler() {
                 spark_submit_opts="$spark_submit_opts -Dspark.driver.port=30000"
                 spark_submit_opts="$spark_submit_opts -Dspark.driver.blockManager.port=30001"
                 spark_submit_opts="$spark_submit_opts -Dspark.ui.enabled=false"
+                # Re-assert the size-scaled heap here too: this distributed
+                # branch overwrites SPARK_SUBMIT_OPTS from spark_env, so the
+                # executor/driver memory set there would otherwise be lost.
+                local exec_mem drv_mem
+                read -r exec_mem drv_mem <<< "$(spark_memory_for_size)"
+                spark_submit_opts="$spark_submit_opts -Dspark.executor.memory=$exec_mem"
+                spark_submit_opts="$spark_submit_opts -Dspark.driver.memory=$drv_mem"
                 ip netns exec "$netns" env \
                     SPARK_HOME="$SPARK_HOME" \
                     HIBENCH_HOME="$HIBENCH_HOME" \
@@ -1074,7 +1153,7 @@ run_workload_with_profiler() {
                 rc=$?
                 printf '===== rep %s end rc=%s %s =====\n' "$r" "$rc" "$(date -Iseconds)"
                 exit "$rc"
-            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${r} — Spark job failed (see $workload_log)"
+            ) >> "$workload_log" 2>&1 || rep_rc=$?
         else
             (
                 printf '===== rep %s start %s =====\n' "$r" "$(date -Iseconds)"
@@ -1085,7 +1164,7 @@ run_workload_with_profiler() {
                 rc=$?
                 printf '===== rep %s end rc=%s %s =====\n' "$r" "$rc" "$(date -Iseconds)"
                 exit "$rc"
-            ) >> "$workload_log" 2>&1 || warn "  [$variant] $workload_name rep=${r} — Spark job failed (see $workload_log)"
+            ) >> "$workload_log" 2>&1 || rep_rc=$?
         fi
         run_elapsed=$(( $(date +%s) - t0 ))
 
@@ -1095,15 +1174,25 @@ run_workload_with_profiler() {
         local rep_samples=0
         [ -f "$profiler_tsv" ] && rep_samples=$(awk '/^[0-9]/{n++}END{print n+0}' "$profiler_tsv" 2>/dev/null)
 
+        # Propagate the Spark exit code. A non-zero rc (e.g. an executor
+        # OutOfMemoryError, which surfaces as exit 52) means the workload did
+        # NOT complete -- its profiler.tsv captured a crashing job, so it must
+        # not be counted as a successful rep or reported as status "ok".
+        local rep_status="ok"
+        if [ "$rep_rc" -ne 0 ]; then
+            rep_status="spark_failed"
+            warn "  [$variant] $workload_name rep=${r} — Spark job failed rc=${rep_rc} (see $workload_log)"
+        fi
+
         REP_ELAPSED+=("$run_elapsed")
         REP_SAMPLES+=("$rep_samples")
-        REP_STATUS+=("\"ok\"")
+        REP_STATUS+=("\"$rep_status\"")
         total_elapsed=$((total_elapsed + run_elapsed))
         total_samples=$((total_samples + rep_samples))
-        successful_reps=$((successful_reps + 1))
+        [ "$rep_rc" -eq 0 ] && successful_reps=$((successful_reps + 1))
 
         cat > "$rep_outdir/run.json" <<EOF
-{"variant":"$variant","workload":"$workload_name","rep":$r,"elapsed_s":$run_elapsed,"samples":$rep_samples,"status":"ok"}
+{"variant":"$variant","workload":"$workload_name","rep":$r,"elapsed_s":$run_elapsed,"samples":$rep_samples,"status":"$rep_status"}
 EOF
     done
 
@@ -1146,7 +1235,11 @@ EOF
     status_series_json="[$(IFS=,; echo "${REP_STATUS[*]}")]"
 
     local agg_status="ok"
-    [ "$successful_reps" -eq 0 ] && agg_status="all_reps_failed"
+    if [ "$successful_reps" -eq 0 ]; then
+        agg_status="all_reps_failed"
+    elif [ "$successful_reps" -lt "$r" ]; then
+        agg_status="partial_failure"
+    fi
 
     cat > "$workload_outdir/run.json" <<EOF
 {"variant":"$variant","workload":"$workload_name","elapsed_s":$total_elapsed,"repetitions":$r,"successful_repetitions":$successful_reps,"elapsed_series_s":$elapsed_series_json,"samples_series":$samples_series_json,"status_series":$status_series_json,"elapsed_mean_s":$elapsed_mean_s,"elapsed_stddev_s":$elapsed_stddev_s,"elapsed_cv_pct":$elapsed_cv_pct,"elapsed_min_s":$elapsed_min_s,"elapsed_max_s":$elapsed_max_s,"high_variation":$high_variation,"samples":$total_samples,"status":"$agg_status"}
@@ -1228,6 +1321,7 @@ run_subset_for_profile() {
     log "output: $outdir"
 
     set_hibench_size
+    set_spark_memory
 
     local spark_env
     spark_env="$(spark_env_for_profile "$mode")"
@@ -1348,8 +1442,8 @@ preflight() {
             v1)
                 [ "$DRY_RUN" -eq 1 ] && continue
                 command -v stap >/dev/null 2>&1 || die "stap not found (required for v1)"
-                [ -f "$V3_STP" ] || die "V1 script not found: $V3_STP"
-                [ -x "$V3_HELPER" ] || die "resctrl helper not found: $V3_HELPER"
+                [ -f "$V1_STP" ] || die "V1 script not found: $V1_STP"
+                [ -x "$V1_HELPER" ] || die "resctrl helper not found: $V1_HELPER"
                 ;;
             v1.1)
                 [ "$DRY_RUN" -eq 1 ] && continue
@@ -1364,10 +1458,10 @@ preflight() {
                 [ -x "$V0_2_GENERATOR" ] || die "V0.2 generator not executable: $V0_2_GENERATOR"
                 [ -x "$V0_2_HELPER" ] || die "V0.2 helper not built: $V0_2_HELPER (run 'make -C $REPO_ROOT/variants/v0.2-legacy-bridge')"
                 ;;
-            v2) [ -x "$V4_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V4_BIN" ;;
-            v3.1) [ -x "$V5_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V5_RUNNER" ;;
-            v3) [ -x "$V6_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3 binary not found: $V6_BIN" ;;
-            v3.2) [ -x "$V6_2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.2 binary not found: $V6_2_BIN (run 'make -C $REPO_ROOT/variants/v3.2-ebpf-agg')" ;;
+            v2) [ -x "$V2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v2 binary not found: $V2_BIN" ;;
+            v3.1) [ -x "$V3_1_RUNNER" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.1 runner not found: $V3_1_RUNNER" ;;
+            v3) [ -x "$V3_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3 binary not found: $V3_BIN" ;;
+            v3.2) [ -x "$V3_2_BIN" ] || [ "$DRY_RUN" -eq 1 ] || die "v3.2 binary not found: $V3_2_BIN (run 'make -C $REPO_ROOT/variants/v3.2-ebpf-agg')" ;;
             *)  die "unknown variant: $v" ;;
         esac
     done
@@ -1421,9 +1515,33 @@ trap '_on_exit' EXIT INT TERM
 # Main
 # -----------------------------------------------------------------------------
 
+# Populate MEM_BW_MAX_BPS (bytes/sec) from shared/intp-detect.sh when the
+# operator did not pass an explicit value. intp-detect.sh reports
+# INTP_MEM_BW_MBPS in MB/s; the v2/v3/v3.1/v3.2 binaries expect --mem-bw-max-bps
+# in bytes/sec and do NOT convert -- so the ×1e6 conversion happens here.
+resolve_mem_bw_ceiling() {
+    if [ -n "$MEM_BW_MAX_BPS" ]; then
+        log "mbw ceiling: ${MEM_BW_MAX_BPS} B/s (explicit override)"
+        return 0
+    fi
+    local detect="$REPO_ROOT/shared/intp-detect.sh" mbps=""
+    # `|| true` and the END-print awk (no early `exit`) keep this safe under
+    # `set -o pipefail` -- an early awk exit would SIGPIPE intp-detect.sh.
+    [ -x "$detect" ] && mbps=$("$detect" 2>/dev/null \
+        | awk -F= '/^INTP_MEM_BW_MBPS=/{v=$2} END{print v}' || true)
+    case "$mbps" in
+        ''|*[!0-9]*)
+            warn "mbw ceiling: could not derive from intp-detect.sh -- v2/v3/v3.2 will fall back to their unreliable built-in autodetect" ;;
+        *)
+            MEM_BW_MAX_BPS=$(( mbps * 1000000 ))
+            log "mbw ceiling: ${MEM_BW_MAX_BPS} B/s (derived: ${mbps} MB/s × 1e6 from intp-detect.sh)" ;;
+    esac
+}
+
 main() {
     parse_args "$@"
     preflight
+    resolve_mem_bw_ceiling
 
     case "$PROFILE" in
         both)
