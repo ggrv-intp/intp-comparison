@@ -115,7 +115,7 @@ victim workload against an antagonist that saturates a known resource.
 | `cpu_v_cache` | `--cpu 8 --cpu-method matrixprod` | `--cache 16 --cache-level 3` | LLC |
 | `stream_v_stream` | `--stream 6` | `--stream 12` | mbw |
 | `disk_v_disk` | `--hdd 4 --hdd-bytes 2G --hdd-write-size 4K` | `--hdd 12 --hdd-bytes 4G --hdd-write-size 1M` | blk |
-| `net_v_net` | `--sock 8 --sock-port 23440` | `--sock 16 --sock-port 23441` | netp |
+| `net_v_net` | `--sock 8 --sock-port 23440` | `--sock 16 --sock-port 23450` | netp |
 
 ### 4.4 Application-realistic workloads (HiBench Spark)
 
