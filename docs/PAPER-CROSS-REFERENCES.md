@@ -116,8 +116,6 @@ broader interference-measurement evolution.
 > /sys/fs/resctrl.]
 
 **Source in repo:**
-- SKU variability → `bench/findings/lad-skylake-sp-rdt-monitoring-disabled.md`
-  (the LAD Skylake-SP case proves the SKU-level point).
 - 5412U full RDT validation →
   `bench/findings/v1-modernization-reliability-findings.md` and
   `docs/HARDWARE-COMPATIBILITY.md`.
