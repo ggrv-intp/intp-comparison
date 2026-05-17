@@ -257,18 +257,32 @@ echo "  distributed_mode=$INTP_DISTRIBUTED_MODE  netns=$INTP_NETNS_NAME  host_ip
 echo "  calibration: mem_bw_max_bps=${MEM_BW_MAX_BPS:-auto}  nic_speed_bps=${NIC_SPEED_BPS:-auto}  llc_size_bytes=${LLC_SIZE_BYTES:-auto}"
 
 # ── Preflight ──────────────────────────────────────────────────────────────────
+# Only build/check the variants this campaign actually runs. A per-OS campaign
+# (e.g. UB22 → v0.2, UB24 → v1.1,v2,v3.2) must not FAIL on a build for a variant
+# it never uses -- e.g. v3/v3.2 need clang+libbpf which the UB22 legacy leg
+# lacks. _variant_requested tests membership in BENCH_VARIANTS ∪ HIBENCH_VARIANTS.
+_variant_requested() {
+  case ",$BENCH_VARIANTS,$HIBENCH_VARIANTS," in
+    *",$1,"*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
 run_step "preflight detect" bash shared/intp-detect.sh
-run_step "v1 deps check" bash -lc '
-  command -v stap >/dev/null 2>&1 \
-  && test -f variants/v1-stap-only/intp-resctrl.stp \
-  && test -x shared/intp-resctrl-helper.sh
-'
-run_step "build v0.2" make -C variants/v0.2-legacy-bridge all
-run_step "build v1.1" make -C variants/v1.1-stap-helper all
-run_step "build v2" make -C variants/v2-hybrid-c all
-run_step "build v3" make -C variants/v3-ebpf-ringbuf all
-run_step "build v3.2" make -C variants/v3.2-ebpf-agg all
-run_step "v3.1 deps check" make -C variants/v3.1-bpftrace deps
+if _variant_requested v1; then
+  run_step "v1 deps check" bash -lc '
+    command -v stap >/dev/null 2>&1 \
+    && test -f variants/v1-stap-only/intp-resctrl.stp \
+    && test -x shared/intp-resctrl-helper.sh
+  '
+fi
+_variant_requested v0.2 && run_step "build v0.2" make -C variants/v0.2-legacy-bridge all
+_variant_requested v1.1 && run_step "build v1.1" make -C variants/v1.1-stap-helper all
+_variant_requested v2   && run_step "build v2"   make -C variants/v2-hybrid-c all
+_variant_requested v3   && run_step "build v3"   make -C variants/v3-ebpf-ringbuf all
+_variant_requested v3.2 && run_step "build v3.2" make -C variants/v3.2-ebpf-agg all
+_variant_requested v3.1 && run_step "v3.1 deps check" make -C variants/v3.1-bpftrace deps
+true   # keep exit status clean after the short-circuit && chains above
 run_step "python benchmark deps" bash -c '
   pip3 install --quiet --break-system-packages numpy matplotlib pandas scipy 2>/dev/null \
   || pip3 install --quiet numpy matplotlib pandas scipy

@@ -510,6 +510,47 @@ sudo REPS=1 DURATION=20 RUN_HIBENCH=0 RUN_PLOTS=0 \
 
 ---
 
+## 9b. One-shot per-OS campaign — `ub24run.sh` / `ub22run.sh`
+
+For the SBAC-PAD artifact the steps in §9 are wrapped by two
+one-command campaign scripts in the repo root. Each one runs, in a
+**strict non-intercalated order**, the whole pipeline for one OS leg:
+
+1. veth-routing setup (`bench/setup/setup-netns-pair.sh`)
+2. ensures the Hadoop/Spark cluster is **down** (no daemons during stress-ng)
+3. the full **stress-ng** benchmark — veth routed, cluster down
+4. brings Hadoop + Spark + HiBench **up** (install, build Spark
+   workloads, format HDFS, start daemons, populate datasets)
+5. the full **HiBench** benchmark — veth routed, cluster up
+6. tears the cluster back down
+7. publishes data + plots + metrics into `sbac-results/`
+   (`bench/publish-sbac-results.sh`)
+
+| Script        | OS leg        | Variants        |
+|---------------|---------------|-----------------|
+| `ub24run.sh`  | Ubuntu 24.04  | `v1.1,v2,v3.2`  |
+| `ub22run.sh`  | Ubuntu 22.04  | `v0.2`          |
+
+```bash
+# UB24 host (after setup-host.sh has bootstrapped it):
+sudo bash ub24run.sh                 # full campaign, HiBench size=large
+sudo bash ub24run.sh --dry-run       # print every step, run nothing
+
+# UB22 / legacy host:
+sudo bash ub22run.sh                 # adds HIBENCH_MVN_DIRECT_VERSIONS=1
+```
+
+Both delegate to the shared engine `bench/run-os-campaign.sh` (see
+`--help` for every knob: `HIBENCH_SIZE`, `HIBENCH_PROFILE`, `REPS`,
+`DURATION`, and `SKIP_VETH` / `SKIP_STRESS` / `SKIP_HIBENCH_SETUP` /
+`SKIP_HIBENCH` / `SKIP_PUBLISH` resume flags). The two legs run on
+separate hosts and both publish into the same `sbac-results/` tree;
+`publish-sbac-results.sh` merges them (disjoint per-variant subtrees,
+dedup-merged `aggregate-means.tsv`). These scripts do **not** bootstrap
+the host — run `setup-host.sh` (§3) first.
+
+---
+
 ## 10. Reproducibility risks worth flagging in the paper
 
 | Risk | Impact |

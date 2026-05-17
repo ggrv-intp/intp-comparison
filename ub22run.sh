@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# ub22run.sh -- one-shot SBAC-PAD campaign for the Ubuntu 22.04 (legacy) leg.
+#
+# Identical pipeline to ub24run.sh, but for the single legacy variant v0.2:
+#
+#   1. veth-routing setup (netns pair) for NIC-traversing workloads
+#   2. ensures the Hadoop/Spark cluster is DOWN
+#   3. the full stress-ng benchmark for v0.2 -- veth routed, NO Hadoop/Spark
+#   4. brings Hadoop + Spark + HiBench up (installs, builds the Spark
+#      workloads, formats HDFS, starts the daemons, populates datasets)
+#   5. the full HiBench Spark benchmark for v0.2 -- veth routed, cluster up
+#   6. tears the cluster back down
+#   7. publishes data + plots + metrics into sbac-results/ (leg "ub22")
+#
+# --legacy-mvn is passed to the engine: it forwards HIBENCH_MVN_DIRECT_VERSIONS=1
+# to setup-spark-hibench.sh, which the UB22 / 5.x legacy leg needs because the
+# cloned HiBench master lacks a Maven profile matching the requested Spark
+# major.minor (see bench/hibench/setup-spark-hibench.sh header).
+#
+# Prerequisite: the host is already bootstrapped (bench/setup/setup-host.sh
+# --profile legacy has been run and the HWE kernel pin/reboot completed).
+# This script does NOT bootstrap the host.
+#
+# Usage:
+#   sudo bash ub22run.sh                 # full campaign (HiBench size=large)
+#   sudo bash ub22run.sh --dry-run       # print every step, run nothing
+#   sudo HIBENCH_SIZE=small bash ub22run.sh
+#
+# See bench/run-os-campaign.sh --help for every environment knob.
+# -----------------------------------------------------------------------------
+
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec bash "$SCRIPT_DIR/bench/run-os-campaign.sh" \
+    --host-tag ub22 \
+    --variants v0.2 \
+    --legacy-mvn \
+    "$@"

@@ -237,6 +237,23 @@ V3). Adds a trailing `mbw_raw_mbps` diagnostic column to the TSV
 output (suppressible via `--no-raw-mbw`); the first 7 columns stay
 byte-compatible with V3.
 
+### Full per-OS campaign (one command)
+
+`ub24run.sh` and `ub22run.sh` (repo root) run the entire SBAC-PAD
+pipeline for one OS leg end to end: veth setup -> stress-ng (cluster
+down) -> bring Hadoop/Spark/HiBench up -> HiBench (cluster up) -> tear
+down -> publish into `sbac-results/`.
+
+```bash
+sudo bash ub24run.sh             # Ubuntu 24.04 leg -- v1.1, v2, v3.2
+sudo bash ub22run.sh             # Ubuntu 22.04 leg -- v0.2
+sudo bash ub24run.sh --dry-run   # preview every step, run nothing
+```
+
+Both wrap `bench/run-os-campaign.sh` (`--help` for all knobs and the
+`SKIP_*` resume flags). See
+[bench/setup/REPRODUCTION.md](bench/setup/REPRODUCTION.md) section 9b.
+
 ## Documentation
 
 - [Hardware Compatibility](docs/HARDWARE-COMPATIBILITY.md) -- RDT, PQoS, MPAM tables
