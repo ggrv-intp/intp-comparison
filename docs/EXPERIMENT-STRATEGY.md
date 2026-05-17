@@ -637,8 +637,7 @@ stress-ng counterpart is fig08 in `bench/plot/plot-intp-bench.py`.
 
 If a metric column is zero across all variants on every workload, the
 column is either (a) never reachable on this hardware (e.g. llcocc on
-Skylake-SP gen1; see
-`bench/findings/lad-skylake-sp-rdt-monitoring-disabled.md`) or (b) needs
+Skylake-SP gen1) or (b) needs
 a workload that actually exercises the subsystem (e.g. mbw without a
 streaming workload). Add the workload via
 `bench/run-intp-bench.sh --workload-list` or extend
