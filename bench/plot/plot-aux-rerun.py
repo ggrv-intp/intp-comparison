@@ -10,6 +10,11 @@
 #   noise-floor-timeseries.{png,pdf}     rep01 1-Hz time series, 7 metrics
 #   exp5-sched-switch.{png,pdf}          sched_switch baseline vs with-V3 (+ vmstat
 #                                        ground-truth column if present)
+#
+# Pass one or more --compare-with <run-dir> to additionally emit a
+# concatenated cross-run figure:
+#   noise-floor-compare.{png,pdf}        per-metric noise floor, one sub-bar
+#                                        per run (e.g. v3 vs v3.2)
 # -----------------------------------------------------------------------------
 import argparse
 import csv
@@ -127,25 +132,37 @@ def plot_noise_floor_distribution(run_dir, out_dir, label="V3"):
         mean = float(np.mean(v))
         p5, p25, p75, p95 = (float(x) for x in np.percentile(v, [5, 25, 75, 95]))
         col = palette[m]
+        # Display-clip every drawn coordinate to the 0-100 axis. A broken
+        # normaliser (e.g. v3.2 mbw with mem_bw_max_bps=0) can push p75/p95
+        # into the thousands; without clipping the IQR bar runs off-frame
+        # and overprints the right-margin numeric table. The true (un-
+        # clipped) values are still printed at the right, and a '»' marker
+        # flags that the geometry was clipped.
+        cmed, cmean = min(med, 100.0), min(mean, 100.0)
+        cp5, cp25, cp75, cp95 = (min(x, 100.0) for x in (p5, p25, p75, p95))
+        clipped = max(med, mean, p95) > 100.0
 
         # 0-100 light backdrop: signals "this is the full possible range"
         ax.barh(i, 100, height=0.78, color="#eeeeee", edgecolor="none",
                 zorder=1)
         # p5-p95 whisker (thin)
-        ax.hlines(i, p5, p95, color=col, alpha=0.55, linewidth=1.3,
+        ax.hlines(i, cp5, cp95, color=col, alpha=0.55, linewidth=1.3,
                   zorder=2)
         # IQR (p25-p75) thick band — visually dominant for distributions
         # with shape (mbw, llcocc); near-zero for the floor metrics.
-        ax.barh(i, p75 - p25, left=p25, height=0.46, color=col,
+        ax.barh(i, cp75 - cp25, left=cp25, height=0.46, color=col,
                 alpha=0.85, edgecolor="black", linewidth=0.4, zorder=3)
         # Median tick (white slot through the IQR for legibility)
-        ax.vlines(med, i - 0.30, i + 0.30, color="white", linewidth=2.4,
+        ax.vlines(cmed, i - 0.30, i + 0.30, color="white", linewidth=2.4,
                   zorder=4)
-        ax.vlines(med, i - 0.30, i + 0.30, color="black", linewidth=1.0,
+        ax.vlines(cmed, i - 0.30, i + 0.30, color="black", linewidth=1.0,
                   zorder=5)
         # Mean: small black diamond
-        ax.scatter(mean, i, marker="D", s=22, color="white",
+        ax.scatter(cmean, i, marker="D", s=22, color="white",
                    edgecolor="black", linewidth=0.9, zorder=6)
+        if clipped:
+            ax.text(101.5, i, "»", va="center", ha="left", fontsize=12,
+                    color=col, fontweight="bold", zorder=7)
         # Two-column numeric table on the right margin. Median is always
         # printed so each row carries its floor value at a glance; the
         # p5–p95 bracket is suppressed for distributions with no spread
@@ -160,8 +177,14 @@ def plot_noise_floor_distribution(run_dir, out_dir, label="V3"):
     # Annotate the two metrics whose magnitude needs context.
     for i, m in enumerate(rows):
         if m == "mbw":
-            ax.text(50, i - 0.42, "saturation artifact of predecessor "
-                    "normaliser (not a real signal)",
+            mbw_clipped = max(np.median(data["mbw"]),
+                              np.percentile(data["mbw"], 95)) > 100.0
+            note = ("normaliser ceiling unresolved (mem_bw_max_bps=0) — "
+                    "raw % unbounded, not a real signal"
+                    if mbw_clipped else
+                    "saturation artifact of predecessor normaliser "
+                    "(not a real signal)")
+            ax.text(50, i - 0.42, note,
                     ha="center", va="top", fontsize=7.5, style="italic",
                     color="#444")
         if m == "llcocc":
@@ -234,6 +257,114 @@ def plot_noise_floor_timeseries(run_dir, out_dir, label="V3"):
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     for ext in ("png", "pdf"):
         fig.savefig(out_dir / f"noise-floor-timeseries.{ext}", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+# --- Figure 2b: concatenated noise-floor comparison across runs -------------
+
+def plot_noise_floor_compare(runs, out_dir):
+    """Concatenated per-metric noise-floor comparison across >=2 runs.
+
+    `runs` is a list of (label, run_dir) pairs. Re-uses the single-run
+    distribution language (0-100 backdrop, 0->median bar, p5-p95 whisker,
+    median tick, mean diamond) but groups one sub-bar per run inside each
+    metric row, so v3 and v3.2 sit side by side on a shared axis. Values
+    above 100 are display-clipped to the axis and flagged with a '>>'
+    marker; the true median/p5-p95 are always printed in the right
+    margin so the clip never hides a number."""
+    collected = [(label, collect_noise_floor(rd)) for label, rd in runs]
+    k = len(collected)
+    # n per run (samples per metric).
+    n_by_run = [sum(len(v) for v in d.values()) // len(METRICS)
+                for _, d in collected]
+
+    run_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#d62728"]
+    rows = list(reversed(METRICS))
+    # vertical sub-slot layout inside each unit-height metric row
+    span = 0.74
+    sub_h = span / k
+
+    fig, ax = plt.subplots(figsize=(9.2, (0.42 * k + 0.35) * len(rows) + 1.4))
+    for i, m in enumerate(rows):
+        # 0-100 backdrop spanning the whole metric group
+        ax.barh(i, 100, height=0.92, color="#f2f2f2", edgecolor="none",
+                zorder=1)
+        for j, (label, data) in enumerate(collected):
+            v = np.asarray(data[m], dtype=float)
+            if v.size == 0:
+                continue
+            # sub-slot centre: top run first
+            y = i + span / 2 - sub_h / 2 - j * sub_h
+            med = float(np.median(v))
+            mean = float(np.mean(v))
+            p5, p95 = (float(x) for x in np.percentile(v, [5, 95]))
+            col = run_colors[j % len(run_colors)]
+            cmed, cmean = min(med, 100.0), min(mean, 100.0)
+            cp5, cp95 = min(p5, 100.0), min(p95, 100.0)
+
+            ax.hlines(y, cp5, cp95, color=col, alpha=0.55, linewidth=1.4,
+                      zorder=2)
+            ax.barh(y, cmed, height=sub_h * 0.78, left=0, color=col,
+                    alpha=0.85, edgecolor="black", linewidth=0.4, zorder=3)
+            ax.vlines(cmed, y - sub_h * 0.34, y + sub_h * 0.34,
+                      color="white", linewidth=2.2, zorder=4)
+            ax.vlines(cmed, y - sub_h * 0.34, y + sub_h * 0.34,
+                      color="black", linewidth=0.9, zorder=5)
+            ax.scatter(cmean, y, marker="D", s=18, color="white",
+                       edgecolor="black", linewidth=0.8, zorder=6)
+            if med > 100 or p95 > 100:
+                ax.text(101, y, "»", va="center", ha="left",
+                        fontsize=11, color=col, fontweight="bold", zorder=7)
+            # right-margin numeric table: median + p5-p95, one line per run
+            ax.text(108, y, f"{label:>5s}", va="center", ha="right",
+                    fontsize=7.5, color=col, family="DejaVu Sans Mono")
+            ax.text(112, y, f"{med:9.1f}", va="center", ha="right",
+                    fontsize=7.5, family="DejaVu Sans Mono")
+            if (p95 - p5) > 0.05:
+                ax.text(116, y, f"[{p5:5.1f}, {p95:8.1f}]",
+                        va="center", ha="left",
+                        fontsize=7.5, family="DejaVu Sans Mono")
+
+        if m == "mbw":
+            ax.text(50, i - 0.46, "mbw% INVALID in both runs — v3.2 ceiling "
+                    "= 0 (raw, unbounded); v3 clipped/saturated at 100",
+                    ha="center", va="top", fontsize=7.0, style="italic",
+                    color="#a00")
+
+    top_y = len(rows) - 0.40
+    ax.text(112, top_y, "median", va="bottom", ha="right",
+            fontsize=8, style="italic", color="#666",
+            family="DejaVu Sans Mono")
+    ax.text(116, top_y, "p5–p95", va="bottom", ha="left",
+            fontsize=8, style="italic", color="#666",
+            family="DejaVu Sans Mono")
+
+    # per-run legend
+    handles = [plt.Rectangle((0, 0), 1, 1, color=run_colors[j % len(run_colors)],
+                             alpha=0.85)
+               for j in range(k)]
+    leg_labels = [f"{label}  (n={n})"
+                  for (label, _), n in zip(collected, n_by_run)]
+    ax.legend(handles, leg_labels, fontsize=8, loc="lower left",
+              bbox_to_anchor=(0.16, 0.0), framealpha=0.9)
+
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([METRIC_LABEL[m] for m in rows], fontsize=9)
+    ax.set_xlim(-1, 150)
+    ax.set_xticks([0, 25, 50, 75, 100])
+    ax.set_xlabel("Value (% scale, 0–100; » = clipped, true value at right)")
+    ax.grid(axis="x", alpha=0.30)
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    fig.suptitle(
+        "Noise-floor comparison — HiBench stack UP and IDLE   "
+        "(bar = 0→median, line = p5–p95, |=median, ◇=mean)",
+        fontsize=9.5, y=0.99,
+    )
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        fig.savefig(out_dir / f"noise-floor-compare.{ext}", dpi=200,
+                    bbox_inches="tight")
     plt.close(fig)
 
 
@@ -313,6 +444,10 @@ def main():
     ap.add_argument("--variant", default=None,
                     help="variant label for figure titles (default: read "
                          "<run_dir>/variant.txt, fall back to v3)")
+    ap.add_argument("--compare-with", type=Path, action="append", default=[],
+                    metavar="RUN_DIR",
+                    help="additional run dir(s) to fold into a concatenated "
+                         "noise-floor-compare figure (repeatable)")
     args = ap.parse_args()
 
     run_dir = args.run_dir.resolve()
@@ -336,6 +471,25 @@ def main():
     plot_noise_floor_distribution(run_dir, out_dir, label)
     plot_noise_floor_timeseries(run_dir, out_dir, label)
     plot_exp5_sched_switch(run_dir, out_dir, label)
+
+    if args.compare_with:
+        def _label(rd):
+            marker = rd / "variant.txt"
+            return (marker.read_text().strip() if marker.exists()
+                    else rd.name).upper()
+
+        runs = [(label, run_dir)]
+        for extra in args.compare_with:
+            extra = extra.resolve()
+            if not extra.is_dir():
+                print(f"  skip compare: not a directory: {extra}",
+                      file=sys.stderr)
+                continue
+            runs.append((_label(extra), extra))
+        if len(runs) >= 2:
+            print(f"compare: {', '.join(l for l, _ in runs)}")
+            plot_noise_floor_compare(runs, out_dir)
+
     print("done.")
     for f in sorted(out_dir.iterdir()):
         print(f"  {f.relative_to(run_dir)}")
