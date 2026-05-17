@@ -125,10 +125,21 @@ code from it. Differences:
 | Memory BW metric        | stalled-backend-cycles ratio (Kim 2020 [15])   | direct MBM `mbm_total_bytes` |
 | CPU metric              | run-queue occupancy at `finish_task_switch()`  | on-CPU time at `sched_switch` |
 | Per-PID attribution     | limited / best-effort (single-app eval)        | in-kernel filter + fork tracking |
-| Skeleton pattern        | raw bpf() syscalls + perf event arrays         | libbpf skeleton            |
-| Ring buffer             | perf event array                               | BPF_MAP_TYPE_RINGBUF       |
+| Skeleton pattern        | cilium/ebpf `bpf2go`-generated (one per metric package) | libbpf skeleton (single object) |
+| Transport               | counter maps polled once at process shutdown   | BPF_MAP_TYPE_RINGBUF + ring_buffer__poll loop |
 | CO-RE                   | partial                                        | full                       |
 | Output format           | custom                                         | V0-compatible TSV          |
+
+Note that iprof's transport model is a strictly *single-shot*
+in-kernel-aggregation: BPF programs accumulate via
+__sync_fetch_and_add into BPF_MAP_TYPE_HASH / BPF_MAP_TYPE_ARRAY /
+BPF_MAP_TYPE_PERCPU_ARRAY maps for the entire profiling window,
+and the userspace Go binary reads each map exactly once when the
+context is cancelled (SIGINT/SIGTERM or the `-t` deadline). There
+is no continuous consumer thread, no ring buffer, and no periodic
+poll. V3.2 is therefore *closer* to iprof than V3 ever was on the
+transport axis, and *closer to PRISM* than iprof on the temporal
+axis (interval-based snapshots vs end-of-run single read).
 
 The earlier characterisation of iprof's LLC metric as a
 "stalled-backend-cycles proxy" was incorrect; iprof computes LLC miss
@@ -231,9 +242,10 @@ Threads of the parent share its TGID, so they don't consume map slots.
 
 This shortcoming is shared with iprof per its DESIGN comparison
 (§5 below): iprof's PID filter is "limited / best-effort" because it
-ships raw `bpf()` syscalls plus per-CPU perf event arrays rather than
-a libbpf skeleton with an in-kernel PID-filter map; the paper
-sidesteps it by single-application evaluation. V3 closes the gap.
+aggregates system-wide into counter maps with no in-kernel
+PID-filter map, attributing per-application after the fact rather
+than scoping in kernel; the paper sidesteps it by single-application
+evaluation. V3 closes the gap.
 
 ## 8. Hybrid with resctrl
 

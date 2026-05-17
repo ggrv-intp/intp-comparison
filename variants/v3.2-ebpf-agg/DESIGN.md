@@ -90,10 +90,15 @@ against the previous snapshot, normalizes, emits one TSV row.
 
 **Why this works**: the iprof technique (Gögge 2023, ch. 3.3; Becker
 et al. UCC Companion 2024) and PRISM (Landau et al. 2025) both rely
-on the same primitive: BPF counter maps + atomic add, polled
-periodically by userspace. The 5.8+ verifier accepts the pattern,
-the prevailing libbpf-bootstrap examples ship with it, and the
-hardware atomic on a per-CPU 64-bit field is essentially free on
+on the same primitive: BPF counter maps + atomic add, read by
+userspace without a continuous event-streaming consumer. iprof reads
+its maps exactly once at shutdown; PRISM polls them every second.
+V3.2 sits between these temporal models: it polls at a user-specified
+`--interval` (default 1 s, matching PRISM), which gives time-series
+output while preserving the absence of the amplification mechanism
+documented in paper section V-D. The 5.8+ verifier accepts the
+pattern, the prevailing libbpf-bootstrap examples ship with it, and
+the hardware atomic on a per-CPU 64-bit field is essentially free on
 modern x86 / arm64.
 
 **Why V3 didn't do this originally**: V3 was designed against the
