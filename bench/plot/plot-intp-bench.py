@@ -123,6 +123,19 @@ VARIANT_COLORS = {
     "v3.1": "#ff7f0e",  # orange
     "v3.2": "#d62728",  # red
 }
+# Article-facing labels for variants whose dataset directory name differs
+# from the name used in the paper. The v3 eBPF ring-buffer profiler is
+# stored in results as "v3" but presented as v3.2 in the article. The
+# marker lookup stays keyed on the dataset value, so renaming the label
+# preserves the existing marker (v3 → triangle "^").
+VARIANT_DISPLAY = {"v3": "v3.2"}
+
+
+def _variant_label(v: str) -> str:
+    """Article-facing label for a dataset variant value."""
+    return VARIANT_DISPLAY.get(v, v)
+
+
 # Default plotted-variant set — the 4 variants that go into the article:
 # v0.2 (recalibrated stap baseline), v1.1, v2, v3.2. The 2x2 panel grid
 # in _grid_dims expects 4. If <results_dir>/variants.manifest exists, it
@@ -579,9 +592,11 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
         # Keep profiles in descending count order; ties broken by first
         # appearance. Show up to two profiles to keep labels short.
         ordered = [p for p, _ in cnt.most_common()]
-        if len(ordered) <= 2:
-            return "/".join(ordered)
-        return "/".join(ordered[:2]) + "/…"
+        # Show up to three profiles joined with "/": enough to name the
+        # dominant workload families in full and stay legible, without
+        # the truncating ellipsis that produced unreadable labels such
+        # as "cache/ordering/…".
+        return "/".join(ordered[:3])
 
     cluster_members = {c: [wl for wl in workloads if cluster_of[wl] == c]
                        for c in range(k)}
@@ -638,7 +653,8 @@ def fig_pca_kmeans(means: pd.DataFrame, outdir: Path) -> None:
     from matplotlib.lines import Line2D
     var_handles = [Line2D([0], [0], marker=variant_markers.get(v, "o"),
                           color="w", markerfacecolor="lightgray",
-                          markeredgecolor="black", markersize=8, label=v)
+                          markeredgecolor="black", markersize=8,
+                          label=_variant_label(v))
                    for v in variants]
     clu_handles = [Line2D([0], [0], marker="o", color="w",
                           markerfacecolor=cluster_palette(c),
