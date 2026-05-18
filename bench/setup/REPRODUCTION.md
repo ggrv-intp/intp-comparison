@@ -542,12 +542,20 @@ sudo bash ub22run.sh                 # adds HIBENCH_MVN_DIRECT_VERSIONS=1
 
 Both delegate to the shared engine `bench/run-os-campaign.sh` (see
 `--help` for every knob: `HIBENCH_SIZE`, `HIBENCH_PROFILE`, `REPS`,
-`DURATION`, and `SKIP_VETH` / `SKIP_STRESS` / `SKIP_HIBENCH_SETUP` /
-`SKIP_HIBENCH` / `SKIP_PUBLISH` resume flags). The two legs run on
-separate hosts and both publish into the same `sbac-results/` tree;
-`publish-sbac-results.sh` merges them (disjoint per-variant subtrees,
-dedup-merged `aggregate-means.tsv`). These scripts do **not** bootstrap
-the host — run `setup-host.sh` (§3) first.
+`DURATION`, and `SKIP_KERNEL_CONFIG` / `SKIP_VETH` / `SKIP_STRESS` /
+`SKIP_HIBENCH_SETUP` / `SKIP_HIBENCH` / `SKIP_PUBLISH` resume flags).
+The two legs run on separate hosts and both publish into the same
+`sbac-results/` tree; `publish-sbac-results.sh` merges them (disjoint
+per-variant subtrees, dedup-merged `aggregate-means.tsv`).
+
+These scripts do **not** install packages or pin kernels — run
+`setup-host.sh` (§3) first. They **do**, in Stage 0, re-assert the live
+runtime kernel knobs the profilers need — resctrl mount,
+`perf_event_paranoid=-1`, `kptr_restrict=0` — so a host whose sysctls
+drifted since boot (or never persisted them) still runs clean. Stage 0
+is the runtime half of §3's "Kernel runtime config"; it does not write
+`/etc/sysctl.d` or `/etc/fstab` (that persistence stays setup-host.sh's
+job).
 
 ---
 

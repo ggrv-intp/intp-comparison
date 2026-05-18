@@ -37,9 +37,16 @@
 #   DURATION           stress-ng seconds per rep (default: 90)
 #   NETNS_NAME         veth guest netns name     (default: intp-net)
 #   HADOOP_PROFILE     Hadoop major for HiBench  (default: 3)
-#   SKIP_VETH / SKIP_STRESS / SKIP_HIBENCH_SETUP / SKIP_HIBENCH / SKIP_PUBLISH
+#   SKIP_KERNEL_CONFIG / SKIP_VETH / SKIP_STRESS / SKIP_HIBENCH_SETUP /
+#   SKIP_HIBENCH / SKIP_PUBLISH
 #                      set any to 1 to skip that stage (resume support)
 #   SKIP_DAEMON_STOP   set to 1 to NOT touch Hadoop/Spark daemon state
+#
+# Stage 0 asserts the RUNTIME kernel knobs the profilers need (resctrl mount,
+# perf_event_paranoid=-1, kptr_restrict=0). This is NOT the full host
+# bootstrap -- bench/setup/setup-host.sh still owns package installs, kernel
+# pinning, and *persisting* these via /etc/sysctl.d + /etc/fstab. Stage 0 only
+# guarantees the live values are correct for this campaign (no reboot).
 # -----------------------------------------------------------------------------
 
 set -uo pipefail
@@ -64,6 +71,7 @@ DURATION="${DURATION:-90}"
 NETNS_NAME="${NETNS_NAME:-intp-net}"
 HADOOP_PROFILE="${HADOOP_PROFILE:-3}"
 
+SKIP_KERNEL_CONFIG="${SKIP_KERNEL_CONFIG:-0}"
 SKIP_VETH="${SKIP_VETH:-0}"
 SKIP_STRESS="${SKIP_STRESS:-0}"
 SKIP_HIBENCH_SETUP="${SKIP_HIBENCH_SETUP:-0}"
@@ -135,6 +143,46 @@ stage() {  # stage <name> <cmd...>  -- records pass/fail, never aborts
     echo "========== FAILED: $name (rc=$rc) =========="; FAIL=$((FAIL + 1)); return "$rc"
 }
 
+# Assert the runtime kernel knobs the IntP profilers need. Idempotent, no
+# reboot. Mirrors bench/setup/setup-host.sh section 6 but applies LIVE values
+# only -- persistence (/etc/sysctl.d, /etc/fstab) remains setup-host.sh's job.
+# Without this: resctrl unmounted -> mbw/llcocc dead; kptr_restrict>0 ->
+# SystemTap/eBPF kernel-symbol resolution fails.
+ensure_runtime_kernel_config() {
+    # resctrl mount -- backs the mbw + llcocc metrics.
+    if grep -q resctrl /proc/filesystems 2>/dev/null; then
+        if mountpoint -q /sys/fs/resctrl 2>/dev/null; then
+            log "resctrl: already mounted at /sys/fs/resctrl"
+        elif [ "$DRY_RUN" -eq 1 ]; then
+            log "DRY: mount -t resctrl resctrl /sys/fs/resctrl"
+        else
+            mount -t resctrl resctrl /sys/fs/resctrl 2>/dev/null \
+                && log "resctrl: mounted at /sys/fs/resctrl" \
+                || warn "resctrl: mount failed -- mbw/llcocc will be unavailable"
+        fi
+    else
+        warn "resctrl: not in /proc/filesystems (CONFIG_X86_CPU_RESCTRL?) -- mbw/llcocc unavailable"
+    fi
+    # perf_event_paranoid=-1 -- uncore IMC / perf_event_open counters.
+    # kptr_restrict=0       -- kernel symbol resolution for SystemTap / eBPF.
+    local knob val cur
+    for knob in perf_event_paranoid:-1 kptr_restrict:0; do
+        val="${knob##*:}"; knob="${knob%%:*}"
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "DRY: echo $val > /proc/sys/kernel/$knob"; continue
+        fi
+        cur=$(cat "/proc/sys/kernel/$knob" 2>/dev/null || echo '?')
+        if [ "$cur" = "$val" ]; then
+            log "$knob: already $val"
+        elif echo "$val" > "/proc/sys/kernel/$knob" 2>/dev/null; then
+            log "$knob: $cur -> $val"
+        else
+            warn "$knob: could not set to $val (was $cur)"
+        fi
+    done
+    return 0
+}
+
 hadoop_procs() { pgrep -af 'NameNode|DataNode|SecondaryNameNode|org\.apache\.spark\.deploy\.(master|worker)' 2>/dev/null; }
 
 ensure_cluster_down() {
@@ -162,6 +210,18 @@ echo "   hibench       = size=$HIBENCH_SIZE (scale=$HIBENCH_SCALE) profile=$HIBE
 echo "   netns         = $NETNS_NAME"
 echo "   legacy mvn    = $LEGACY_MVN     dry-run = $DRY_RUN"
 echo "==================================================================="
+
+# ── Stage 0: runtime kernel config (resctrl mount, perf/kptr sysctls) ────────
+if [ "$SKIP_KERNEL_CONFIG" = "1" ]; then
+    log "SKIP_KERNEL_CONFIG=1 -- not asserting resctrl/sysctls (host assumed ready)"
+else
+    echo; echo "========== STAGE: runtime kernel config =========="
+    if ensure_runtime_kernel_config; then
+        echo "========== OK: runtime kernel config =========="; PASS=$((PASS + 1))
+    else
+        echo "========== FAILED: runtime kernel config =========="; FAIL=$((FAIL + 1))
+    fi
+fi
 
 # ── Stage 1: veth-routing setup ──────────────────────────────────────────────
 if [ "$SKIP_VETH" = "1" ]; then

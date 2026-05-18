@@ -178,9 +178,13 @@ V_USE_PID_FILTER="${INTP_BENCH_V_PID_FILTER:-0}"
 # Run bare-metal workloads inside a dedicated cgroup and point v2/v3 to it.
 # This improves attribution for child workers and resctrl-backed metrics.
 USE_CGROUP_TARGETING="${INTP_BENCH_USE_CGROUP_TARGETING:-1}"
-# Leave CPU governor management opt-in. Some Intel pstate hosts can block
-# indefinitely in sysfs governor writes under load or RCU pressure.
-SET_CPU_GOVERNOR="${INTP_BENCH_SET_CPU_GOVERNOR:-0}"
+# Pin the CPU governor to 'performance' for every run by default -- frequency
+# scaling is a top source of cross-rep variance, and run-hibench-subset.sh
+# already does this unconditionally. setup_cpu_env saves the original
+# governors and restore_cpu_env puts them back on exit. Set
+# INTP_BENCH_SET_CPU_GOVERNOR=0 to disable on the rare Intel pstate host where
+# sysfs governor writes can stall under load / RCU pressure.
+SET_CPU_GOVERNOR="${INTP_BENCH_SET_CPU_GOVERNOR:-1}"
 WAIT_TIMEOUT_S="${INTP_BENCH_WAIT_TIMEOUT_S:-45}"
 SYSTEMTAP_READ_TIMEOUT_S="${INTP_BENCH_SYSTEMTAP_READ_TIMEOUT_S:-2}"
 # Memory-bandwidth ceiling (bytes/sec) handed to v3/v3.2 via --mem-bw-max-bps
@@ -371,8 +375,8 @@ Other:
   --bench-mem SIZE         Parity knob: memory cap for bare (cgroup memory.max),
                            container (--memory), and VM (-m). Defaults to
                            floor(MemTotal * 2/3). Honors INTP_BENCH_MEM env.
-    env INTP_BENCH_SET_CPU_GOVERNOR=1
-                                                    Force governor -> performance during the run
+    env INTP_BENCH_SET_CPU_GOVERNOR=0
+                                                    Disable governor pinning (default: on -> 'performance')
   --skip-build             Do not auto-build missing variants
   --allow-v0               Allow V0 on kernel >= 6.8 (will fail at runtime)
   --dry-run                Print actions without executing
@@ -562,7 +566,7 @@ _compute_default_resources() {
 setup_cpu_env() {
     [ "$DRY_RUN" -eq 1 ] && return 0
     if [ "$SET_CPU_GOVERNOR" != "1" ]; then
-        log "[cpu_env] governor management disabled (set INTP_BENCH_SET_CPU_GOVERNOR=1 to enable)"
+        log "[cpu_env] governor pinning disabled via INTP_BENCH_SET_CPU_GOVERNOR=0 (default is on -> performance)"
     else
     local gov_path gov count=0
     for gov_path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do

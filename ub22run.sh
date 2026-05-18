@@ -20,7 +20,9 @@
 #
 # Prerequisite: the host is already bootstrapped (bench/setup/setup-host.sh
 # --profile legacy has been run and the HWE kernel pin/reboot completed).
-# This script does NOT bootstrap the host.
+# This script does NOT install packages or pin kernels -- but its Stage 0
+# DOES assert the live runtime kernel knobs the profilers need (resctrl mount,
+# perf_event_paranoid = -1, kptr_restrict = 0). Skip with SKIP_KERNEL_CONFIG=1.
 #
 # Usage:
 #   sudo bash ub22run.sh                 # full campaign (HiBench size=large)
